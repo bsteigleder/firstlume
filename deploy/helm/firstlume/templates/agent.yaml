@@ -1,0 +1,162 @@
+{{- if .Values.agent.enabled }}
+{{- $fullname := include "firstlume.fullname" . }}
+{{- $execNs := include "firstlume.executorNamespace" . }}
+{{- $tokenSecret := .Values.agent.existingSecret }}
+{{- if not $tokenSecret }}
+{{- $tokenSecret = ternary (include "firstlume.controlPlaneSecret" .) (printf "%s-agent" $fullname) .Values.controlPlane.enabled }}
+{{- end }}
+{{- $apiUrl := include "firstlume.apiUrl" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}-agent
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+---
+# The agent only needs to manage run Jobs and their token Secrets. It cannot
+# read Secrets: the token is written once and consumed by the Job.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-agent
+  namespace: {{ $execNs }}
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-agent
+  namespace: {{ $execNs }}
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-agent
+subjects:
+  - kind: ServiceAccount
+    name: {{ $fullname }}-agent
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.agent.executor.serviceAccount.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "firstlume.executorServiceAccount" . }}
+  namespace: {{ $execNs }}
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+    app.kubernetes.io/component: executor
+  {{- with .Values.agent.executor.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: {{ .Values.agent.executor.automountServiceAccountToken }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-agent
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  # Several replicas are safe (claims are atomic) but one is usually enough.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "firstlume.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        {{- include "firstlume.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: agent
+      {{- with .Values.agent.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ $fullname }}-agent
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "firstlume.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "firstlume.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["agent"]
+          env:
+            - name: FIRSTLUME_API_URL
+              value: {{ $apiUrl | quote }}
+            - name: FIRSTLUME_EXECUTOR_API_URL
+              value: {{ .Values.agent.executorApiUrl | default $apiUrl | quote }}
+            - name: FIRSTLUME_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $tokenSecret }}
+                  key: agent-token
+            - name: FIRSTLUME_AGENT_NAME
+              value: {{ .Values.agent.name | quote }}
+            - name: FIRSTLUME_DRIVER
+              value: kubernetes
+            - name: FIRSTLUME_CONCURRENCY
+              value: {{ .Values.agent.concurrency | quote }}
+            - name: FIRSTLUME_POLL_INTERVAL
+              value: {{ .Values.agent.pollInterval | quote }}
+            - name: FIRSTLUME_JOB_NAMESPACE
+              value: {{ $execNs | quote }}
+            - name: FIRSTLUME_EXECUTOR_IMAGE
+              value: {{ include "firstlume.executorImage" . | quote }}
+            - name: FIRSTLUME_EXECUTOR_IMAGE_PULL_POLICY
+              value: {{ .Values.image.pullPolicy | quote }}
+            - name: FIRSTLUME_EXECUTOR_SERVICE_ACCOUNT
+              value: {{ include "firstlume.executorServiceAccount" . | quote }}
+            - name: FIRSTLUME_EXECUTOR_AUTOMOUNT_TOKEN
+              value: {{ .Values.agent.executor.automountServiceAccountToken | quote }}
+            {{- with .Values.agent.executor.resources.requests }}
+            - name: FIRSTLUME_EXECUTOR_CPU_REQUEST
+              value: {{ .cpu | default "" | quote }}
+            - name: FIRSTLUME_EXECUTOR_MEMORY_REQUEST
+              value: {{ .memory | default "" | quote }}
+            {{- end }}
+            {{- with .Values.agent.executor.resources.limits }}
+            - name: FIRSTLUME_EXECUTOR_CPU_LIMIT
+              value: {{ .cpu | default "" | quote }}
+            - name: FIRSTLUME_EXECUTOR_MEMORY_LIMIT
+              value: {{ .memory | default "" | quote }}
+            {{- end }}
+            - name: FIRSTLUME_JOB_DEADLINE
+              value: {{ .Values.agent.executor.activeDeadline | quote }}
+            - name: FIRSTLUME_JOB_TTL
+              value: {{ .Values.agent.executor.ttlAfterFinished | quote }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          securityContext:
+            {{- include "firstlume.containerSecurityContext" . | nindent 12 }}
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

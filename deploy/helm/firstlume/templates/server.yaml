@@ -1,0 +1,189 @@
+{{- if .Values.controlPlane.enabled }}
+{{- $fullname := include "firstlume.fullname" . }}
+{{- $dbSecret := "" }}
+{{- $dbKey := "database-url" }}
+{{- if .Values.postgresql.enabled }}
+{{- $dbSecret = printf "%s-postgresql" $fullname }}
+{{- else if .Values.controlPlane.database.existingSecret }}
+{{- $dbSecret = .Values.controlPlane.database.existingSecret }}
+{{- $dbKey = .Values.controlPlane.database.existingSecretKey }}
+{{- else }}
+{{- $_ := required "controlPlane.database.url, controlPlane.database.existingSecret or postgresql.enabled is required" .Values.controlPlane.database.url }}
+{{- end }}
+{{- if not $dbSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $fullname }}-database
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+type: Opaque
+data:
+  database-url: {{ .Values.controlPlane.database.url | b64enc }}
+---
+{{- $dbSecret = printf "%s-database" $fullname }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.controlPlane.replicas }}
+  selector:
+    matchLabels:
+      {{- include "firstlume.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "firstlume.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+      {{- with .Values.controlPlane.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "firstlume.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: server
+          image: {{ include "firstlume.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["server"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: FIRSTLUME_LISTEN_ADDR
+              value: ":8080"
+            - name: FIRSTLUME_ORGANIZATION
+              value: {{ .Values.controlPlane.organization | quote }}
+            - name: FIRSTLUME_HEARTBEAT_TIMEOUT
+              value: {{ .Values.controlPlane.heartbeatTimeout | quote }}
+            - name: FIRSTLUME_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret }}
+                  key: {{ $dbKey }}
+            - name: FIRSTLUME_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "firstlume.controlPlaneSecret" . }}
+                  key: secret-key
+            - name: FIRSTLUME_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "firstlume.controlPlaneSecret" . }}
+                  key: admin-token
+            {{- if .Values.agent.enabled }}
+            # Registers the agent that ships in this release.
+            - name: FIRSTLUME_BOOTSTRAP_AGENT_NAME
+              value: {{ .Values.agent.name | quote }}
+            - name: FIRSTLUME_BOOTSTRAP_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "firstlume.controlPlaneSecret" . }}
+                  key: agent-token
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.controlPlane.resources | nindent 12 }}
+          securityContext:
+            {{- include "firstlume.containerSecurityContext" . | nindent 12 }}
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  type: {{ .Values.controlPlane.service.type }}
+  selector:
+    {{- include "firstlume.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: {{ .Values.controlPlane.service.port }}
+      targetPort: http
+{{- if gt (int .Values.controlPlane.replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "firstlume.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+{{- end }}
+{{- if .Values.controlPlane.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+  annotations:
+    # Log streaming uses Server-Sent Events; don't buffer or cut them short.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    {{- with .Values.controlPlane.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.controlPlane.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.controlPlane.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ required "controlPlane.ingress.host is required when the ingress is enabled" .Values.controlPlane.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  name: http
+{{- end }}
+{{- end }}

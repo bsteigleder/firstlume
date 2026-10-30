@@ -1,0 +1,7 @@
+apiVersion: v2
+name: firstlume
+description: Infrastructure-as-code automation platform (control plane and agent in one chart)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"

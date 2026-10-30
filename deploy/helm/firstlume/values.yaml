@@ -1,0 +1,120 @@
+# One chart, two components. Typical installs:
+#   everything in one cluster:  defaults (controlPlane + agent)
+#   extra agent elsewhere:      --set controlPlane.enabled=false --set agent.apiUrl=... --set agent.token=...
+
+image:
+  repository: ghcr.io/bsteigleder/firstlume
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+controlPlane:
+  enabled: true
+  replicas: 2
+  organization: default
+
+  # Secret with keys `secret-key`, `admin-token` and `agent-token`. When empty
+  # the chart generates one on first install and keeps it on upgrade/uninstall.
+  # Back up `secret-key`: without it, encrypted data in the database is lost.
+  existingSecret: ""
+
+  database:
+    # postgres://user:password@host:5432/db?sslmode=require
+    url: ""
+    # Or read the URL from an existing Secret.
+    existingSecret: ""
+    existingSecretKey: database-url
+
+  # Runs whose executor stops sending heartbeats for this long are failed.
+  heartbeatTimeout: 10m
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: ""
+    tls: []
+    #  - secretName: firstlume-tls
+    #    hosts: [firstlume.example.com]
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+agent:
+  enabled: true
+  # Distinguishes Jobs of agents that share a namespace.
+  name: default
+  # URL the agent uses to reach the control plane. Empty = the service in this release.
+  apiUrl: ""
+  # URL executor pods use to reach the control plane. Empty = apiUrl.
+  executorApiUrl: ""
+  # Agent token, only needed when controlPlane.enabled=false
+  # (create one with POST /api/v1/agents).
+  token: ""
+  # Or read it from an existing Secret with key `agent-token`.
+  existingSecret: ""
+
+  # Maximum executors running at the same time.
+  concurrency: 4
+  pollInterval: 5s
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  executor:
+    # Namespace where run Jobs are created. Empty = release namespace.
+    namespace: ""
+    image:
+      # Empty = same image as above.
+      repository: ""
+      tag: ""
+    serviceAccount:
+      create: true
+      # Empty = <release>-executor.
+      name: ""
+      # Use this to give runs cloud credentials without static keys, e.g.
+      #   eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/firstlume-runs
+      #   iam.gke.io/gcp-service-account: runs@project.iam.gserviceaccount.com
+      annotations: {}
+    automountServiceAccountToken: false
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 2Gi
+    # Hard limit for one phase (plan or apply).
+    activeDeadline: 2h
+    # Finished Jobs (and their logs) are kept this long.
+    ttlAfterFinished: 1h
+
+# Single-instance Postgres for trying the chart out. NOT for production:
+# no backups, no high availability. Use a managed database instead.
+postgresql:
+  enabled: false
+  image: postgres:17-alpine
+  persistence:
+    size: 8Gi
+    storageClass: ""

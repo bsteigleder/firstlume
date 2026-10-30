@@ -1,0 +1,21 @@
+# Local development database. Start with: make dev-db
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: firstlume
+      POSTGRES_PASSWORD: firstlume
+      POSTGRES_DB: firstlume
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/dev/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U firstlume"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:

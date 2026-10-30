@@ -1,0 +1,25 @@
+Firstlume {{ .Chart.AppVersion }} installed.
+{{- if .Values.controlPlane.enabled }}
+
+Control plane: {{ include "firstlume.apiUrl" . }}
+{{- if .Values.controlPlane.ingress.enabled }}
+Ingress:       https://{{ .Values.controlPlane.ingress.host }}
+{{- end }}
+
+Admin API token:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "firstlume.controlPlaneSecret" . }} -o jsonpath='{.data.admin-token}' | base64 -d
+
+IMPORTANT: back up the `secret-key` in that Secret. Without it, encrypted data
+in the database (variables, git tokens, plans) cannot be recovered. The Secret
+is kept when the release is uninstalled.
+{{- if .Values.postgresql.enabled }}
+
+WARNING: postgresql.enabled=true runs a single-instance database without
+backups. Use a managed Postgres for anything you care about.
+{{- end }}
+{{- end }}
+{{- if .Values.agent.enabled }}
+
+Agent "{{ .Values.agent.name }}" creates run Jobs in namespace {{ include "firstlume.executorNamespace" . }}
+using service account {{ include "firstlume.executorServiceAccount" . }}.
+{{- end }}
