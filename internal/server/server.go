@@ -155,7 +155,7 @@ func (s *Server) requestLogger(next http.Handler) http.Handler {
 		case r.URL.Path == "/healthz" || r.URL.Path == "/readyz":
 			return
 		case r.URL.Path == "/agent/v1/claim" && ww.Status() == http.StatusNoContent,
-			r.URL.Path == "/exec/v1/logs", r.URL.Path == "/exec/v1/heartbeat",
+			r.URL.Path == "/exec/v1/logs", r.URL.Path == "/exec/v1/heartbeat", r.URL.Path == "/exec/v1/steps",
 			r.Method == http.MethodGet && ww.Status() < http.StatusBadRequest:
 			// Polling (agents, the UI) and streaming traffic would drown everything else.
 			level = slog.LevelDebug

@@ -59,7 +59,7 @@ make run-agent     # outro terminal: agent com driver local (sem Kubernetes)
 
 O driver `local` roda o executor como subprocesso, sem isolamento. Use só para desenvolvimento.
 
-`deploy/dev/demo.sh` cria uma pasta e um stack de exemplo (`examples/hello` deste repositório) e dispara um apply. A UI está sendo refeita para o novo modelo de organizações, pastas e stacks (spec 0001); até lá, use a API.
+Abra http://127.0.0.1:8787 e entre com o `FIRSTLUME_ADMIN_TOKEN` do `.env`. `deploy/dev/demo.sh` cria uma pasta e um stack de exemplo (`examples/hello` deste repositório) e dispara um apply.
 
 Para mexer na UI com hot reload, rode `make web-dev` (Vite em http://localhost:5173, com proxy para a API em 8787).
 
