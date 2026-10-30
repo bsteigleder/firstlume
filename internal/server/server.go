@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -24,6 +25,8 @@ type Config struct {
 	RunTokenTTL      time.Duration
 	HeartbeatTimeout time.Duration
 	LogPollInterval  time.Duration
+	// UI is the built web UI served at /. Nil serves only the APIs.
+	UI fs.FS
 }
 
 type Server struct {
@@ -71,6 +74,9 @@ func (s *Server) Handler() http.Handler {
 		r.Use(s.requireRunToken)
 		s.execRoutes(r)
 	})
+	if s.cfg.UI != nil {
+		r.Handle("/*", uiHandler(s.cfg.UI))
+	}
 	return r
 }
 
@@ -82,6 +88,7 @@ func (s *Server) Run(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go s.sweepStaleRuns(ctx)
+	go s.scheduleDriftRuns(ctx)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -119,6 +126,26 @@ func (s *Server) sweepStaleRuns(ctx context.Context) {
 	}
 }
 
+// scheduleDriftRuns queues due drift checks. Every replica runs it; the query
+// skips environments another replica is already scheduling.
+func (s *Server) scheduleDriftRuns(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			n, err := s.store.ScheduleDriftRuns(ctx)
+			if err != nil {
+				s.log.Error("scheduling drift runs", "err", err)
+			} else if n > 0 {
+				s.log.Info("queued drift runs", "count", n)
+			}
+		}
+	}
+}
+
 func (s *Server) requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
@@ -129,8 +156,9 @@ func (s *Server) requestLogger(next http.Handler) http.Handler {
 		case r.URL.Path == "/healthz" || r.URL.Path == "/readyz":
 			return
 		case r.URL.Path == "/agent/v1/claim" && ww.Status() == http.StatusNoContent,
-			r.URL.Path == "/exec/v1/logs", r.URL.Path == "/exec/v1/heartbeat":
-			// Polling and streaming traffic would drown everything else.
+			r.URL.Path == "/exec/v1/logs", r.URL.Path == "/exec/v1/heartbeat",
+			r.Method == http.MethodGet && ww.Status() < http.StatusBadRequest:
+			// Polling (agents, the UI) and streaming traffic would drown everything else.
 			level = slog.LevelDebug
 		}
 		s.log.Log(r.Context(), level, "http request", "method", r.Method, "path", r.URL.Path, "status", ww.Status(),

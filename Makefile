@@ -12,10 +12,22 @@ TEST_DATABASE_URL := postgres://firstlume:firstlume@localhost:5432/firstlume_tes
 -include .env
 export
 
-.PHONY: build test test-integration vet dev-db dev-env run-server run-agent helm-lint docker-build clean
+.PHONY: build web web-dev test test-integration vet dev-db dev-env run-server run-agent helm-lint docker-build clean
 
-build:
+build: web
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/firstlume
+
+## Builds the UI into web/dist, which the binary embeds.
+web: web/node_modules
+	cd web && npm run build
+
+web/node_modules: web/package.json web/package-lock.json
+	cd web && npm ci
+	@touch $@
+
+## UI with hot reload on http://localhost:5173, proxying the API to `make run-server`.
+web-dev: web/node_modules
+	cd web && npm run dev
 
 test:
 	go test -race ./...
@@ -51,4 +63,5 @@ docker-build:
 	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE) .
 
 clean:
-	rm -rf bin
+	rm -rf bin web/node_modules
+	find web/dist -mindepth 1 ! -name .gitkeep -delete

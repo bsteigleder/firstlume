@@ -9,10 +9,18 @@ const (
 	RunPlan    RunType = "plan"
 	RunApply   RunType = "apply"
 	RunDestroy RunType = "destroy"
+	// RunDrift is a plan that only reports whether the real infrastructure still
+	// matches the code. It never applies and never waits for approval.
+	RunDrift RunType = "drift"
 )
 
 func (t RunType) Valid() bool {
-	return t == RunPlan || t == RunApply || t == RunDestroy
+	return t == RunPlan || t == RunApply || t == RunDestroy || t == RunDrift
+}
+
+// Applies reports whether runs of this type go on to an apply phase.
+func (t RunType) Applies() bool {
+	return t == RunApply || t == RunDestroy
 }
 
 type Phase string
@@ -33,6 +41,7 @@ const (
 
 	StatusPlanned   RunStatus = "planned"
 	StatusNoChanges RunStatus = "no_changes"
+	StatusDrifted   RunStatus = "drifted"
 	StatusApplied   RunStatus = "applied"
 	StatusFailed    RunStatus = "failed"
 	StatusDiscarded RunStatus = "discarded"
@@ -42,7 +51,7 @@ const (
 // IsTerminal reports whether no further transitions can happen.
 func (s RunStatus) IsTerminal() bool {
 	switch s {
-	case StatusPlanned, StatusNoChanges, StatusApplied, StatusFailed, StatusDiscarded, StatusCanceled:
+	case StatusPlanned, StatusNoChanges, StatusDrifted, StatusApplied, StatusFailed, StatusDiscarded, StatusCanceled:
 		return true
 	}
 	return false
@@ -64,6 +73,8 @@ func StatusAfterPlan(t RunType, hasChanges, autoApprove bool) RunStatus {
 	switch {
 	case !hasChanges:
 		return StatusNoChanges
+	case t == RunDrift:
+		return StatusDrifted
 	case t == RunPlan:
 		return StatusPlanned
 	case autoApprove:
@@ -99,20 +110,59 @@ type CreateTemplateRequest struct {
 }
 
 type Environment struct {
-	ID          string    `json:"id"`
-	TemplateID  string    `json:"template_id"`
-	Name        string    `json:"name"`
-	Ref         string    `json:"ref,omitempty"`
-	AutoApprove bool      `json:"auto_approve"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	TemplateID  string `json:"template_id"`
+	Name        string `json:"name"`
+	Ref         string `json:"ref,omitempty"`
+	AutoApprove bool   `json:"auto_approve"`
+	// DriftIntervalMinutes schedules a drift check this often; 0 disables it.
+	DriftIntervalMinutes int       `json:"drift_interval_minutes"`
+	Drift                *Drift    `json:"drift,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
+
+type DriftStatus string
+
+const (
+	DriftInSync  DriftStatus = "in_sync"
+	DriftDrifted DriftStatus = "drifted"
+	DriftError   DriftStatus = "error"
+)
+
+// Drift is the outcome of an environment's latest finished drift run.
+type Drift struct {
+	Status    DriftStatus `json:"status"`
+	RunID     string      `json:"run_id,omitempty"`
+	CheckedAt time.Time   `json:"checked_at"`
+}
+
+// DriftActor is recorded as the creator of scheduled drift runs.
+const DriftActor = "drift-detection"
+
+// Drift detection intervals accepted by the API (15 minutes to 7 days).
+const (
+	MinDriftIntervalMinutes = 15
+	MaxDriftIntervalMinutes = 7 * 24 * 60
+)
 
 type CreateEnvironmentRequest struct {
 	TemplateID  string `json:"template_id"`
 	Name        string `json:"name"`
 	Ref         string `json:"ref"`
 	AutoApprove bool   `json:"auto_approve"`
+}
+
+// UpdateEnvironmentRequest changes only the fields that are set.
+type UpdateEnvironmentRequest struct {
+	Name *string `json:"name,omitempty"`
+	// Ref overrides the template's default ref; an empty string clears it.
+	Ref *string `json:"ref,omitempty"`
+	// AutoApprove applies after a successful plan without waiting for approval.
+	// It is read when a plan finishes, so it also affects runs already queued.
+	AutoApprove *bool `json:"auto_approve,omitempty"`
+	// DriftIntervalMinutes enables scheduled drift detection; 0 disables it.
+	DriftIntervalMinutes *int `json:"drift_interval_minutes,omitempty"`
 }
 
 type VariableCategory string

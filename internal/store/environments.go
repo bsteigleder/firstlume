@@ -2,21 +2,32 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/bsteigleder/firstlume/internal/api"
 )
 
-const environmentColumns = `id, template_id, name, ref, auto_approve, created_at, updated_at`
+const environmentColumns = `id, template_id, name, ref, auto_approve,
+	drift_interval_minutes, drift_status, drift_run_id, drift_checked_at, created_at, updated_at`
 
 func scanEnvironment(row pgx.Row) (*api.Environment, error) {
 	var e api.Environment
-	var ref *string
-	if err := row.Scan(&e.ID, &e.TemplateID, &e.Name, &ref, &e.AutoApprove, &e.CreatedAt, &e.UpdatedAt); err != nil {
+	var ref, driftStatus, driftRun *string
+	var driftInterval *int
+	var driftChecked *time.Time
+	if err := row.Scan(&e.ID, &e.TemplateID, &e.Name, &ref, &e.AutoApprove,
+		&driftInterval, &driftStatus, &driftRun, &driftChecked, &e.CreatedAt, &e.UpdatedAt); err != nil {
 		return nil, notFound(err)
 	}
 	e.Ref = deref(ref)
+	if driftInterval != nil {
+		e.DriftIntervalMinutes = *driftInterval
+	}
+	if driftStatus != nil && driftChecked != nil {
+		e.Drift = &api.Drift{Status: api.DriftStatus(*driftStatus), RunID: deref(driftRun), CheckedAt: *driftChecked}
+	}
 	return &e, nil
 }
 
@@ -29,6 +40,26 @@ func (s *Store) CreateEnvironment(ctx context.Context, orgID string, req api.Cre
 		orgID, req.TemplateID, req.Name, nullable(req.Ref), req.AutoApprove))
 	if err == ErrNotFound {
 		return nil, ErrInvalid
+	}
+	return e, classify(err)
+}
+
+// UpdateEnvironment changes the fields set in req.
+func (s *Store) UpdateEnvironment(ctx context.Context, orgID, id string, req api.UpdateEnvironmentRequest) (*api.Environment, error) {
+	e, err := scanEnvironment(s.pool.QueryRow(ctx, `
+		UPDATE environments SET
+			name = coalesce($3, name),
+			ref = CASE WHEN $4::text IS NULL THEN ref ELSE nullif($4, '') END,
+			auto_approve = coalesce($5, auto_approve),
+			drift_interval_minutes = CASE WHEN $6::int IS NULL THEN drift_interval_minutes ELSE nullif($6, 0) END,
+			-- A new interval starts counting now; enabling it checks right away.
+			drift_scheduled_at = CASE WHEN $6::int IS NULL THEN drift_scheduled_at ELSE NULL END,
+			updated_at = now()
+		WHERE organization_id = $1 AND id = $2
+		RETURNING `+environmentColumns,
+		orgID, id, req.Name, req.Ref, req.AutoApprove, req.DriftIntervalMinutes))
+	if err == ErrNotFound {
+		return nil, err
 	}
 	return e, classify(err)
 }

@@ -174,9 +174,13 @@ func (e *executor) plan(ctx context.Context, r *runner, planPath string) (api.Co
 		if res.PlanSummary, err = SummarizePlan(raw); err != nil {
 			return api.CompleteRequest{}, fmt.Errorf("parsing plan: %w", err)
 		}
-		fmt.Fprintf(e.out, "==> Plan: %d to add, %d to change, %d to destroy\n",
-			res.PlanSummary.Add, res.PlanSummary.Change, res.PlanSummary.Destroy)
-		if e.spec.Type != api.RunPlan {
+		label := "Plan"
+		if e.spec.Type == api.RunDrift {
+			label = "Drift detected"
+		}
+		fmt.Fprintf(e.out, "==> %s: %d to add, %d to change, %d to destroy\n",
+			label, res.PlanSummary.Add, res.PlanSummary.Change, res.PlanSummary.Destroy)
+		if e.spec.Type.Applies() {
 			data, err := os.ReadFile(planPath)
 			if err != nil {
 				return api.CompleteRequest{}, err
@@ -186,7 +190,11 @@ func (e *executor) plan(ctx context.Context, r *runner, planPath string) (api.Co
 			}
 		}
 	} else {
-		fmt.Fprintln(e.out, "==> No changes")
+		if e.spec.Type == api.RunDrift {
+			fmt.Fprintln(e.out, "==> No drift: the infrastructure matches the code")
+		} else {
+			fmt.Fprintln(e.out, "==> No changes")
+		}
 	}
 	return res, nil
 }

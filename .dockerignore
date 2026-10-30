@@ -3,3 +3,5 @@ bin
 deploy/helm
 *.md
 .env
+web/node_modules
+web/dist

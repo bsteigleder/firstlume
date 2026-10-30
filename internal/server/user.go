@@ -21,6 +21,7 @@ func (s *Server) userRoutes(r chi.Router) {
 	r.Get("/environments", s.listEnvironments)
 	r.Post("/environments", s.createEnvironment)
 	r.With(s.requireID).Get("/environments/{id}", s.getEnvironment)
+	r.With(s.requireID).Patch("/environments/{id}", s.updateEnvironment)
 	r.With(s.requireID).Delete("/environments/{id}", s.deleteEnvironment)
 	r.With(s.requireID).Get("/environments/{id}/variables", s.listVariables)
 	r.With(s.requireID).Put("/environments/{id}/variables", s.putVariables)
@@ -139,6 +140,35 @@ func (s *Server) getEnvironment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, e)
 }
 
+func (s *Server) updateEnvironment(w http.ResponseWriter, r *http.Request) {
+	var req api.UpdateEnvironmentRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Name != nil {
+		if err := validateName("name", *req.Name); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+	}
+	if req.Ref != nil && *req.Ref != "" {
+		if err := validateRef(*req.Ref); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+	}
+	if m := req.DriftIntervalMinutes; m != nil && *m != 0 && (*m < api.MinDriftIntervalMinutes || *m > api.MaxDriftIntervalMinutes) {
+		writeError(w, http.StatusUnprocessableEntity, "drift_interval_minutes must be 0 (off) or between 15 and 10080")
+		return
+	}
+	e, err := s.store.UpdateEnvironment(r.Context(), s.cfg.OrganizationID, id(r), req)
+	if err != nil {
+		s.storeError(w, r, err, "environment")
+		return
+	}
+	writeJSON(w, http.StatusOK, e)
+}
+
 func (s *Server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteEnvironment(r.Context(), s.cfg.OrganizationID, id(r)); err != nil {
 		s.storeError(w, r, err, "environment")
@@ -195,7 +225,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !req.Type.Valid() {
-		writeError(w, http.StatusUnprocessableEntity, "type must be plan, apply or destroy")
+		writeError(w, http.StatusUnprocessableEntity, "type must be plan, apply, destroy or drift")
 		return
 	}
 	if req.Ref != "" {

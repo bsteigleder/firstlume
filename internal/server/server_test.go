@@ -272,6 +272,110 @@ func TestAutoApproveAndFailure(t *testing.T) {
 	}
 }
 
+func TestToggleApproval(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	env := h.environment(true)
+
+	off := false
+	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{AutoApprove: &off}, http.StatusOK, &env)
+	if env.AutoApprove || env.Name == "" {
+		t.Fatalf("unexpected environment after update %+v", env)
+	}
+	var run api.Run
+	h.call("POST", "/api/v1/environments/"+env.ID+"/runs", api.CreateRunRequest{Type: api.RunApply}, http.StatusCreated, &run)
+	done, err := apiclient.New(h.url, h.claim().Token).Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
+	must(t, err)
+	if done.Status != api.StatusAwaitingApproval {
+		t.Fatalf("approval required: got %s", done.Status)
+	}
+
+	// Only the fields that are sent change; an empty ref clears the override.
+	ref, bad := "release", "../x"
+	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{Ref: &ref}, http.StatusOK, &env)
+	if env.Ref != "release" || env.AutoApprove {
+		t.Fatalf("unexpected environment %+v", env)
+	}
+	empty := ""
+	var cleared api.Environment // fresh: an empty ref is omitted from the response
+	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{Ref: &empty}, http.StatusOK, &cleared)
+	if cleared.Ref != "" || cleared.Name != env.Name {
+		t.Fatalf("ref not cleared: %+v", cleared)
+	}
+	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{Ref: &bad}, http.StatusUnprocessableEntity, nil)
+	h.call("PATCH", "/api/v1/environments/00000000-0000-0000-0000-000000000000", api.UpdateEnvironmentRequest{AutoApprove: &off}, http.StatusNotFound, nil)
+}
+
+func TestDriftDetection(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	env := h.environment(true) // auto-apply must not make a drift run apply
+
+	bad := 5
+	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{DriftIntervalMinutes: &bad}, http.StatusUnprocessableEntity, nil)
+	every := 60
+	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{DriftIntervalMinutes: &every}, http.StatusOK, &env)
+	if env.DriftIntervalMinutes != 60 || env.Drift != nil {
+		t.Fatalf("unexpected environment %+v", env)
+	}
+
+	// Enabling it makes the first check due right away, and only once.
+	n, err := h.store.ScheduleDriftRuns(ctx)
+	must(t, err)
+	if n < 1 {
+		t.Fatalf("expected a drift run to be scheduled, got %d", n)
+	}
+	var runs []api.Run
+	h.call("GET", "/api/v1/environments/"+env.ID+"/runs", nil, http.StatusOK, &runs)
+	if len(runs) != 1 || runs[0].Type != api.RunDrift || runs[0].CreatedBy != api.DriftActor {
+		t.Fatalf("unexpected runs %+v", runs)
+	}
+	if _, err := h.store.ScheduleDriftRuns(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.call("GET", "/api/v1/environments/"+env.ID+"/runs", nil, http.StatusOK, &runs)
+	if len(runs) != 1 {
+		t.Fatalf("drift run scheduled twice: %d runs", len(runs))
+	}
+
+	// The plan finds changes: the run ends as drifted and nothing is applied.
+	asg := h.claim()
+	if asg.RunID != runs[0].ID || asg.Phase != api.PhasePlan {
+		t.Fatalf("unexpected assignment %+v", asg)
+	}
+	summary := &api.PlanSummary{Change: 1}
+	done, err := apiclient.New(h.url, asg.Token).Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true, PlanSummary: summary})
+	must(t, err)
+	if done.Status != api.StatusDrifted {
+		t.Fatalf("status = %s, want drifted", done.Status)
+	}
+	if a := h.claim(); a != nil && a.RunID == done.ID {
+		t.Fatal("a drift run must never reach the apply phase")
+	}
+	h.call("GET", "/api/v1/environments/"+env.ID, nil, http.StatusOK, &env)
+	if env.Drift == nil || env.Drift.Status != api.DriftDrifted || env.Drift.RunID != done.ID {
+		t.Fatalf("unexpected drift %+v", env.Drift)
+	}
+
+	// A manual check that finds nothing marks the environment in sync.
+	var manual api.Run
+	h.call("POST", "/api/v1/environments/"+env.ID+"/runs", api.CreateRunRequest{Type: api.RunDrift}, http.StatusCreated, &manual)
+	_, err = apiclient.New(h.url, h.claim().Token).Complete(ctx, api.CompleteRequest{Success: true})
+	must(t, err)
+	var synced api.Environment
+	h.call("GET", "/api/v1/environments/"+env.ID, nil, http.StatusOK, &synced)
+	if synced.Drift == nil || synced.Drift.Status != api.DriftInSync || synced.Drift.RunID != manual.ID {
+		t.Fatalf("unexpected drift %+v", synced.Drift)
+	}
+
+	// Disabling it stops scheduling.
+	off := 0
+	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{DriftIntervalMinutes: &off}, http.StatusOK, &synced)
+	if synced.DriftIntervalMinutes != 0 || synced.Drift == nil {
+		t.Fatalf("unexpected environment %+v", synced)
+	}
+}
+
 func TestNoChangesAndCancel(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

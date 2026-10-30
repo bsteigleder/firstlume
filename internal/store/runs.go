@@ -47,6 +47,30 @@ func (s *Store) CreateRun(ctx context.Context, orgID, envID string, typ api.RunT
 		orgID, envID, typ, ref, createdBy))
 }
 
+// ScheduleDriftRuns queues a drift run for every environment whose drift check
+// is due and that has no run in progress (a busy one is retried next time).
+// It is safe to call from several server replicas at once.
+func (s *Store) ScheduleDriftRuns(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		WITH due AS (
+			SELECT e.id FROM environments e
+			WHERE e.drift_interval_minutes IS NOT NULL
+			  AND coalesce(e.drift_scheduled_at, '-infinity') <= now() - make_interval(mins => e.drift_interval_minutes)
+			  AND NOT EXISTS (
+			      SELECT 1 FROM runs r WHERE r.environment_id = e.id
+			        AND r.status IN ('queued', 'planning', 'awaiting_approval', 'apply_queued', 'applying'))
+			FOR UPDATE OF e SKIP LOCKED
+		), marked AS (
+			UPDATE environments e SET drift_scheduled_at = now()
+			FROM due WHERE e.id = due.id
+			RETURNING e.id, e.organization_id, e.ref, e.template_id
+		)
+		INSERT INTO runs (organization_id, environment_id, type, status, ref, created_by)
+		SELECT m.organization_id, m.id, 'drift', 'queued', coalesce(m.ref, t.default_ref), $1
+		FROM marked m JOIN templates t ON t.id = m.template_id`, api.DriftActor)
+	return tag.RowsAffected(), err
+}
+
 func (s *Store) GetRun(ctx context.Context, orgID, id string) (*api.Run, error) {
 	return scanRun(s.pool.QueryRow(ctx,
 		`SELECT `+runColumns+` FROM runs r WHERE r.organization_id = $1 AND r.id = $2`, orgID, id))

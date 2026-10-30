@@ -33,6 +33,7 @@ import (
 	"github.com/bsteigleder/firstlume/internal/secrets"
 	"github.com/bsteigleder/firstlume/internal/server"
 	"github.com/bsteigleder/firstlume/internal/store"
+	"github.com/bsteigleder/firstlume/web"
 )
 
 var version = "dev"
@@ -133,6 +134,7 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 		OrganizationID:   orgID,
 		AdminToken:       adminToken,
 		HeartbeatTimeout: heartbeat,
+		UI:               web.FS(),
 	}, st, keys, log)
 	return srv.Run(ctx)
 }

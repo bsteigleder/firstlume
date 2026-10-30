@@ -17,6 +17,9 @@ func TestStatusAfterPlan(t *testing.T) {
 		{RunApply, true, true, StatusApplyQueued},
 		{RunDestroy, true, false, StatusAwaitingApproval},
 		{RunDestroy, true, true, StatusApplyQueued},
+		{RunDrift, false, false, StatusNoChanges},
+		{RunDrift, true, false, StatusDrifted},
+		{RunDrift, true, true, StatusDrifted}, // drift never applies, even with auto-approve
 	}
 	for _, c := range cases {
 		if got := StatusAfterPlan(c.typ, c.changes, c.autoApprove); got != c.want {
@@ -31,7 +34,7 @@ func TestTerminalStatuses(t *testing.T) {
 			t.Errorf("%s should not be terminal", s)
 		}
 	}
-	for _, s := range []RunStatus{StatusPlanned, StatusNoChanges, StatusApplied, StatusFailed, StatusDiscarded, StatusCanceled} {
+	for _, s := range []RunStatus{StatusPlanned, StatusNoChanges, StatusDrifted, StatusApplied, StatusFailed, StatusDiscarded, StatusCanceled} {
 		if !s.IsTerminal() {
 			t.Errorf("%s should be terminal", s)
 		}

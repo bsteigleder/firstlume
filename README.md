@@ -2,14 +2,14 @@
 
 Plataforma de automação de Infraestrutura como Código (Terraform, OpenTofu e Terragrunt), no estilo do env0, instalável via Helm em qualquer cluster Kubernetes.
 
-> **Status: fase 1 (MVP).** Já existem os runs de plan/apply com logs e aprovação, o agent que cria Jobs no Kubernetes e o chart Helm. Ainda não existem o state backend próprio, a integração com GitHub, o drift detection e a UI. Veja o [roadmap](#roadmap).
+> **Status: fase 1 (MVP).** Já existem os runs de plan/apply com logs e aprovação configurável, drift detection agendado, uma UI web, o agent que cria Jobs no Kubernetes e o chart Helm. Ainda não existem o state backend próprio, usuários e a integração com Git. Veja o [roadmap](#roadmap).
 
 ## Arquitetura
 
 ```
              ┌──────────────────────────────┐      ┌──────────┐
-  usuário ──▶│ server (API)                 │◀────▶│ Postgres │
-  (API/CLI)  │  /api/v1   usuários (admin)  │      └──────────┘
+  usuário ──▶│ server (API + UI)            │◀────▶│ Postgres │
+  (UI/API)   │  /api/v1   usuários (admin)  │      └──────────┘
              │  /agent/v1 agents            │
              │  /exec/v1  executores        │
              └──────▲───────────────▲───────┘
@@ -19,7 +19,7 @@ Plataforma de automação de Infraestrutura como Código (Terraform, OpenTofu e 
              └──────────────┘          └─ firstlume exec
 ```
 
-- **Um binário, uma imagem.** `firstlume server | agent | exec | migrate | keygen`.
+- **Um binário, uma imagem.** `firstlume server | agent | exec | migrate | keygen`. A UI (React, em `web/`) é embutida no binário e servida pelo server no mesmo endereço da API.
 - **O agent busca o trabalho (modelo pull).** Ele só faz requisições de saída, então pode rodar em outro cluster ou na rede do cliente sem que a API precise alcançá-lo.
 - **Cada fase de um run roda num Job efêmero.** O pod é endurecido: não roda como root, tem rootfs somente leitura, não pode escalar privilégios e o Job nunca é retentado. As credenciais de nuvem vêm da identidade do pod (IRSA, Workload Identity), via anotações no ServiceAccount do executor.
 - **O lock é por ambiente.** Só um run por vez executa ou aguarda aprovação em cada ambiente. Os demais esperam na fila, em ordem de chegada.
@@ -33,26 +33,37 @@ queued ─▶ planning ─┬─▶ no_changes                       (sem mudan�
                     ├─▶ planned                          (type=plan)
                     ├─▶ awaiting_approval ─┬─▶ apply_queued ─▶ applying ─▶ applied
                     │                      └─▶ discarded
-                    └─▶ apply_queued                     (auto_approve)
+                    ├─▶ apply_queued                     (auto_approve)
+                    └─▶ drifted                          (type=drift)
 qualquer fase em execução ─▶ failed  |  queued/apply_queued ─▶ canceled
 ```
+
+A aprovação é configurável por ambiente, na UI ou com `PATCH /api/v1/environments/{id}` (`auto_approve`). O padrão é exigir aprovação.
+
+### Drift detection
+
+Cada ambiente pode ter um intervalo de verificação (`drift_interval_minutes`, de 15 min a 7 dias). O server cria um run `drift` quando a verificação vence e o ambiente está livre. Esse run é um `plan` que **só reporta**: nunca aplica, não pede aprovação e não guarda o arquivo de plano. O resultado (`in_sync`, `drifted` ou `error`) fica no ambiente e aparece na UI. Também dá para verificar na hora, com um run do tipo `drift`. Mudanças na branch que ainda não foram aplicadas também aparecem como drift.
 
 Se o executor parar de enviar heartbeat por `FIRSTLUME_HEARTBEAT_TIMEOUT` (10 min por padrão), o run é marcado como `failed`. Se o pod morrer (por exemplo, por OOM ou deadline), o agent reporta a falha.
 
 ## Rodando localmente
 
-Requisitos: Go 1.26+, Docker e git.
+Requisitos: Go 1.26+, Node 22+, Docker e git.
 
 ```bash
 make dev-db        # Postgres em Docker
 make dev-env       # gera .env com chave mestra e tokens
-make run-server    # API em 127.0.0.1:8787
+make run-server    # UI e API em http://127.0.0.1:8787 (compila a UI antes)
 make run-agent     # outro terminal: agent com driver local (sem Kubernetes)
 ```
 
 O driver `local` roda o executor como subprocesso, sem isolamento. Use só para desenvolvimento.
 
-Exemplo de um fluxo completo, com o token admin que está em `.env`:
+Abra http://127.0.0.1:8787 e entre com o `FIRSTLUME_ADMIN_TOKEN` do `.env`. `deploy/dev/demo.sh` cria um template e um ambiente de exemplo e dispara um apply.
+
+Para mexer na UI com hot reload, rode `make web-dev` (Vite em http://localhost:5173, com proxy para a API em 8787).
+
+O mesmo fluxo pela API, com o token admin que está em `.env`:
 
 ```bash
 source .env
@@ -128,6 +139,7 @@ internal/store/       Postgres (pgx) e criptografia de segredos
 internal/agent/       loop de claim e drivers (kubernetes, local)
 internal/executor/    clone, instalação de ferramentas, init/plan/apply, logs mascarados
 internal/secrets/     AES-GCM, tokens de run assinados (HMAC)
+web/                  UI (React + TypeScript + Vite), embutida no binário
 migrations/           schema SQL (goose, aplicado no startup com advisory lock)
 deploy/helm/          chart único (controlPlane + agent)
 deploy/docker/        Dockerfile
@@ -135,19 +147,24 @@ deploy/docker/        Dockerfile
 
 ## Limitações conhecidas (fase 1)
 
-- **Ainda não há state backend.** Os templates precisam declarar um backend remoto próprio, como S3 ou GCS. Com o backend local, o state se perde ao fim de cada pod.
-- **Autenticação só por token admin.** Usuários, SSO e RBAC entram depois.
+- **Ainda não há state backend.** Os templates precisam declarar um backend remoto próprio, como S3 ou GCS. Com o backend local, o state se perde ao fim de cada pod, e o drift detection sempre reporta `drifted`.
+- **Autenticação só por token admin.** Usuários, grupos, SSO e aprovadores por pessoa ou grupo entram depois.
 - **Cancelar um run em execução não é suportado**, de propósito: interromper um apply pode corromper o state.
 - **As ferramentas são baixadas a cada run** (releases oficiais, com checksum SHA256 verificado). O executor precisa de acesso de saída à internet, ou de um mirror (ainda não configurável).
 - **Licença do Terraform:** as versões 1.6 em diante são BSL. Para oferecer a plataforma comercialmente, use `engine: opentofu` ou Terraform ≤ 1.5.7.
 
 ## Roadmap
 
-1. ✅ Runs de plan/apply, logs, aprovação, agent com Kubernetes e chart Helm
-2. State backend HTTP próprio, com lock e versionamento
-3. GitHub App: plan automático em PR, comentário e apply no merge
-4. Drift detection agendado
-5. UI web, usuários e SSO/RBAC, credenciais OIDC, políticas OPA, custos
+1. ✅ Runs de plan/apply, logs, aprovação configurável, drift detection agendado (só reporta), UI web, agent com Kubernetes e chart Helm
+2. State backend HTTP próprio, por unit, com lock, versões, criptografia e importação de state existente. Modo "só state" para quem continua usando o CI atual
+3. Terragrunt nativo: descoberta de units, grafo de dependências, um run por unit e agents com labels por rede/zona
+4. Segredos vindos do Vault (JWT emitido pelo Firstlume por run, Kubernetes auth ou AppRole), sem o Firstlume virar um segundo cofre; variáveis do tipo arquivo
+5. Usuários, grupos e SSO; aprovadores por pessoa ou grupo; trilha de auditoria
+6. Integração Git (Gitea/Forgejo, GitHub, GitLab): plan em PR, commit status, apply no merge e gatilho por impacto
+7. Observabilidade: export via OpenTelemetry (métricas, eventos, logs e traces) e notificações (webhook, Slack, Rocket.Chat)
+8. Hooks por fase, tarefas agendadas, políticas (OPA), backup/restore e alta disponibilidade
+
+Para pensar no futuro: custos (estimativa no plan e acompanhamento por ambiente).
 
 ## Licença
 
