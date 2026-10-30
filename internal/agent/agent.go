@@ -52,7 +52,7 @@ func New(cfg Config, client *apiclient.Client, driver Driver, log *slog.Logger) 
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	a.log.Info("agent started", "concurrency", a.cfg.Concurrency, "poll_interval", a.cfg.PollInterval)
+	a.log.Info("agent started", "concurrency", a.cfg.Concurrency, "poll_interval", a.cfg.PollInterval.String())
 	for {
 		claimed := a.tick(ctx)
 		if ctx.Err() != nil {

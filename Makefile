@@ -40,7 +40,7 @@ run-server: build
 
 ## Runs the agent with the local driver (executors as subprocesses, no Kubernetes needed).
 run-agent: build
-	FIRSTLUME_API_URL=http://$(DEV_ADDR) FIRSTLUME_AGENT_TOKEN=$(FIRSTLUME_BOOTSTRAP_AGENT_TOKEN) \
+	@FIRSTLUME_API_URL=http://$(DEV_ADDR) FIRSTLUME_AGENT_TOKEN=$(FIRSTLUME_BOOTSTRAP_AGENT_TOKEN) \
 	FIRSTLUME_DRIVER=local $(BIN) agent
 
 helm-lint:

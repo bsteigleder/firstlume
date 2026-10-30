@@ -124,11 +124,17 @@ func (s *Server) requestLogger(next http.Handler) http.Handler {
 		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		start := time.Now()
 		next.ServeHTTP(ww, r)
-		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+		level := slog.LevelInfo
+		switch {
+		case r.URL.Path == "/healthz" || r.URL.Path == "/readyz":
 			return
+		case r.URL.Path == "/agent/v1/claim" && ww.Status() == http.StatusNoContent,
+			r.URL.Path == "/exec/v1/logs", r.URL.Path == "/exec/v1/heartbeat":
+			// Polling and streaming traffic would drown everything else.
+			level = slog.LevelDebug
 		}
-		s.log.Info("http request", "method", r.Method, "path", r.URL.Path, "status", ww.Status(),
-			"duration", time.Since(start).Round(time.Millisecond), "request_id", middleware.GetReqID(r.Context()))
+		s.log.Log(r.Context(), level, "http request", "method", r.Method, "path", r.URL.Path, "status", ww.Status(),
+			"duration", time.Since(start).Round(time.Millisecond).String(), "request_id", middleware.GetReqID(r.Context()))
 	})
 }
 
