@@ -3,3 +3,8 @@
 *.tfstate
 *.tfstate.*
 .terraform/
+
+# Local Claude Code instructions and settings
+CLAUDE.md
+CLAUDE.local.md
+.claude/
