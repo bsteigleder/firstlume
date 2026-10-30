@@ -153,8 +153,10 @@ func (c *Client) Spec(ctx context.Context) (*api.ExecSpec, error) {
 	return &s, err
 }
 
-func (c *Client) SetCommit(ctx context.Context, sha string) error {
-	_, err := c.doJSON(ctx, http.MethodPost, "/exec/v1/commit", api.CommitRequest{SHA: sha}, nil)
+// SetCommit records the commit the plan phase checked out and, when it
+// parsed, the stack's configuration at that commit.
+func (c *Client) SetCommit(ctx context.Context, req api.CommitRequest) error {
+	_, err := c.doJSON(ctx, http.MethodPost, "/exec/v1/commit", req, nil)
 	return err
 }
 
@@ -170,6 +172,18 @@ func (c *Client) Heartbeat(ctx context.Context) error {
 
 func (c *Client) PutArtifact(ctx context.Context, name string, data []byte) error {
 	_, err := c.do(ctx, http.MethodPut, "/exec/v1/artifacts/"+name, "application/octet-stream", data, nil)
+	return err
+}
+
+// Step starts, finishes or skips a step of the run phase.
+func (c *Client) Step(ctx context.Context, req api.StepRequest) error {
+	_, err := c.doJSON(ctx, http.MethodPost, "/exec/v1/steps", req, nil)
+	return err
+}
+
+// PutChanges records what the plan changes, resource by resource.
+func (c *Client) PutChanges(ctx context.Context, changes []api.ResourceChange) error {
+	_, err := c.doJSON(ctx, http.MethodPut, "/exec/v1/changes", changes, nil)
 	return err
 }
 

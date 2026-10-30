@@ -9,16 +9,18 @@ import (
 type LogChunk struct {
 	ID    int64
 	Phase api.Phase
-	Data  string
+	// Step is the executor step that produced it ("" before the first step).
+	Step string
+	Data string
 }
 
 // AppendLog stores output from the executor of the given phase. It doubles as a heartbeat.
 func (s *Store) AppendLog(ctx context.Context, runID string, phase api.Phase, data string) error {
 	tag, err := s.pool.Exec(ctx, `
 		WITH alive AS (
-			UPDATE runs SET heartbeat_at = now() WHERE id = $1 AND status = $3 RETURNING id
+			UPDATE runs SET heartbeat_at = now() WHERE id = $1 AND status = $3 RETURNING id, current_step
 		)
-		INSERT INTO run_log_chunks (run_id, phase, data) SELECT id, $2, $4 FROM alive`,
+		INSERT INTO run_log_chunks (run_id, phase, data, step) SELECT id, $2, $4, current_step FROM alive`,
 		runID, phase, statusForPhase(phase), data)
 	if err != nil {
 		return err
@@ -32,7 +34,7 @@ func (s *Store) AppendLog(ctx context.Context, runID string, phase api.Phase, da
 // ListLogs returns chunks after the given cursor, in order.
 func (s *Store) ListLogs(ctx context.Context, runID string, after int64, limit int) ([]LogChunk, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, phase, data FROM run_log_chunks WHERE run_id = $1 AND id > $2 ORDER BY id LIMIT $3`,
+		SELECT id, phase, coalesce(step, ''), data FROM run_log_chunks WHERE run_id = $1 AND id > $2 ORDER BY id LIMIT $3`,
 		runID, after, limit)
 	if err != nil {
 		return nil, err
@@ -41,7 +43,7 @@ func (s *Store) ListLogs(ctx context.Context, runID string, after int64, limit i
 	var out []LogChunk
 	for rows.Next() {
 		var c LogChunk
-		if err := rows.Scan(&c.ID, &c.Phase, &c.Data); err != nil {
+		if err := rows.Scan(&c.ID, &c.Phase, &c.Step, &c.Data); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

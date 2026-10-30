@@ -31,6 +31,8 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error
 
 // storeError maps store errors to HTTP responses.
 func (s *Server) storeError(w http.ResponseWriter, r *http.Request, err error, what string) {
+	var inUse *store.SourceInUseError
+	var missingAck *store.MissingAckError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, what+" not found")
@@ -40,6 +42,14 @@ func (s *Server) storeError(w http.ResponseWriter, r *http.Request, err error, w
 		writeError(w, http.StatusConflict, what+" is not in a state that allows this operation")
 	case errors.Is(err, store.ErrInvalid):
 		writeError(w, http.StatusUnprocessableEntity, "invalid reference in "+what)
+	case errors.Is(err, store.ErrTooDeep):
+		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("folders can nest at most %d levels deep", api.MaxFolderDepth))
+	case errors.Is(err, store.ErrMissingSecret):
+		writeError(w, http.StatusUnprocessableEntity, "a new sensitive variable needs a value")
+	case errors.As(err, &inUse):
+		writeError(w, http.StatusConflict, inUse.Error())
+	case errors.As(err, &missingAck):
+		writeError(w, http.StatusConflict, missingAck.Error())
 	default:
 		s.internalError(w, r, err)
 	}

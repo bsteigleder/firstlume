@@ -5,14 +5,16 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bsteigleder/firstlume/internal/api"
 )
 
 var (
-	uuidRe    = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	nameRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$`)
-	versionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
+	uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,99}$`)
+	slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 	// Git refs are passed to git commands, so they must never look like an option.
 	refRe        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$`)
 	envKeyRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,254}$`)
@@ -49,45 +51,112 @@ func validateRepository(s string) error {
 	return fmt.Errorf("repository must be an https://, ssh://, file:// or user@host:path git URL")
 }
 
-func validateTemplatePath(p string) error {
-	if p == "" {
-		return nil
+// cleanName trims a user-chosen name (organization, folder, stack): 1-100
+// characters, not only spaces, no '/' and no control characters.
+func cleanName(field, s string) (string, error) {
+	s = strings.TrimSpace(s)
+	n := utf8.RuneCountInString(s)
+	if n == 0 || n > 100 || !utf8.ValidString(s) {
+		return "", fmt.Errorf("%s must be 1-100 characters", field)
 	}
-	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "-") {
-		return fmt.Errorf("path must be relative to the repository root")
+	for _, r := range s {
+		if r == '/' || unicode.IsControl(r) {
+			return "", fmt.Errorf("%s must not contain '/' or control characters", field)
+		}
 	}
-	if clean := path.Clean(p); clean == ".." || strings.HasPrefix(clean, "../") {
-		return fmt.Errorf("path must stay inside the repository")
+	return s, nil
+}
+
+func validateSlug(s string) error {
+	if !slugRe.MatchString(s) || len(s) < 2 || len(s) > 40 {
+		return fmt.Errorf("slug must be 2-40 lowercase letters, digits or '-', starting and ending with a letter or digit")
 	}
 	return nil
 }
 
-func validateTemplate(req *api.CreateTemplateRequest) error {
-	if err := validateName("name", req.Name); err != nil {
+// cleanStackPath normalizes the directory holding a stack's .firstlume
+// folder, relative to the repository root ("." for the root).
+func cleanStackPath(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if strings.HasPrefix(p, "/") || strings.Contains(p, `\`) {
+		return "", fmt.Errorf("path must be relative to the repository root")
+	}
+	clean := path.Clean(p) // "" becomes "."
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("path must stay inside the repository")
+	}
+	if strings.HasPrefix(clean, "-") {
+		return "", fmt.Errorf("path must not start with '-'")
+	}
+	return clean, nil
+}
+
+func cleanRepository(s string) (string, error) {
+	s = strings.TrimRight(strings.TrimSpace(s), "/")
+	return s, validateRepository(s)
+}
+
+func normalizeStack(req *api.CreateStackRequest) error {
+	var err error
+	if req.Name, err = cleanName("name", req.Name); err != nil {
 		return err
 	}
-	if err := validateRepository(req.Repository); err != nil {
+	if req.FolderID != "" && !validUUID(req.FolderID) {
+		return fmt.Errorf("folder_id must be a folder id")
+	}
+	if req.Repository, err = cleanRepository(req.Repository); err != nil {
 		return err
 	}
-	if err := validateTemplatePath(req.Path); err != nil {
+	if req.Ref = strings.TrimSpace(req.Ref); req.Ref == "" {
+		req.Ref = "main"
+	}
+	if err := validateRef(req.Ref); err != nil {
 		return err
 	}
-	if req.DefaultRef == "" {
-		req.DefaultRef = "main"
+	req.Path, err = cleanStackPath(req.Path)
+	return err
+}
+
+func normalizeStackUpdate(req *api.UpdateStackRequest) error {
+	if req.Name != nil {
+		name, err := cleanName("name", *req.Name)
+		if err != nil {
+			return err
+		}
+		req.Name = &name
 	}
-	if err := validateRef(req.DefaultRef); err != nil {
-		return err
+	if req.Repository != nil {
+		repo, err := cleanRepository(*req.Repository)
+		if err != nil {
+			return err
+		}
+		req.Repository = &repo
 	}
-	if req.Engine != "terraform" && req.Engine != "opentofu" {
-		return fmt.Errorf("engine must be terraform or opentofu")
+	if req.Ref != nil {
+		ref := strings.TrimSpace(*req.Ref)
+		if err := validateRef(ref); err != nil {
+			return err
+		}
+		req.Ref = &ref
 	}
-	if !versionRe.MatchString(req.EngineVersion) {
-		return fmt.Errorf("engine_version must be an exact version like 1.9.8")
-	}
-	if req.TerragruntVersion != "" && !versionRe.MatchString(req.TerragruntVersion) {
-		return fmt.Errorf("terragrunt_version must be an exact version like 0.77.0")
+	if req.Path != nil {
+		p, err := cleanStackPath(*req.Path)
+		if err != nil {
+			return err
+		}
+		req.Path = &p
 	}
 	return nil
+}
+
+func validateLevelSettings(s *api.LevelSettings) error {
+	if m := s.DriftIntervalMinutes; m != nil && *m != 0 && (*m < api.MinDriftIntervalMinutes || *m > api.MaxDriftIntervalMinutes) {
+		return fmt.Errorf("drift_interval_minutes must be 0 (off) or between 15 and 10080")
+	}
+	if s.Variables == nil {
+		s.Variables = []api.Variable{}
+	}
+	return validateVariables(s.Variables)
 }
 
 func validateVariables(vars []api.Variable) error {

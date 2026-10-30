@@ -101,6 +101,20 @@ func checkout(ctx context.Context, dir, repo, ref, commit string, env []string, 
 	return sha, nil
 }
 
+// commitInfo describes the checked-out commit: author name, author email and subject line.
+func commitInfo(ctx context.Context, dir string, env []string) (name, email, subject string, err error) {
+	g := &git{dir: dir, env: env, out: io.Discard}
+	out, err := g.output(ctx, "log", "-1", "--format=%an%x00%ae%x00%s", "HEAD")
+	if err != nil {
+		return "", "", "", fmt.Errorf("git log: %w", err)
+	}
+	parts := strings.SplitN(out, "\x00", 3)
+	for len(parts) < 3 {
+		parts = append(parts, "")
+	}
+	return parts[0], parts[1], parts[2], nil
+}
+
 func short(sha string) string {
 	if len(sha) > 12 {
 		return sha[:12]

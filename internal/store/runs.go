@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,64 +13,193 @@ import (
 	"github.com/bsteigleder/firstlume/internal/api"
 )
 
-const runColumns = `r.id, r.environment_id, r.type, r.status, r.ref, r.commit_sha, r.has_changes, r.plan_summary,
-	r.error, r.agent_id, r.created_by, r.approved_by, r.approved_at, r.started_at, r.finished_at, r.created_at, r.updated_at`
+// activeStatuses are the statuses of a run that holds its stack's lock or waits for it.
+const activeStatuses = `('queued', 'planning', 'awaiting_approval', 'apply_queued', 'applying')`
 
-func scanRun(row pgx.Row) (*api.Run, error) {
-	var r api.Run
-	var commit, errMsg, agentID, approvedBy *string
-	var summary []byte
-	err := row.Scan(&r.ID, &r.EnvironmentID, &r.Type, &r.Status, &r.Ref, &commit, &r.HasChanges, &summary,
-		&errMsg, &agentID, &r.CreatedBy, &approvedBy, &r.ApprovedAt, &r.StartedAt, &r.FinishedAt, &r.CreatedAt, &r.UpdatedAt)
-	if err != nil {
-		return nil, notFound(err)
+func runColumnsAs(alias string) string {
+	cols := []string{"id", "stack_id", "type", "status", "ref", "commit_sha", "commit_author_name", "commit_author_email",
+		"commit_message", "has_changes", "plan_summary", "error", "agent_id", "created_by", "approved_by", "approved_at",
+		"started_at", "finished_at", "created_at", "updated_at", "acknowledged", "config", "settings_used"}
+	for i, c := range cols {
+		cols[i] = alias + "." + c
 	}
-	r.CommitSHA, r.Error, r.AgentID, r.ApprovedBy = deref(commit), deref(errMsg), deref(agentID), deref(approvedBy)
-	if summary != nil {
+	return strings.Join(cols, ", ")
+}
+
+var runColumns = runColumnsAs("r")
+
+// runScan reads run columns that may all be NULL (from a LEFT JOIN).
+type runScan struct {
+	id, stackID, typ, status, ref, commit, authorName, authorEmail, message *string
+	hasChanges                                                              *bool
+	summary                                                                 []byte
+	errMsg, agentID, createdBy, approvedBy                                  *string
+	approvedAt, startedAt, finishedAt, createdAt, updatedAt                 *time.Time
+	acknowledged, config, settingsUsed                                      []byte
+}
+
+func newRunScan() *runScan { return &runScan{} }
+
+func (s *runScan) dest() []any {
+	return []any{&s.id, &s.stackID, &s.typ, &s.status, &s.ref, &s.commit, &s.authorName, &s.authorEmail, &s.message,
+		&s.hasChanges, &s.summary, &s.errMsg, &s.agentID, &s.createdBy, &s.approvedBy, &s.approvedAt,
+		&s.startedAt, &s.finishedAt, &s.createdAt, &s.updatedAt, &s.acknowledged, &s.config, &s.settingsUsed}
+}
+
+func (s *runScan) result() (*api.Run, error) {
+	r := &api.Run{
+		ID: deref(s.id), StackID: deref(s.stackID), Type: api.RunType(deref(s.typ)), Status: api.RunStatus(deref(s.status)),
+		Ref: deref(s.ref), CommitSHA: deref(s.commit), CommitAuthorName: deref(s.authorName),
+		CommitAuthorEmail: deref(s.authorEmail), CommitMessage: deref(s.message), HasChanges: s.hasChanges,
+		Error: deref(s.errMsg), AgentID: deref(s.agentID), CreatedBy: deref(s.createdBy), ApprovedBy: deref(s.approvedBy),
+		ApprovedAt: s.approvedAt, StartedAt: s.startedAt, FinishedAt: s.finishedAt,
+	}
+	if s.createdAt != nil {
+		r.CreatedAt = *s.createdAt
+	}
+	if s.updatedAt != nil {
+		r.UpdatedAt = *s.updatedAt
+	}
+	if s.summary != nil {
 		r.PlanSummary = &api.PlanSummary{}
-		if err := json.Unmarshal(summary, r.PlanSummary); err != nil {
+		if err := json.Unmarshal(s.summary, r.PlanSummary); err != nil {
 			return nil, err
 		}
 	}
-	return &r, nil
+	if s.acknowledged != nil {
+		if err := json.Unmarshal(s.acknowledged, &r.Acknowledged); err != nil {
+			return nil, err
+		}
+	}
+	if s.config != nil {
+		r.Config = &api.StackConfig{}
+		if err := json.Unmarshal(s.config, r.Config); err != nil {
+			return nil, err
+		}
+	}
+	if s.settingsUsed != nil {
+		r.SettingsUsed = &api.RunSettings{}
+		if err := json.Unmarshal(s.settingsUsed, r.SettingsUsed); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
 }
 
-// CreateRun queues a run. The ref defaults to the environment's ref, then the template's.
-func (s *Store) CreateRun(ctx context.Context, orgID, envID string, typ api.RunType, ref, createdBy string) (*api.Run, error) {
+func scanRun(row pgx.Row) (*api.Run, error) {
+	s := newRunScan()
+	if err := row.Scan(s.dest()...); err != nil {
+		return nil, notFound(err)
+	}
+	return s.result()
+}
+
+// CreateRun queues a run. The ref defaults to the stack's.
+func (s *Store) CreateRun(ctx context.Context, orgID, stackID string, typ api.RunType, ref, createdBy string) (*api.Run, error) {
 	return scanRun(s.pool.QueryRow(ctx, `
 		WITH inserted AS (
-			INSERT INTO runs (organization_id, environment_id, type, status, ref, created_by)
-			SELECT e.organization_id, e.id, $3, 'queued', coalesce(nullif($4, ''), e.ref, t.default_ref), $5
-			FROM environments e JOIN templates t ON t.id = e.template_id
-			WHERE e.organization_id = $1 AND e.id = $2
+			INSERT INTO runs (organization_id, stack_id, type, status, ref, created_by)
+			SELECT st.organization_id, st.id, $3, 'queued', coalesce(nullif($4, ''), st.ref), $5
+			FROM stacks st WHERE st.organization_id = $1 AND st.id = $2
 			RETURNING *
 		)
 		SELECT `+runColumns+` FROM inserted r`,
-		orgID, envID, typ, ref, createdBy))
+		orgID, stackID, typ, ref, createdBy))
 }
 
-// ScheduleDriftRuns queues a drift run for every environment whose drift check
-// is due and that has no run in progress (a busy one is retried next time).
-// It is safe to call from several server replicas at once.
+// ScheduleDriftRuns queues a drift run for every stack whose drift check is
+// due under its effective interval and that has no run in progress (a busy
+// one is retried next time). It is safe to call from several server replicas.
 func (s *Store) ScheduleDriftRuns(ctx context.Context) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `
-		WITH due AS (
-			SELECT e.id FROM environments e
-			WHERE e.drift_interval_minutes IS NOT NULL
-			  AND coalesce(e.drift_scheduled_at, '-infinity') <= now() - make_interval(mins => e.drift_interval_minutes)
-			  AND NOT EXISTS (
-			      SELECT 1 FROM runs r WHERE r.environment_id = e.id
-			        AND r.status IN ('queued', 'planning', 'awaiting_approval', 'apply_queued', 'applying'))
-			FOR UPDATE OF e SKIP LOCKED
-		), marked AS (
-			UPDATE environments e SET drift_scheduled_at = now()
-			FROM due WHERE e.id = due.id
-			RETURNING e.id, e.organization_id, e.ref, e.template_id
-		)
-		INSERT INTO runs (organization_id, environment_id, type, status, ref, created_by)
-		SELECT m.organization_id, m.id, 'drift', 'queued', coalesce(m.ref, t.default_ref), $1
-		FROM marked m JOIN templates t ON t.id = m.template_id`, api.DriftActor)
-	return tag.RowsAffected(), err
+	type candidate struct {
+		id, orgID string
+		scheduled *time.Time
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT st.id, st.organization_id, st.drift_scheduled_at FROM stacks st
+		WHERE NOT EXISTS (SELECT 1 FROM runs r WHERE r.stack_id = st.id AND r.status IN `+activeStatuses+`)`)
+	if err != nil {
+		return 0, err
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.id, &c.orgID, &c.scheduled); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	var queued int64
+	for _, c := range candidates {
+		eff, _, err := s.effective(ctx, s.pool, c.orgID, api.Level{Kind: api.LevelStack, ID: c.id})
+		if err == ErrNotFound {
+			continue // deleted meanwhile
+		}
+		if err != nil {
+			return queued, err
+		}
+		interval := eff.DriftIntervalMinutes.Value
+		if interval == 0 || (c.scheduled != nil && time.Since(*c.scheduled) < time.Duration(interval)*time.Minute) {
+			continue
+		}
+		tag, err := s.pool.Exec(ctx, `
+			WITH due AS (
+				SELECT st.id, st.organization_id, st.ref FROM stacks st
+				WHERE st.id = $1
+				  AND coalesce(st.drift_scheduled_at, '-infinity') <= now() - make_interval(mins => $2)
+				  AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.stack_id = st.id AND r.status IN `+activeStatuses+`)
+				FOR UPDATE SKIP LOCKED
+			), marked AS (
+				UPDATE stacks st SET drift_scheduled_at = now() FROM due WHERE st.id = due.id
+				RETURNING st.id, st.organization_id, st.ref
+			)
+			INSERT INTO runs (organization_id, stack_id, type, status, ref, created_by)
+			SELECT organization_id, id, 'drift', 'queued', ref, $3 FROM marked`, c.id, interval, api.DriftActor)
+		if err != nil {
+			return queued, err
+		}
+		queued += tag.RowsAffected()
+	}
+	return queued, nil
+}
+
+// ListActiveRuns returns an organization's active runs: those awaiting
+// approval first, then the most recent.
+func (s *Store) ListActiveRuns(ctx context.Context, orgID string) ([]api.ActiveRun, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+runColumns+`, st.name,
+		       coalesce((SELECT array_agg(f.name ORDER BY array_position(pf.path, f.id)) FROM folders f
+		                 WHERE f.id = ANY(pf.path)), '{}')
+		FROM runs r
+		JOIN stacks st ON st.id = r.stack_id
+		LEFT JOIN folders pf ON pf.id = st.folder_id
+		WHERE r.organization_id = $1 AND r.status IN `+activeStatuses+`
+		ORDER BY r.status = 'awaiting_approval' DESC, r.created_at DESC`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []api.ActiveRun{}
+	for rows.Next() {
+		sc := newRunScan()
+		var a api.ActiveRun
+		if err := rows.Scan(append(sc.dest(), &a.StackName, &a.FolderPath)...); err != nil {
+			return nil, err
+		}
+		run, err := sc.result()
+		if err != nil {
+			return nil, err
+		}
+		a.Run = *run
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) GetRun(ctx context.Context, orgID, id string) (*api.Run, error) {
@@ -76,11 +207,11 @@ func (s *Store) GetRun(ctx context.Context, orgID, id string) (*api.Run, error) 
 		`SELECT `+runColumns+` FROM runs r WHERE r.organization_id = $1 AND r.id = $2`, orgID, id))
 }
 
-func (s *Store) ListRuns(ctx context.Context, orgID, envID string, limit int) ([]api.Run, error) {
+func (s *Store) ListRuns(ctx context.Context, orgID, stackID string, limit int) ([]api.Run, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+runColumns+` FROM runs r
-		WHERE r.organization_id = $1 AND r.environment_id = $2
-		ORDER BY r.created_at DESC LIMIT $3`, orgID, envID, limit)
+		WHERE r.organization_id = $1 AND r.stack_id = $2
+		ORDER BY r.created_at DESC LIMIT $3`, orgID, stackID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -120,9 +251,162 @@ func (s *Store) transition(ctx context.Context, orgID, id string, from []api.Run
 	return r, err
 }
 
-func (s *Store) ApproveRun(ctx context.Context, orgID, id, by string) (*api.Run, error) {
+// MissingAckError means the stack requires confirming each deleted or
+// replaced resource, and these were not confirmed.
+type MissingAckError struct {
+	Missing []string
+}
+
+func (e *MissingAckError) Error() string {
+	return fmt.Sprintf("confirm every resource this plan deletes or replaces before approving; missing: %s",
+		strings.Join(e.Missing, ", "))
+}
+
+// ApproveRun queues the apply of an awaiting plan. When the stack's effective
+// settings require it, every resource the plan deletes or replaces must be in
+// acknowledged; the confirmed ones are recorded on the run.
+func (s *Store) ApproveRun(ctx context.Context, orgID, id, by string, acknowledged []string) (*api.Run, error) {
+	run, err := s.GetRun(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	if run.Status != api.StatusAwaitingApproval {
+		return nil, ErrConflict
+	}
+	eff, _, err := s.effective(ctx, s.pool, orgID, api.Level{Kind: api.LevelStack, ID: run.StackID})
+	if err != nil {
+		return nil, err
+	}
+	var recorded []byte
+	if eff.ConfirmDestructive.Value {
+		changes, err := s.GetChanges(ctx, orgID, id)
+		if err != nil {
+			return nil, err
+		}
+		acked := map[string]bool{}
+		for _, a := range acknowledged {
+			acked[a] = true
+		}
+		missing, confirmed := []string{}, []string{}
+		for _, c := range changes {
+			if !c.Action.Destructive() {
+				continue
+			}
+			if acked[c.Key()] {
+				confirmed = append(confirmed, c.Key())
+			} else {
+				missing = append(missing, c.Key())
+			}
+		}
+		if len(missing) > 0 {
+			return nil, &MissingAckError{Missing: missing}
+		}
+		if recorded, err = json.Marshal(confirmed); err != nil {
+			return nil, err
+		}
+	}
 	return s.transition(ctx, orgID, id, []api.RunStatus{api.StatusAwaitingApproval},
-		`status = 'apply_queued', approved_by = $4, approved_at = now()`, by)
+		`status = 'apply_queued', approved_by = $4, approved_at = now(), acknowledged = $5`, by, recorded)
+}
+
+// SetChanges records what the plan changes. Only the executor of the plan phase can set it.
+func (s *Store) SetChanges(ctx context.Context, runID string, changes []api.ResourceChange) error {
+	data, err := json.Marshal(changes)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE runs SET changes = $2, heartbeat_at = now() WHERE id = $1 AND status = 'planning'`,
+		runID, data)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// GetChanges returns what a run's plan changes, resource by resource (empty before planning).
+func (s *Store) GetChanges(ctx context.Context, orgID, runID string) ([]api.ResourceChange, error) {
+	var data []byte
+	if err := s.pool.QueryRow(ctx, `SELECT changes FROM runs WHERE organization_id = $1 AND id = $2`,
+		orgID, runID).Scan(&data); err != nil {
+		return nil, notFound(err)
+	}
+	out := []api.ResourceChange{}
+	if data != nil {
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// RecordStep starts a step (status running), records a skipped one, or
+// finishes the running step of that name, for the phase being executed. Logs
+// shipped while a step runs are tagged with it.
+func (s *Store) RecordStep(ctx context.Context, runID string, phase api.Phase, req api.StepRequest) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var ok bool
+		if err := tx.QueryRow(ctx, `SELECT true FROM runs WHERE id = $1 AND status = $2 FOR UPDATE`,
+			runID, statusForPhase(phase)).Scan(&ok); err != nil {
+			if notFound(err) == ErrNotFound {
+				return ErrConflict
+			}
+			return err
+		}
+		switch req.Status {
+		case api.StepRunning, api.StepSkipped:
+			var started any
+			if req.Status == api.StepRunning {
+				started = time.Now()
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO run_steps (run_id, seq, phase, name, kind, status, started_at)
+				SELECT $1, coalesce(max(seq), 0) + 1, $2, $3, $4, $5, $6 FROM run_steps WHERE run_id = $1`,
+				runID, phase, req.Name, req.Kind, req.Status, started); err != nil {
+				return err
+			}
+			if req.Status == api.StepSkipped {
+				return nil
+			}
+			_, err := tx.Exec(ctx, `UPDATE runs SET current_step = $2, heartbeat_at = now() WHERE id = $1`, runID, req.Name)
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE run_steps SET status = $4, finished_at = now()
+			WHERE run_id = $1 AND phase = $2 AND name = $3 AND status = 'running'`, runID, phase, req.Name, req.Status)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrInvalid
+		}
+		_, err = tx.Exec(ctx, `UPDATE runs SET current_step = NULL, heartbeat_at = now() WHERE id = $1`, runID)
+		return err
+	})
+}
+
+// ListSteps returns a run's executor steps in order.
+func (s *Store) ListSteps(ctx context.Context, orgID, runID string) ([]api.RunStep, error) {
+	if _, err := s.GetRun(ctx, orgID, runID); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT phase, name, kind, status, started_at, finished_at FROM run_steps WHERE run_id = $1 ORDER BY seq`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []api.RunStep{}
+	for rows.Next() {
+		var st api.RunStep
+		if err := rows.Scan(&st.Phase, &st.Name, &st.Kind, &st.Status, &st.StartedAt, &st.FinishedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) DiscardRun(ctx context.Context, orgID, id string) (*api.Run, error) {
@@ -138,8 +422,8 @@ func (s *Store) CancelRun(ctx context.Context, orgID, id string) (*api.Run, erro
 }
 
 // ClaimRun hands the oldest runnable phase to an agent. A run is runnable when
-// it is apply_queued, or queued with no other active run on its environment.
-// Locking the environment row serializes concurrent claims per environment.
+// it is apply_queued, or queued with no other active run on its stack.
+// Locking the stack row serializes concurrent claims per stack.
 func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity) (*api.Run, api.Phase, error) {
 	var run *api.Run
 	var phase api.Phase
@@ -148,17 +432,17 @@ func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity) (*api.Run, a
 		var status api.RunStatus
 		err := tx.QueryRow(ctx, `
 			SELECT r.id, r.status FROM runs r
-			JOIN environments e ON e.id = r.environment_id
+			JOIN stacks st ON st.id = r.stack_id
 			WHERE r.organization_id = $1
 			  AND (r.status = 'apply_queued' OR (
 			        r.status = 'queued'
 			        AND NOT EXISTS (
-			            SELECT 1 FROM runs o WHERE o.environment_id = r.environment_id AND o.id <> r.id
+			            SELECT 1 FROM runs o WHERE o.stack_id = r.stack_id AND o.id <> r.id
 			              AND (o.status IN ('planning', 'awaiting_approval', 'apply_queued', 'applying')
 			                   OR (o.status = 'queued' AND o.created_at < r.created_at)))))
 			ORDER BY r.created_at
 			LIMIT 1
-			FOR UPDATE OF r, e SKIP LOCKED`, agent.OrganizationID).Scan(&id, &status)
+			FOR UPDATE OF r, st SKIP LOCKED`, agent.OrganizationID).Scan(&id, &status)
 		if err != nil {
 			return err
 		}
@@ -193,26 +477,28 @@ func statusForPhase(p api.Phase) api.RunStatus {
 	return api.StatusPlanning
 }
 
+// variablesArtifact holds the variables a plan ran with; the apply reuses them.
+const variablesArtifact = "variables"
+
 // ExecSpec assembles everything an executor needs, decrypting secrets. It only
-// succeeds while the run is executing the given phase.
+// succeeds while the run is executing the given phase. The plan phase gets
+// the stack's effective variables and records them; the apply phase gets
+// exactly those, whatever changed in between.
 func (s *Store) ExecSpec(ctx context.Context, runID string, phase api.Phase) (*api.ExecSpec, error) {
 	var spec api.ExecSpec
-	var commit, tgVersion *string
+	var orgID string
+	var commit *string
 	var tokenEnc []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT r.id, r.environment_id, r.type, r.ref, r.commit_sha,
-		       t.repository, t.path, t.engine, t.engine_version, t.terragrunt_version, t.git_token_enc
-		FROM runs r
-		JOIN environments e ON e.id = r.environment_id
-		JOIN templates t ON t.id = e.template_id
+		SELECT r.id, r.organization_id, r.stack_id, r.type, r.ref, r.commit_sha, st.repository, st.path, st.git_token_enc
+		FROM runs r JOIN stacks st ON st.id = r.stack_id
 		WHERE r.id = $1 AND r.status = $2`, runID, statusForPhase(phase)).Scan(
-		&spec.RunID, &spec.EnvironmentID, &spec.Type, &spec.Ref, &commit,
-		&spec.Repository, &spec.Path, &spec.Engine, &spec.EngineVersion, &tgVersion, &tokenEnc)
+		&spec.RunID, &orgID, &spec.StackID, &spec.Type, &spec.Ref, &commit, &spec.Repository, &spec.Path, &tokenEnc)
 	if err != nil {
 		return nil, notFound(err)
 	}
 	spec.Phase = phase
-	spec.CommitSHA, spec.TerragruntVersion = deref(commit), deref(tgVersion)
+	spec.CommitSHA = deref(commit)
 	if tokenEnc != nil {
 		tok, err := s.keys.Decrypt(tokenEnc)
 		if err != nil {
@@ -221,41 +507,65 @@ func (s *Store) ExecSpec(ctx context.Context, runID string, phase api.Phase) (*a
 		spec.GitToken = string(tok)
 	}
 
-	rows, err := s.pool.Query(ctx, `
-		SELECT key, category, sensitive, value, value_enc FROM environment_variables
-		WHERE environment_id = $1 ORDER BY category, key`, spec.EnvironmentID)
+	if phase == api.PhaseApply {
+		data, err := s.LoadArtifact(ctx, runID, phase, variablesArtifact)
+		if err != nil {
+			return nil, fmt.Errorf("loading the plan's variables: %w", err)
+		}
+		if err := json.Unmarshal(data, &spec.Variables); err != nil {
+			return nil, err
+		}
+		return &spec, nil
+	}
+
+	eff, resolved, err := s.effective(ctx, s.pool, orgID, api.Level{Kind: api.LevelStack, ID: spec.StackID})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	spec.Variables = []api.ExecVariable{}
-	for rows.Next() {
-		var v api.ExecVariable
-		var plain *string
-		var enc []byte
-		if err := rows.Scan(&v.Key, &v.Category, &v.Sensitive, &plain, &enc); err != nil {
-			return nil, err
-		}
-		if v.Sensitive {
-			dec, err := s.keys.Decrypt(enc)
-			if err != nil {
-				return nil, err
-			}
-			v.Value = string(dec)
-		} else {
-			v.Value = deref(plain)
-		}
-		spec.Variables = append(spec.Variables, v)
+	if spec.Variables, err = s.execVariables(resolved); err != nil {
+		return nil, err
 	}
-	return &spec, rows.Err()
+	// What the run was configured with, as shown on the run (secret values are already blank).
+	used, err := json.Marshal(api.RunSettings{
+		RequireApproval: eff.RequireApproval, ConfirmDestructive: eff.ConfirmDestructive,
+		DriftIntervalMinutes: eff.DriftIntervalMinutes, Variables: eff.Variables,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE runs SET settings_used = $2 WHERE id = $1`, runID, used); err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(spec.Variables)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.SaveArtifact(ctx, runID, phase, variablesArtifact, data); err != nil {
+		return nil, err
+	}
+	return &spec, nil
 }
 
 // SetCommit records the commit resolved during the plan phase, so the apply
-// phase runs exactly the code that was planned.
-func (s *Store) SetCommit(ctx context.Context, runID, sha string) error {
+// phase runs exactly the code that was planned, and the stack configuration
+// read at that commit.
+func (s *Store) SetCommit(ctx context.Context, runID string, req api.CommitRequest) error {
+	var cfg []byte
+	if req.Config != nil {
+		var err error
+		if cfg, err = json.Marshal(req.Config); err != nil {
+			return err
+		}
+	}
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE runs SET commit_sha = $2, heartbeat_at = now(), updated_at = now()
-		WHERE id = $1 AND status = 'planning'`, runID, sha)
+		WITH r AS (
+			UPDATE runs SET commit_sha = $2, commit_author_name = $3, commit_author_email = $4, commit_message = $5,
+			       config = $6, heartbeat_at = now(), updated_at = now()
+			WHERE id = $1 AND status = 'planning'
+			RETURNING stack_id
+		)
+		UPDATE stacks st SET config = coalesce($6, st.config) FROM r WHERE st.id = r.stack_id`,
+		runID, req.SHA, nullable(req.AuthorName), nullable(req.AuthorEmail), nullable(req.Message), cfg)
 	if err != nil {
 		return err
 	}
@@ -280,15 +590,22 @@ func (s *Store) Heartbeat(ctx context.Context, runID string, phase api.Phase) er
 
 // CompletePhase records the outcome reported by the executor.
 func (s *Store) CompletePhase(ctx context.Context, runID string, phase api.Phase, res api.CompleteRequest) (*api.Run, error) {
+	var orgID, stackID string
+	if err := s.pool.QueryRow(ctx, `SELECT organization_id, stack_id FROM runs WHERE id = $1`, runID).Scan(&orgID, &stackID); err != nil {
+		return nil, notFound(err)
+	}
+	// Read when the plan finishes, so a change of the rule also affects runs already queued.
+	eff, _, err := s.effective(ctx, s.pool, orgID, api.Level{Kind: api.LevelStack, ID: stackID})
+	if err != nil {
+		return nil, err
+	}
+	autoApprove := !eff.RequireApproval.Value
+
 	var run *api.Run
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var typ api.RunType
 		var status api.RunStatus
-		var autoApprove bool
-		err := tx.QueryRow(ctx, `
-			SELECT r.type, r.status, e.auto_approve FROM runs r
-			JOIN environments e ON e.id = r.environment_id
-			WHERE r.id = $1 FOR UPDATE OF r`, runID).Scan(&typ, &status, &autoApprove)
+		err := tx.QueryRow(ctx, `SELECT type, status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&typ, &status)
 		if err != nil {
 			return notFound(err)
 		}

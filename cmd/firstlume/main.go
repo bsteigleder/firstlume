@@ -117,6 +117,7 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 	}
 
 	st := store.New(pool, keys)
+	// The bootstrap organization (by slug) owns the bootstrap agent.
 	orgID, err := st.EnsureOrganization(ctx, env("FIRSTLUME_ORGANIZATION", "default"))
 	if err != nil {
 		return fmt.Errorf("bootstrapping organization: %w", err)
@@ -131,7 +132,6 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 
 	srv := server.New(server.Config{
 		Addr:             env("FIRSTLUME_LISTEN_ADDR", ":8080"),
-		OrganizationID:   orgID,
 		AdminToken:       adminToken,
 		HeartbeatTimeout: heartbeat,
 		UI:               web.FS(),

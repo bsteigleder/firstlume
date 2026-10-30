@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/bsteigleder/firstlume/internal/api"
@@ -26,8 +27,27 @@ const testAdminToken = "test-admin-token-0123456789"
 type harness struct {
 	t     *testing.T
 	url   string
+	org   string // slug
 	store *store.Store
 	agent *apiclient.Client
+	logs  *syncBuffer
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // newHarness needs a disposable Postgres database, e.g.
@@ -56,7 +76,8 @@ func newHarness(t *testing.T) *harness {
 	st := store.New(pool, keys)
 
 	// Each test gets its own organization, so tests don't see each other's runs.
-	orgID, err := st.EnsureOrganization(ctx, "test-"+t.Name()+"-"+randomSuffix())
+	slug := "t-" + randomSuffix()
+	orgID, err := st.EnsureOrganization(ctx, slug)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,11 +86,12 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := New(Config{OrganizationID: orgID, AdminToken: testAdminToken}, st, keys, log)
+	logs := &syncBuffer{}
+	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	srv := New(Config{AdminToken: testAdminToken}, st, keys, log)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &harness{t: t, url: ts.URL, store: st, agent: apiclient.New(ts.URL, agentToken)}
+	return &harness{t: t, url: ts.URL, org: slug, store: st, agent: apiclient.New(ts.URL, agentToken), logs: logs}
 }
 
 func randomSuffix() string {
@@ -79,8 +101,13 @@ func randomSuffix() string {
 }
 
 // call performs an admin API request and decodes the response into out.
-func (h *harness) call(method, path string, in any, wantStatus int, out any) {
+// Paths starting with "/api/" are used as is; others are relative to the
+// harness organization.
+func (h *harness) call(method, path string, in any, wantStatus int, out any) []byte {
 	h.t.Helper()
+	if !strings.HasPrefix(path, "/api/") {
+		path = "/api/v1/orgs/" + h.org + path
+	}
 	var body io.Reader
 	if in != nil {
 		raw, _ := json.Marshal(in)
@@ -103,23 +130,41 @@ func (h *harness) call(method, path string, in any, wantStatus int, out any) {
 			h.t.Fatalf("decoding %s: %v", raw, err)
 		}
 	}
+	return raw
 }
 
-func (h *harness) environment(autoApprove bool) api.Environment {
+func (h *harness) folder(parentID, name string) api.Folder {
 	h.t.Helper()
-	var tmpl api.Template
-	h.call("POST", "/api/v1/templates", api.CreateTemplateRequest{
-		Name: "network-" + randomSuffix(), Repository: "https://github.com/example/infra.git", Path: "network",
-		Engine: "terraform", EngineVersion: "1.9.8", GitToken: "ghp_templatetoken",
-	}, http.StatusCreated, &tmpl)
-	if !tmpl.HasGitToken || tmpl.DefaultRef != "main" {
-		h.t.Fatalf("unexpected template %+v", tmpl)
+	var f api.Folder
+	h.call("POST", "/folders", api.CreateFolderRequest{ParentID: parentID, Name: name}, http.StatusCreated, &f)
+	return f
+}
+
+// stack creates a stack whose source is unique to it, unless path is given.
+func (h *harness) stack(folderID, name, path string) api.Stack {
+	h.t.Helper()
+	if path == "" {
+		path = "stacks/" + randomSuffix()
 	}
-	var env api.Environment
-	h.call("POST", "/api/v1/environments", api.CreateEnvironmentRequest{
-		TemplateID: tmpl.ID, Name: "prod-" + randomSuffix(), AutoApprove: autoApprove,
-	}, http.StatusCreated, &env)
-	return env
+	var st api.Stack
+	h.call("POST", "/stacks", api.CreateStackRequest{
+		FolderID: folderID, Name: name, Repository: "https://example.com/acme/infra.git", Path: path, GitToken: "ghp_stacktoken",
+	}, http.StatusCreated, &st)
+	return st
+}
+
+func (h *harness) settings(level string, s api.LevelSettings) api.SettingsResponse {
+	h.t.Helper()
+	var out api.SettingsResponse
+	h.call("PUT", level+"/settings", s, http.StatusOK, &out)
+	return out
+}
+
+func (h *harness) run(stackID string, typ api.RunType) api.Run {
+	h.t.Helper()
+	var run api.Run
+	h.call("POST", "/stacks/"+stackID+"/runs", api.CreateRunRequest{Type: typ}, http.StatusCreated, &run)
+	return run
 }
 
 func (h *harness) claim() *api.Assignment {
@@ -131,64 +176,72 @@ func (h *harness) claim() *api.Assignment {
 	return a
 }
 
+// spec claims the next phase and returns its executor client and spec.
+func (h *harness) spec(wantRun string) (*apiclient.Client, *api.ExecSpec) {
+	h.t.Helper()
+	asg := h.claim()
+	if asg == nil || asg.RunID != wantRun {
+		h.t.Fatalf("expected to claim %s, got %+v", wantRun, asg)
+	}
+	exec := apiclient.New(h.url, asg.Token)
+	spec, err := exec.Spec(context.Background())
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return exec, spec
+}
+
+func vars(spec *api.ExecSpec) map[string]string {
+	out := map[string]string{}
+	for _, v := range spec.Variables {
+		out[string(v.Category)+"/"+v.Key] = v.Value
+	}
+	return out
+}
+
+func ptr[T any](v T) *T { return &v }
+
 func TestApplyRunLifecycle(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	env := h.environment(false)
-
-	var vars []api.Variable
-	h.call("PUT", "/api/v1/environments/"+env.ID+"/variables", api.PutVariablesRequest{Variables: []api.Variable{
+	st := h.stack("", "network", "environments/prod")
+	h.settings("/stacks/"+st.ID, api.LevelSettings{Variables: []api.Variable{
 		{Key: "region", Category: api.CategoryTerraform, Value: "us-east-1"},
 		{Key: "DB_PASSWORD", Category: api.CategoryEnv, Sensitive: true, Value: "hunter2"},
-	}}, http.StatusOK, &vars)
-	for _, v := range vars {
-		if v.Sensitive && v.Value != "" {
-			t.Fatal("API echoed a sensitive value")
-		}
-	}
+	}})
 
-	var run api.Run
-	h.call("POST", "/api/v1/environments/"+env.ID+"/runs", api.CreateRunRequest{Type: api.RunApply}, http.StatusCreated, &run)
-	if run.Status != api.StatusQueued || run.Ref != "main" {
+	run := h.run(st.ID, api.RunApply)
+	if run.Status != api.StatusQueued || run.Ref != "main" || run.StackID != st.ID {
 		t.Fatalf("unexpected run %+v", run)
 	}
+	// A second run on the same stack must wait for the first.
+	second := h.run(st.ID, api.RunPlan)
 
-	// A second run on the same environment must wait for the first.
-	var second api.Run
-	h.call("POST", "/api/v1/environments/"+env.ID+"/runs", api.CreateRunRequest{Type: api.RunPlan}, http.StatusCreated, &second)
-
-	asg := h.claim()
-	if asg == nil || asg.RunID != run.ID || asg.Phase != api.PhasePlan {
-		t.Fatalf("unexpected assignment %+v", asg)
-	}
+	exec, spec := h.spec(run.ID)
 	if next := h.claim(); next != nil {
-		t.Fatalf("claimed %s while the environment was locked", next.RunID)
+		t.Fatalf("claimed %s while the stack was locked", next.RunID)
 	}
-
-	exec := apiclient.New(h.url, asg.Token)
-	spec, err := exec.Spec(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if spec.GitToken != "ghp_templatetoken" || spec.Path != "network" || len(spec.Variables) != 2 {
+	if spec.GitToken != "ghp_stacktoken" || spec.Path != "environments/prod" || spec.StackID != st.ID {
 		t.Fatalf("unexpected spec %+v", spec)
 	}
-	for _, v := range spec.Variables {
-		if v.Key == "DB_PASSWORD" && v.Value != "hunter2" {
-			t.Fatal("sensitive variable was not decrypted for the executor")
-		}
+	if v := vars(spec); len(v) != 2 || v["env/DB_PASSWORD"] != "hunter2" || v["terraform/region"] != "us-east-1" {
+		t.Fatalf("unexpected variables %v", v)
 	}
 
 	sha := strings.Repeat("a", 40)
-	must(t, exec.SetCommit(ctx, sha))
+	cfg := &api.StackConfig{Version: 1, Engine: "terraform", EngineVersion: "1.15.6"}
+	must(t, exec.SetCommit(ctx, api.CommitRequest{SHA: sha, AuthorName: "Ana", AuthorEmail: "ana@example.com", Message: "Add VPC", Config: cfg}))
 	must(t, exec.AppendLog(ctx, []byte("Terraform will perform the following actions\n")))
 	must(t, exec.PutArtifact(ctx, "plan", []byte("binary-plan")))
 	done, err := exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true, PlanSummary: &api.PlanSummary{Add: 2}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if done.Status != api.StatusAwaitingApproval || done.CommitSHA != sha || done.PlanSummary.Add != 2 {
+	must(t, err)
+	if done.Status != api.StatusAwaitingApproval || done.CommitSHA != sha || done.PlanSummary.Add != 2 ||
+		done.CommitAuthorEmail != "ana@example.com" || done.CommitMessage != "Add VPC" {
 		t.Fatalf("unexpected run after plan %+v", done)
+	}
+	h.call("GET", "/stacks/"+st.ID, nil, http.StatusOK, &st)
+	if st.Config == nil || st.Config.EngineVersion != "1.15.6" {
+		t.Fatalf("stack config not recorded: %+v", st.Config)
 	}
 
 	// The plan token is useless once the phase is over.
@@ -199,28 +252,22 @@ func TestApplyRunLifecycle(t *testing.T) {
 		t.Fatal("claimed work while waiting for approval")
 	}
 
-	h.call("POST", "/api/v1/runs/"+run.ID+"/approve", nil, http.StatusOK, &run)
-	if run.Status != api.StatusApplyQueued || run.ApprovedBy != "admin" {
+	h.call("POST", "/runs/"+run.ID+"/approve", nil, http.StatusOK, &run)
+	if run.Status != api.StatusApplyQueued || run.ApprovedBy != adminIdentity {
 		t.Fatalf("unexpected run after approve %+v", run)
 	}
-	h.call("POST", "/api/v1/runs/"+run.ID+"/approve", nil, http.StatusConflict, nil)
+	h.call("POST", "/runs/"+run.ID+"/approve", nil, http.StatusConflict, nil)
 
-	asg = h.claim()
-	if asg == nil || asg.RunID != run.ID || asg.Phase != api.PhaseApply {
-		t.Fatalf("unexpected apply assignment %+v", asg)
-	}
-	exec = apiclient.New(h.url, asg.Token)
-	spec, err = exec.Spec(ctx)
-	must(t, err)
-	if spec.CommitSHA != sha {
-		t.Fatalf("apply spec commit = %q, want the planned commit", spec.CommitSHA)
+	exec, spec = h.spec(run.ID)
+	if spec.Phase != api.PhaseApply || spec.CommitSHA != sha {
+		t.Fatalf("apply spec %+v, want the planned commit", spec)
 	}
 	plan, err := exec.GetArtifact(ctx, "plan")
 	must(t, err)
 	if string(plan) != "binary-plan" {
 		t.Fatalf("plan artifact = %q", plan)
 	}
-	if err := exec.SetCommit(ctx, sha); err == nil {
+	if err := exec.SetCommit(ctx, api.CommitRequest{SHA: sha}); err == nil {
 		t.Fatal("commit must not change during apply")
 	}
 	must(t, exec.AppendLog(ctx, []byte("Apply complete!\n")))
@@ -230,13 +277,12 @@ func TestApplyRunLifecycle(t *testing.T) {
 		t.Fatalf("unexpected final run %+v", done)
 	}
 
-	logs := h.text("/api/v1/runs/" + run.ID + "/logs")
+	logs := h.text("/runs/" + run.ID + "/logs")
 	if logs != "Terraform will perform the following actions\nApply complete!\n" {
 		t.Fatalf("logs = %q", logs)
 	}
-
 	// Now the queued plan run is unblocked.
-	if asg = h.claim(); asg == nil || asg.RunID != second.ID {
+	if asg := h.claim(); asg == nil || asg.RunID != second.ID {
 		t.Fatalf("expected the second run, got %+v", asg)
 	}
 }
@@ -244,25 +290,25 @@ func TestApplyRunLifecycle(t *testing.T) {
 func TestAutoApproveAndFailure(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	env := h.environment(true)
+	st := h.stack("", "network", "")
+	h.settings("", api.LevelSettings{RequireApproval: ptr(false)})
 
 	var run api.Run
-	h.call("POST", "/api/v1/environments/"+env.ID+"/runs", api.CreateRunRequest{Type: api.RunApply, Ref: "feature/x"}, http.StatusCreated, &run)
+	h.call("POST", "/stacks/"+st.ID+"/runs", api.CreateRunRequest{Type: api.RunApply, Ref: "feature/x"}, http.StatusCreated, &run)
 	if run.Ref != "feature/x" {
 		t.Fatalf("ref = %q", run.Ref)
 	}
-	asg := h.claim()
-	exec := apiclient.New(h.url, asg.Token)
+	exec, _ := h.spec(run.ID)
 	done, err := exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
 	must(t, err)
 	if done.Status != api.StatusApplyQueued {
-		t.Fatalf("auto-approve should queue the apply, got %s", done.Status)
+		t.Fatalf("no approval required: should queue the apply, got %s", done.Status)
 	}
 
 	// The executor dies: the agent reports it and the run fails.
-	asg = h.claim()
+	asg := h.claim()
 	must(t, h.agent.ReportFailure(ctx, asg.RunID, asg.Phase, "OOMKilled"))
-	h.call("GET", "/api/v1/runs/"+run.ID, nil, http.StatusOK, &run)
+	h.call("GET", "/runs/"+run.ID, nil, http.StatusOK, &run)
 	if run.Status != api.StatusFailed || run.Error != "OOMKilled" {
 		t.Fatalf("unexpected run %+v", run)
 	}
@@ -272,130 +318,25 @@ func TestAutoApproveAndFailure(t *testing.T) {
 	}
 }
 
-func TestToggleApproval(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	env := h.environment(true)
-
-	off := false
-	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{AutoApprove: &off}, http.StatusOK, &env)
-	if env.AutoApprove || env.Name == "" {
-		t.Fatalf("unexpected environment after update %+v", env)
-	}
-	var run api.Run
-	h.call("POST", "/api/v1/environments/"+env.ID+"/runs", api.CreateRunRequest{Type: api.RunApply}, http.StatusCreated, &run)
-	done, err := apiclient.New(h.url, h.claim().Token).Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
-	must(t, err)
-	if done.Status != api.StatusAwaitingApproval {
-		t.Fatalf("approval required: got %s", done.Status)
-	}
-
-	// Only the fields that are sent change; an empty ref clears the override.
-	ref, bad := "release", "../x"
-	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{Ref: &ref}, http.StatusOK, &env)
-	if env.Ref != "release" || env.AutoApprove {
-		t.Fatalf("unexpected environment %+v", env)
-	}
-	empty := ""
-	var cleared api.Environment // fresh: an empty ref is omitted from the response
-	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{Ref: &empty}, http.StatusOK, &cleared)
-	if cleared.Ref != "" || cleared.Name != env.Name {
-		t.Fatalf("ref not cleared: %+v", cleared)
-	}
-	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{Ref: &bad}, http.StatusUnprocessableEntity, nil)
-	h.call("PATCH", "/api/v1/environments/00000000-0000-0000-0000-000000000000", api.UpdateEnvironmentRequest{AutoApprove: &off}, http.StatusNotFound, nil)
-}
-
-func TestDriftDetection(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	env := h.environment(true) // auto-apply must not make a drift run apply
-
-	bad := 5
-	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{DriftIntervalMinutes: &bad}, http.StatusUnprocessableEntity, nil)
-	every := 60
-	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{DriftIntervalMinutes: &every}, http.StatusOK, &env)
-	if env.DriftIntervalMinutes != 60 || env.Drift != nil {
-		t.Fatalf("unexpected environment %+v", env)
-	}
-
-	// Enabling it makes the first check due right away, and only once.
-	n, err := h.store.ScheduleDriftRuns(ctx)
-	must(t, err)
-	if n < 1 {
-		t.Fatalf("expected a drift run to be scheduled, got %d", n)
-	}
-	var runs []api.Run
-	h.call("GET", "/api/v1/environments/"+env.ID+"/runs", nil, http.StatusOK, &runs)
-	if len(runs) != 1 || runs[0].Type != api.RunDrift || runs[0].CreatedBy != api.DriftActor {
-		t.Fatalf("unexpected runs %+v", runs)
-	}
-	if _, err := h.store.ScheduleDriftRuns(ctx); err != nil {
-		t.Fatal(err)
-	}
-	h.call("GET", "/api/v1/environments/"+env.ID+"/runs", nil, http.StatusOK, &runs)
-	if len(runs) != 1 {
-		t.Fatalf("drift run scheduled twice: %d runs", len(runs))
-	}
-
-	// The plan finds changes: the run ends as drifted and nothing is applied.
-	asg := h.claim()
-	if asg.RunID != runs[0].ID || asg.Phase != api.PhasePlan {
-		t.Fatalf("unexpected assignment %+v", asg)
-	}
-	summary := &api.PlanSummary{Change: 1}
-	done, err := apiclient.New(h.url, asg.Token).Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true, PlanSummary: summary})
-	must(t, err)
-	if done.Status != api.StatusDrifted {
-		t.Fatalf("status = %s, want drifted", done.Status)
-	}
-	if a := h.claim(); a != nil && a.RunID == done.ID {
-		t.Fatal("a drift run must never reach the apply phase")
-	}
-	h.call("GET", "/api/v1/environments/"+env.ID, nil, http.StatusOK, &env)
-	if env.Drift == nil || env.Drift.Status != api.DriftDrifted || env.Drift.RunID != done.ID {
-		t.Fatalf("unexpected drift %+v", env.Drift)
-	}
-
-	// A manual check that finds nothing marks the environment in sync.
-	var manual api.Run
-	h.call("POST", "/api/v1/environments/"+env.ID+"/runs", api.CreateRunRequest{Type: api.RunDrift}, http.StatusCreated, &manual)
-	_, err = apiclient.New(h.url, h.claim().Token).Complete(ctx, api.CompleteRequest{Success: true})
-	must(t, err)
-	var synced api.Environment
-	h.call("GET", "/api/v1/environments/"+env.ID, nil, http.StatusOK, &synced)
-	if synced.Drift == nil || synced.Drift.Status != api.DriftInSync || synced.Drift.RunID != manual.ID {
-		t.Fatalf("unexpected drift %+v", synced.Drift)
-	}
-
-	// Disabling it stops scheduling.
-	off := 0
-	h.call("PATCH", "/api/v1/environments/"+env.ID, api.UpdateEnvironmentRequest{DriftIntervalMinutes: &off}, http.StatusOK, &synced)
-	if synced.DriftIntervalMinutes != 0 || synced.Drift == nil {
-		t.Fatalf("unexpected environment %+v", synced)
-	}
-}
-
 func TestNoChangesAndCancel(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	env := h.environment(false)
+	st := h.stack("", "network", "")
 
-	var run, queued api.Run
-	h.call("POST", "/api/v1/environments/"+env.ID+"/runs", api.CreateRunRequest{Type: api.RunApply}, http.StatusCreated, &run)
-	h.call("POST", "/api/v1/environments/"+env.ID+"/runs", api.CreateRunRequest{Type: api.RunDestroy}, http.StatusCreated, &queued)
-	h.call("POST", "/api/v1/runs/"+queued.ID+"/cancel", nil, http.StatusOK, &queued)
+	run := h.run(st.ID, api.RunApply)
+	queued := h.run(st.ID, api.RunDestroy)
+	h.call("POST", "/runs/"+queued.ID+"/cancel", nil, http.StatusOK, &queued)
 	if queued.Status != api.StatusCanceled {
 		t.Fatalf("cancel: %s", queued.Status)
 	}
 
-	asg := h.claim()
-	done, err := apiclient.New(h.url, asg.Token).Complete(ctx, api.CompleteRequest{Success: true, HasChanges: false})
+	exec, _ := h.spec(run.ID)
+	done, err := exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: false})
 	must(t, err)
 	if done.Status != api.StatusNoChanges {
 		t.Fatalf("status = %s, want no_changes", done.Status)
 	}
-	h.call("POST", "/api/v1/runs/"+run.ID+"/cancel", nil, http.StatusConflict, nil)
+	h.call("POST", "/runs/"+run.ID+"/cancel", nil, http.StatusConflict, nil)
 	if h.claim() != nil {
 		t.Fatal("canceled run was claimed")
 	}
@@ -404,7 +345,7 @@ func TestNoChangesAndCancel(t *testing.T) {
 func TestAuthAndValidation(t *testing.T) {
 	h := newHarness(t)
 
-	req, _ := http.NewRequest("GET", h.url+"/api/v1/templates", nil)
+	req, _ := http.NewRequest("GET", h.url+"/api/v1/orgs", nil)
 	req.Header.Set("Authorization", "Bearer wrong")
 	resp, err := http.DefaultClient.Do(req)
 	must(t, err)
@@ -412,7 +353,6 @@ func TestAuthAndValidation(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong admin token: %d", resp.StatusCode)
 	}
-
 	if _, err := apiclient.New(h.url, "fla_bogus").Claim(context.Background()); err == nil {
 		t.Fatal("bogus agent token accepted")
 	}
@@ -420,27 +360,514 @@ func TestAuthAndValidation(t *testing.T) {
 		t.Fatal("bogus run token accepted")
 	}
 
-	bad := []api.CreateTemplateRequest{
-		{Name: "x", Repository: "--upload-pack=evil", Engine: "terraform", EngineVersion: "1.9.8"},
-		{Name: "x", Repository: "https://h/r.git", Engine: "terraform", EngineVersion: "latest"},
-		{Name: "x", Repository: "https://h/r.git", Engine: "pulumi", EngineVersion: "1.0.0"},
-		{Name: "x", Repository: "https://h/r.git", Engine: "terraform", EngineVersion: "1.9.8", Path: "../../etc"},
-		{Name: "x", Repository: "https://h/r.git", Engine: "terraform", EngineVersion: "1.9.8", DefaultRef: "-oops"},
+	bad := []api.CreateStackRequest{
+		{Name: "x", Repository: "--upload-pack=evil"},
+		{Name: "x", Repository: "https://h/r.git", Path: "../../etc"},
+		{Name: "x", Repository: "https://h/r.git", Path: "/etc"},
+		{Name: "x", Repository: "https://h/r.git", Ref: "-oops"},
+		{Name: "a/b", Repository: "https://h/r.git"},
+		{Name: "   ", Repository: "https://h/r.git"},
 	}
 	for _, b := range bad {
-		h.call("POST", "/api/v1/templates", b, http.StatusUnprocessableEntity, nil)
+		h.call("POST", "/stacks", b, http.StatusUnprocessableEntity, nil)
 	}
-
-	env := h.environment(false)
-	h.call("PUT", "/api/v1/environments/"+env.ID+"/variables", api.PutVariablesRequest{Variables: []api.Variable{
+	h.call("PUT", "/settings", api.LevelSettings{Variables: []api.Variable{
 		{Key: "FIRSTLUME_RUN_TOKEN", Category: api.CategoryEnv, Value: "x"},
 	}}, http.StatusUnprocessableEntity, nil)
-	h.call("GET", "/api/v1/runs/not-a-uuid", nil, http.StatusNotFound, nil)
+	h.call("PUT", "/settings", api.LevelSettings{DriftIntervalMinutes: ptr(5)}, http.StatusUnprocessableEntity, nil)
+	// A new sensitive variable needs a value.
+	h.call("PUT", "/settings", api.LevelSettings{Variables: []api.Variable{
+		{Key: "TOKEN", Category: api.CategoryEnv, Sensitive: true},
+	}}, http.StatusUnprocessableEntity, nil)
+	h.call("GET", "/runs/not-a-uuid", nil, http.StatusNotFound, nil)
+	h.call("GET", "/api/v1/orgs/no-such-org/tree", nil, http.StatusNotFound, nil)
+	h.call("POST", "/api/v1/orgs", api.CreateOrganizationRequest{Slug: "Bad Slug", Name: "x"}, http.StatusUnprocessableEntity, nil)
+}
+
+// CA1.1: nothing of one organization is visible from another.
+func TestOrganizationIsolation(t *testing.T) {
+	h := newHarness(t)
+	f := h.folder("", "Ambientes")
+	st := h.stack(f.ID, "prod", "")
+	run := h.run(st.ID, api.RunPlan)
+
+	var other api.Organization
+	h.call("POST", "/api/v1/orgs", api.CreateOrganizationRequest{Slug: "o-" + randomSuffix(), Name: "Other"}, http.StatusCreated, &other)
+	o := "/api/v1/orgs/" + other.Slug
+	var tree api.Tree
+	h.call("GET", o+"/tree", nil, http.StatusOK, &tree)
+	if len(tree.Folders) != 0 || len(tree.Stacks) != 0 {
+		t.Fatalf("other organization sees %+v", tree)
+	}
+	h.call("GET", o+"/stacks/"+st.ID, nil, http.StatusNotFound, nil)
+	h.call("GET", o+"/stacks/"+st.ID+"/settings", nil, http.StatusNotFound, nil)
+	h.call("GET", o+"/folders/"+f.ID+"/settings", nil, http.StatusNotFound, nil)
+	h.call("GET", o+"/runs/"+run.ID, nil, http.StatusNotFound, nil)
+	h.call("POST", o+"/runs/"+run.ID+"/cancel", nil, http.StatusNotFound, nil)
+	h.call("POST", o+"/folders", api.CreateFolderRequest{ParentID: f.ID, Name: "x"}, http.StatusUnprocessableEntity, nil)
+	h.call("POST", o+"/stacks", api.CreateStackRequest{FolderID: f.ID, Name: "x", Repository: "https://h/r.git"}, http.StatusUnprocessableEntity, nil)
+	var active []api.ActiveRun
+	h.call("GET", o+"/runs?active=true", nil, http.StatusOK, &active)
+	if len(active) != 0 {
+		t.Fatalf("other organization sees active runs %+v", active)
+	}
+
+	// An agent of the other organization never gets this organization's runs.
+	ctx := context.Background()
+	otherID, err := h.store.EnsureOrganization(ctx, other.Slug)
+	must(t, err)
+	tok, _ := secrets.RandomToken("fla_")
+	must(t, h.store.EnsureAgent(ctx, otherID, "other", tok))
+	if a, err := apiclient.New(h.url, tok).Claim(ctx); err != nil || a != nil {
+		t.Fatalf("other organization's agent claimed %+v (%v)", a, err)
+	}
+	if a := h.claim(); a == nil || a.RunID != run.ID {
+		t.Fatalf("own agent should claim the run, got %+v", a)
+	}
+}
+
+// CA1.2–CA1.4.
+func TestFolders(t *testing.T) {
+	h := newHarness(t)
+	parent := ""
+	var deepest api.Folder
+	for i := 1; i <= api.MaxFolderDepth; i++ {
+		deepest = h.folder(parent, fmt.Sprintf("level %d", i))
+		if len(deepest.Path) != i {
+			t.Fatalf("level %d has path %v", i, deepest.Path)
+		}
+		parent = deepest.ID
+	}
+	raw := h.call("POST", "/folders", api.CreateFolderRequest{ParentID: deepest.ID, Name: "too deep"}, http.StatusUnprocessableEntity, nil)
+	if !strings.Contains(string(raw), "at most 10 levels") {
+		t.Fatalf("depth error: %s", raw)
+	}
+
+	prod := h.folder("", "Prod")
+	h.call("POST", "/folders", api.CreateFolderRequest{Name: "prod"}, http.StatusConflict, nil)
+	h.folder(prod.ID, "prod") // same name under another parent is fine
+	h.call("POST", "/folders", api.CreateFolderRequest{ParentID: prod.ID, Name: "PROD"}, http.StatusConflict, nil)
+
+	h.call("DELETE", "/folders/"+prod.ID, nil, http.StatusConflict, nil)
+	empty := h.folder("", "empty")
+	h.call("PATCH", "/folders/"+empty.ID, api.UpdateFolderRequest{Name: "renamed"}, http.StatusOK, &empty)
+	if empty.Name != "renamed" {
+		t.Fatalf("rename: %+v", empty)
+	}
+	h.call("DELETE", "/folders/"+empty.ID, nil, http.StatusNoContent, nil)
+	h.call("DELETE", "/folders/"+empty.ID, nil, http.StatusNotFound, nil)
+
+	var tree api.Tree
+	h.call("GET", "/tree", nil, http.StatusOK, &tree)
+	if len(tree.Folders) != api.MaxFolderDepth+2 {
+		t.Fatalf("tree has %d folders", len(tree.Folders))
+	}
+}
+
+// CA1.5–CA1.7.
+func TestStacks(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	f := h.folder("", "Ambientes")
+
+	root := h.stack("", "edge", "./environments/edge/")
+	if root.FolderID != "" || root.Path != "environments/edge" || root.Ref != "main" {
+		t.Fatalf("unexpected stack %+v", root)
+	}
+	prod := h.stack(f.ID, "prod", "environments/prod")
+	if prod.FolderID != f.ID {
+		t.Fatalf("stack not in its folder: %+v", prod)
+	}
+
+	// Same repository, ref and path: refused, naming the existing stack.
+	raw := h.call("POST", "/stacks", api.CreateStackRequest{
+		FolderID: f.ID, Name: "again", Repository: "https://example.com/acme/infra.git", Path: "environments/prod",
+	}, http.StatusConflict, nil)
+	if !strings.Contains(string(raw), `\"prod\"`) && !strings.Contains(string(raw), `"prod"`) {
+		t.Fatalf("conflict should name the stack: %s", raw)
+	}
+	// Same repository and path on another branch is a different stack.
+	h.call("POST", "/stacks", api.CreateStackRequest{
+		FolderID: f.ID, Name: "prod-next", Repository: "https://example.com/acme/infra.git", Ref: "next", Path: "environments/prod",
+	}, http.StatusCreated, nil)
+	// Names are unique per folder, ignoring case.
+	h.call("POST", "/stacks", api.CreateStackRequest{FolderID: f.ID, Name: "PROD", Repository: "https://h/r.git"}, http.StatusConflict, nil)
+	h.stack("", "prod", "") // fine at the top level
+
+	// Each stack has its own lock: a run on one does not hold the other's queue.
+	a := h.run(prod.ID, api.RunApply)
+	b := h.run(root.ID, api.RunPlan)
+	first := h.claim()
+	second := h.claim()
+	if first == nil || second == nil || first.RunID == second.RunID ||
+		!(first.RunID == a.ID || first.RunID == b.ID) || !(second.RunID == a.ID || second.RunID == b.ID) {
+		t.Fatalf("both stacks should run at once: %+v %+v", first, second)
+	}
+
+	h.call("DELETE", "/stacks/"+prod.ID, nil, http.StatusConflict, nil) // run in progress
+	_, err := apiclient.New(h.url, first.Token).Complete(ctx, api.CompleteRequest{Success: true})
+	must(t, err)
+	_, err = apiclient.New(h.url, second.Token).Complete(ctx, api.CompleteRequest{Success: true})
+	must(t, err)
+	h.call("DELETE", "/stacks/"+prod.ID, nil, http.StatusNoContent, nil)
+}
+
+// CA1.8, CA1.9, CA1.11: the example in spec 0001, R6.11.
+func TestInheritance(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.settings("", api.LevelSettings{RequireApproval: ptr(true), Variables: []api.Variable{
+		{Key: "region", Category: api.CategoryTerraform, Value: "us-east-1"},
+		{Key: "DB_PASSWORD", Category: api.CategoryEnv, Sensitive: true, Value: "secret-a"},
+	}})
+	ambientes := h.folder("", "Ambientes")
+	prod := h.folder(ambientes.ID, "prod")
+	dev := h.folder(ambientes.ID, "dev")
+	h.settings("/folders/"+prod.ID, api.LevelSettings{DriftIntervalMinutes: ptr(360), Variables: []api.Variable{
+		{Key: "DB_PASSWORD", Category: api.CategoryEnv, Sensitive: true, Value: "secret-b"},
+	}})
+	h.settings("/folders/"+dev.ID, api.LevelSettings{RequireApproval: ptr(false)})
+	kube01 := h.stack(prod.ID, "kube01", "")
+	dev01 := h.stack(dev.ID, "dev01", "")
+	h.settings("/stacks/"+dev01.ID, api.LevelSettings{Variables: []api.Variable{
+		{Key: "region", Category: api.CategoryTerraform, Value: "sa-east-1"},
+	}})
+
+	// What the executors get.
+	r1 := h.run(kube01.ID, api.RunApply)
+	exec1, spec1 := h.spec(r1.ID)
+	if v := vars(spec1); v["terraform/region"] != "us-east-1" || v["env/DB_PASSWORD"] != "secret-b" || len(v) != 2 {
+		t.Fatalf("kube01 variables %v", v)
+	}
+	r2 := h.run(dev01.ID, api.RunApply)
+	exec2, spec2 := h.spec(r2.ID)
+	if v := vars(spec2); v["terraform/region"] != "sa-east-1" || v["env/DB_PASSWORD"] != "secret-a" || len(v) != 2 {
+		t.Fatalf("dev01 variables %v", v)
+	}
+	// Approval: required for kube01 (organization), not for dev01 (dev folder).
+	d1, err := exec1.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
+	must(t, err)
+	d2, err := exec2.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
+	must(t, err)
+	if d1.Status != api.StatusAwaitingApproval || d2.Status != api.StatusApplyQueued {
+		t.Fatalf("approval: kube01 %s, dev01 %s", d1.Status, d2.Status)
+	}
+
+	// What the UI shows: effective values with their origin, secrets without values.
+	var s api.SettingsResponse
+	h.call("GET", "/stacks/"+kube01.ID+"/settings", nil, http.StatusOK, &s)
+	eff := map[string]api.EffectiveVariable{}
+	for _, v := range s.Effective.Variables {
+		eff[v.Key] = v
+	}
+	if pw := eff["DB_PASSWORD"]; pw.Value != "" || pw.Origin.Kind != api.LevelFolder || pw.Origin.ID != prod.ID ||
+		pw.Origin.Name != "prod" || pw.Overrides == nil || pw.Overrides.Kind != api.LevelOrganization {
+		t.Fatalf("kube01 DB_PASSWORD %+v", pw)
+	}
+	if rg := eff["region"]; rg.Value != "us-east-1" || rg.Origin.Kind != api.LevelOrganization || rg.Overrides != nil {
+		t.Fatalf("kube01 region %+v", rg)
+	}
+	if s.Effective.RequireApproval.Value != true || s.Effective.RequireApproval.Origin.Kind != api.LevelOrganization {
+		t.Fatalf("kube01 approval %+v", s.Effective.RequireApproval)
+	}
+	if s.Effective.DriftIntervalMinutes.Value != 360 || s.Effective.DriftIntervalMinutes.Origin.ID != prod.ID {
+		t.Fatalf("kube01 drift %+v", s.Effective.DriftIntervalMinutes)
+	}
+	if len(s.Level.Variables) != 0 || s.Level.RequireApproval != nil {
+		t.Fatalf("kube01 defines nothing itself: %+v", s.Level)
+	}
+
+	h.call("GET", "/folders/"+prod.ID+"/settings", nil, http.StatusOK, &s)
+	if len(s.Level.Variables) != 1 || s.Level.Variables[0].Value != "" || *s.Level.DriftIntervalMinutes != 360 {
+		t.Fatalf("prod level %+v", s.Level)
+	}
+	for _, v := range s.Effective.Variables {
+		if v.Key == "DB_PASSWORD" && (v.Overrides == nil || v.Overrides.Kind != api.LevelOrganization) {
+			t.Fatalf("prod DB_PASSWORD should override the organization: %+v", v)
+		}
+	}
+
+	// Nothing defined anywhere: approval required, drift off.
+	h.settings("", api.LevelSettings{})
+	lone := h.stack("", "lone", "")
+	h.call("GET", "/stacks/"+lone.ID+"/settings", nil, http.StatusOK, &s)
+	if !s.Effective.RequireApproval.Value || s.Effective.RequireApproval.Origin.Kind != api.LevelDefault ||
+		s.Effective.DriftIntervalMinutes.Value != 0 || len(s.Effective.Variables) != 0 {
+		t.Fatalf("defaults %+v", s.Effective)
+	}
+}
+
+// CA1.10: the apply runs with the variables its plan ran with.
+func TestApplyUsesPlanVariables(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.settings("", api.LevelSettings{Variables: []api.Variable{{Key: "size", Category: api.CategoryTerraform, Value: "small"}}})
+	st := h.stack("", "app", "")
+	run := h.run(st.ID, api.RunApply)
+	exec, spec := h.spec(run.ID)
+	if vars(spec)["terraform/size"] != "small" {
+		t.Fatalf("plan variables %v", vars(spec))
+	}
+	_, err := exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
+	must(t, err)
+
+	h.settings("", api.LevelSettings{Variables: []api.Variable{{Key: "size", Category: api.CategoryTerraform, Value: "huge"}}})
+	h.call("POST", "/runs/"+run.ID+"/approve", nil, http.StatusOK, nil)
+	_, spec = h.spec(run.ID)
+	if spec.Phase != api.PhaseApply || vars(spec)["terraform/size"] != "small" {
+		t.Fatalf("apply variables %v, want the plan's", vars(spec))
+	}
+}
+
+// CA1.12: secret values never come back from the API nor reach the server log.
+func TestSecretsNeverReturned(t *testing.T) {
+	h := newHarness(t)
+	f := h.folder("", "Ambientes")
+	st := h.stack(f.ID, "prod", "")
+	secretsByLevel := map[string]string{"": "org-s3cr3t", "/folders/" + f.ID: "folder-s3cr3t", "/stacks/" + st.ID: "stack-s3cr3t"}
+	var bodies []string
+	for level, secret := range secretsByLevel {
+		bodies = append(bodies, string(h.call("PUT", level+"/settings", api.LevelSettings{Variables: []api.Variable{
+			{Key: "PASSWORD", Category: api.CategoryEnv, Sensitive: true, Value: secret},
+		}}, http.StatusOK, nil)))
+		bodies = append(bodies, string(h.call("GET", level+"/settings", nil, http.StatusOK, nil)))
+		// Saving again without the value keeps it.
+		h.call("PUT", level+"/settings", api.LevelSettings{Variables: []api.Variable{
+			{Key: "PASSWORD", Category: api.CategoryEnv, Sensitive: true},
+		}}, http.StatusOK, nil)
+	}
+	bodies = append(bodies, string(h.call("GET", "/tree", nil, http.StatusOK, nil)))
+	bodies = append(bodies, string(h.call("GET", "/stacks/"+st.ID, nil, http.StatusOK, nil)))
+	for _, secret := range secretsByLevel {
+		for _, b := range bodies {
+			if strings.Contains(b, secret) {
+				t.Fatalf("API returned %q: %s", secret, b)
+			}
+		}
+		if strings.Contains(h.logs.String(), secret) {
+			t.Fatalf("server log contains %q", secret)
+		}
+	}
+	// The executor gets the nearest one, still intact after the re-save.
+	run := h.run(st.ID, api.RunPlan)
+	if _, spec := h.spec(run.ID); vars(spec)["env/PASSWORD"] != "stack-s3cr3t" {
+		t.Fatalf("executor variables %v", vars(spec))
+	}
+}
+
+func TestDriftDetection(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.settings("", api.LevelSettings{RequireApproval: ptr(false)}) // must not make a drift run apply
+	f := h.folder("", "monitored")
+	watched := h.stack(f.ID, "watched", "")
+	unwatched := h.stack("", "unwatched", "")
+	h.settings("/folders/"+f.ID, api.LevelSettings{DriftIntervalMinutes: ptr(60)})
+
+	n, err := h.store.ScheduleDriftRuns(ctx)
+	must(t, err)
+	if n < 1 {
+		t.Fatalf("expected a drift run to be scheduled, got %d", n)
+	}
+	var runs []api.Run
+	h.call("GET", "/stacks/"+watched.ID+"/runs", nil, http.StatusOK, &runs)
+	if len(runs) != 1 || runs[0].Type != api.RunDrift || runs[0].CreatedBy != api.DriftActor {
+		t.Fatalf("unexpected runs %+v", runs)
+	}
+	h.call("GET", "/stacks/"+unwatched.ID+"/runs", nil, http.StatusOK, &runs)
+	if len(runs) != 0 {
+		t.Fatalf("drift off by default, got %+v", runs)
+	}
+	_, err = h.store.ScheduleDriftRuns(ctx)
+	must(t, err)
+	h.call("GET", "/stacks/"+watched.ID+"/runs", nil, http.StatusOK, &runs)
+	if len(runs) != 1 {
+		t.Fatalf("drift run scheduled twice: %d runs", len(runs))
+	}
+
+	// The plan finds changes: the run ends as drifted and nothing is applied.
+	exec, _ := h.spec(runs[0].ID)
+	done, err := exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true, PlanSummary: &api.PlanSummary{Change: 1}})
+	must(t, err)
+	if done.Status != api.StatusDrifted {
+		t.Fatalf("status = %s, want drifted", done.Status)
+	}
+	if a := h.claim(); a != nil {
+		t.Fatalf("a drift run must never reach the apply phase, claimed %+v", a)
+	}
+	h.call("GET", "/stacks/"+watched.ID, nil, http.StatusOK, &watched)
+	if watched.Drift == nil || watched.Drift.Status != api.DriftDrifted || watched.Drift.RunID != done.ID {
+		t.Fatalf("unexpected drift %+v", watched.Drift)
+	}
+
+	// A manual check that finds nothing marks the stack in sync.
+	manual := h.run(watched.ID, api.RunDrift)
+	exec, _ = h.spec(manual.ID)
+	_, err = exec.Complete(ctx, api.CompleteRequest{Success: true})
+	must(t, err)
+	h.call("GET", "/stacks/"+watched.ID, nil, http.StatusOK, &watched)
+	if watched.Drift == nil || watched.Drift.Status != api.DriftInSync || watched.Drift.RunID != manual.ID {
+		t.Fatalf("unexpected drift %+v", watched.Drift)
+	}
+}
+
+// CA1.16 (API): the organization-wide queue of active runs.
+func TestActiveRuns(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	amb := h.folder("", "Ambientes")
+	prod := h.folder(amb.ID, "prod")
+	a := h.stack(prod.ID, "kube01", "")
+	b := h.stack(amb.ID, "edge", "")
+	c := h.stack("", "dns", "")
+	ra := h.run(a.ID, api.RunApply)
+	h.run(b.ID, api.RunPlan)
+	h.run(c.ID, api.RunPlan)
+	exec, _ := h.spec(ra.ID)
+	must(t, exec.SetCommit(ctx, api.CommitRequest{SHA: strings.Repeat("b", 40), AuthorName: "Ana", AuthorEmail: "ana@example.com", Message: "Bump nodes"}))
+	_, err := exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
+	must(t, err)
+
+	var active []api.ActiveRun
+	h.call("GET", "/runs?active=true", nil, http.StatusOK, &active)
+	if len(active) != 3 {
+		t.Fatalf("active runs %+v", active)
+	}
+	first := active[0]
+	if first.ID != ra.ID || first.Status != api.StatusAwaitingApproval || first.StackName != "kube01" ||
+		strings.Join(first.FolderPath, "/") != "Ambientes/prod" || first.CommitAuthorName != "Ana" || first.CommitMessage != "Bump nodes" {
+		t.Fatalf("awaiting approval should come first with its context: %+v", first)
+	}
+	for _, r := range active {
+		if r.StackID == c.ID && len(r.FolderPath) != 0 {
+			t.Fatalf("top-level stack has a folder path: %+v", r)
+		}
+	}
+	h.call("GET", "/runs", nil, http.StatusBadRequest, nil)
+}
+
+// CA1b.1–CA1b.3, CA1b.6, CA1b.7: changes, confirmation of destructive changes,
+// steps with their own logs, and what the run was configured with.
+func TestPlanReview(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	prod := h.folder("", "prod")
+	h.settings("/folders/"+prod.ID, api.LevelSettings{ConfirmDestructive: ptr(true), Variables: []api.Variable{
+		{Key: "region", Category: api.CategoryTerraform, Value: "sa-east-1"},
+		{Key: "DB_PASSWORD", Category: api.CategoryEnv, Sensitive: true, Value: "pl4n-s3cret"},
+	}})
+	st := h.stack(prod.ID, "network", "")
+	run := h.run(st.ID, api.RunApply)
+	exec, _ := h.spec(run.ID)
+
+	// The executor reports its steps; logs land on the step that was running.
+	step := func(name string, status api.StepStatus) {
+		t.Helper()
+		must(t, exec.Step(ctx, api.StepRequest{Name: name, Kind: api.StepCore, Status: status}))
+	}
+	step("Checkout", api.StepRunning)
+	must(t, exec.AppendLog(ctx, []byte("cloning\n")))
+	cfg := &api.StackConfig{Version: 1, Engine: "terraform", EngineVersion: "1.15.8", TerragruntVersion: "1.2.1", RunAll: true}
+	must(t, exec.SetCommit(ctx, api.CommitRequest{SHA: strings.Repeat("c", 40), Config: cfg}))
+	step("Checkout", api.StepSucceeded)
+	step("Init", api.StepRunning)
+	must(t, exec.AppendLog(ctx, []byte("initializing\n")))
+	step("Init", api.StepSucceeded)
+	step("Plan", api.StepRunning)
+	must(t, exec.AppendLog(ctx, []byte("planning\n")))
+	if err := exec.Step(ctx, api.StepRequest{Name: "Nope", Kind: api.StepCore, Status: api.StepSucceeded}); err == nil {
+		t.Fatal("finishing a step that never started was accepted")
+	}
+
+	str := func(v string) *string { return &v }
+	changes := []api.ResourceChange{
+		{Unit: "db", Address: "aws_db_instance.legacy", Type: "aws_db_instance", Name: "legacy", Action: api.ActionDelete},
+		{Unit: "net", Address: "aws_subnet.a", Type: "aws_subnet", Name: "a", Action: api.ActionReplace,
+			Attributes: []api.AttributeChange{{Path: "cidr_block", Before: str("10.0.1.0/24"), After: str("10.0.16.0/20"), ForcesReplacement: true}}},
+		{Unit: "net", Address: "aws_vpc.main", Type: "aws_vpc", Name: "main", Action: api.ActionUpdate},
+		{Unit: "db", Address: "aws_db_instance.orders", Type: "aws_db_instance", Name: "orders", Action: api.ActionCreate},
+	}
+	must(t, exec.PutChanges(ctx, changes))
+	step("Plan", api.StepSucceeded)
+	done, err := exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true,
+		PlanSummary: &api.PlanSummary{Add: 1, Change: 1, Replace: 1, Destroy: 1}})
+	must(t, err)
+	if done.Status != api.StatusAwaitingApproval || done.PlanSummary.Replace != 1 {
+		t.Fatalf("unexpected run %+v", done)
+	}
+
+	var got []api.ResourceChange
+	h.call("GET", "/runs/"+run.ID+"/changes", nil, http.StatusOK, &got)
+	if len(got) != 4 || got[1].Action != api.ActionReplace || !got[1].Attributes[0].ForcesReplacement {
+		t.Fatalf("changes %+v", got)
+	}
+	var steps []api.RunStep
+	h.call("GET", "/runs/"+run.ID+"/steps", nil, http.StatusOK, &steps)
+	if len(steps) != 3 || steps[0].Name != "Checkout" || steps[2].Name != "Plan" || steps[2].Status != api.StepSucceeded ||
+		steps[1].StartedAt == nil || steps[1].FinishedAt == nil {
+		t.Fatalf("steps %+v", steps)
+	}
+	if l := h.text("/runs/" + run.ID + "/logs?step=Init"); l != "initializing\n" {
+		t.Fatalf("Init log = %q", l)
+	}
+
+	// What the run was configured with, captured at plan time.
+	h.call("GET", "/runs/"+run.ID, nil, http.StatusOK, &run)
+	if run.Config == nil || !run.Config.RunAll || run.SettingsUsed == nil || !run.SettingsUsed.ConfirmDestructive.Value ||
+		run.SettingsUsed.ConfirmDestructive.Origin.ID != prod.ID || len(run.SettingsUsed.Variables) != 2 {
+		t.Fatalf("run configuration %+v", run)
+	}
+	for _, v := range run.SettingsUsed.Variables {
+		if v.Sensitive && v.Value != "" {
+			t.Fatalf("settings used leaks a secret: %+v", v)
+		}
+	}
+	h.settings("/folders/"+prod.ID, api.LevelSettings{ConfirmDestructive: ptr(true), Variables: []api.Variable{
+		{Key: "region", Category: api.CategoryTerraform, Value: "us-east-1"},
+		{Key: "DB_PASSWORD", Category: api.CategoryEnv, Sensitive: true},
+	}})
+	var again api.Run
+	h.call("GET", "/runs/"+run.ID, nil, http.StatusOK, &again)
+	for _, v := range again.SettingsUsed.Variables {
+		if v.Key == "region" && v.Value != "sa-east-1" {
+			t.Fatalf("a run shows what it ran with, not today's value: %+v", v)
+		}
+	}
+
+	// Confirmation required: nothing, or only part of the destructive changes, is refused.
+	raw := h.call("POST", "/runs/"+run.ID+"/approve", nil, http.StatusConflict, nil)
+	if !strings.Contains(string(raw), "db:aws_db_instance.legacy") || !strings.Contains(string(raw), "net:aws_subnet.a") {
+		t.Fatalf("refusal should name the missing resources: %s", raw)
+	}
+	h.call("POST", "/runs/"+run.ID+"/approve", api.ApproveRequest{Acknowledged: []string{"db:aws_db_instance.legacy"}}, http.StatusConflict, nil)
+	h.call("POST", "/runs/"+run.ID+"/approve", api.ApproveRequest{Acknowledged: []string{
+		"db:aws_db_instance.legacy", "net:aws_subnet.a", "db:aws_db_instance.orders"}}, http.StatusOK, &run)
+	if run.Status != api.StatusApplyQueued || len(run.Acknowledged) != 2 {
+		t.Fatalf("approved run %+v", run)
+	}
+
+	if a := h.claim(); a == nil || a.RunID != run.ID || a.Phase != api.PhaseApply {
+		t.Fatalf("expected the approved apply, got %+v", a)
+	}
+
+	// The same plan on a stack outside prod (default settings) needs no confirmation.
+	other := h.stack("", "other", "")
+	r2 := h.run(other.ID, api.RunApply)
+	exec2, _ := h.spec(r2.ID)
+	must(t, exec2.PutChanges(ctx, changes))
+	_, err = exec2.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
+	must(t, err)
+	h.call("POST", "/runs/"+r2.ID+"/approve", nil, http.StatusOK, nil)
+
+	// Changes can only be sent during the plan phase.
+	if err := exec2.PutChanges(ctx, changes); err == nil {
+		t.Fatal("changes accepted after the plan phase")
+	}
 }
 
 func (h *harness) text(path string) string {
 	h.t.Helper()
-	req, _ := http.NewRequest("GET", h.url+path, nil)
+	req, _ := http.NewRequest("GET", h.url+"/api/v1/orgs/"+h.org+path, nil)
 	req.Header.Set("Authorization", "Bearer "+testAdminToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

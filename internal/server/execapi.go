@@ -1,10 +1,13 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 
@@ -15,6 +18,8 @@ import (
 const (
 	maxLogBody      = 1 << 20
 	maxArtifactBody = 128 << 20
+	// A plan's change list can be large (thousands of resources in run --all stacks).
+	maxChangesBody = 32 << 20
 )
 
 var commitRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
@@ -30,6 +35,8 @@ func (s *Server) execRoutes(r chi.Router) {
 	r.Put("/artifacts/{name}", s.execPutArtifact)
 	r.Get("/artifacts/{name}", s.execGetArtifact)
 	r.Post("/complete", s.execComplete)
+	r.Put("/changes", s.execChanges)
+	r.Post("/steps", s.execStep)
 }
 
 func phaseOf(r *http.Request) (string, api.Phase) {
@@ -67,7 +74,7 @@ func (s *Server) execCommit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "commit can only be set during plan, as a full hex SHA")
 		return
 	}
-	if err := s.store.SetCommit(r.Context(), runID, req.SHA); err != nil {
+	if err := s.store.SetCommit(r.Context(), runID, req); err != nil {
 		s.execError(w, r, err)
 		return
 	}
@@ -138,6 +145,56 @@ func (s *Server) execGetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	_, _ = w.Write(data)
+}
+
+func (s *Server) execChanges(w http.ResponseWriter, r *http.Request) {
+	runID, phase := phaseOf(r)
+	var changes []api.ResourceChange
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxChangesBody))
+	if err := dec.Decode(&changes); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid changes: %v", err))
+		return
+	}
+	if phase != api.PhasePlan {
+		writeError(w, http.StatusUnprocessableEntity, "changes can only be set during plan")
+		return
+	}
+	for _, c := range changes {
+		switch c.Action {
+		case api.ActionCreate, api.ActionUpdate, api.ActionReplace, api.ActionDelete:
+		default:
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("unknown action %q", c.Action))
+			return
+		}
+	}
+	if err := s.store.SetChanges(r.Context(), runID, changes); err != nil {
+		s.execError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) execStep(w http.ResponseWriter, r *http.Request) {
+	runID, phase := phaseOf(r)
+	var req api.StepRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	n := utf8.RuneCountInString(req.Name)
+	validStatus := req.Status == api.StepRunning || req.Status == api.StepSucceeded || req.Status == api.StepFailed || req.Status == api.StepSkipped
+	if n == 0 || n > 100 || (req.Kind != api.StepCore && req.Kind != api.StepHook) || !validStatus {
+		writeError(w, http.StatusUnprocessableEntity, "a step needs a name (1-100 characters), a kind (core or hook) and a status")
+		return
+	}
+	if err := s.store.RecordStep(r.Context(), runID, phase, req); err != nil {
+		if errors.Is(err, store.ErrInvalid) {
+			writeError(w, http.StatusUnprocessableEntity, "no running step with that name")
+			return
+		}
+		s.execError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) execComplete(w http.ResponseWriter, r *http.Request) {

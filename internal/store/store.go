@@ -27,6 +27,10 @@ var (
 	ErrDuplicate = errors.New("already exists")
 	// ErrInvalid means the input references something that does not exist or is malformed.
 	ErrInvalid = errors.New("invalid reference")
+	// ErrTooDeep means a folder would nest deeper than api.MaxFolderDepth.
+	ErrTooDeep = errors.New("folder too deep")
+	// ErrMissingSecret means a new sensitive variable was sent without a value.
+	ErrMissingSecret = errors.New("sensitive variable without a value")
 )
 
 type Store struct {
@@ -73,16 +77,6 @@ func migrate(ctx context.Context, db *sql.DB, fsys fs.FS) ([]*goose.MigrationRes
 
 func (s *Store) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
-}
-
-// EnsureOrganization returns the id of the named organization, creating it if needed.
-func (s *Store) EnsureOrganization(ctx context.Context, name string) (string, error) {
-	var id string
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO organizations (name) VALUES ($1)
-		ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-		RETURNING id`, name).Scan(&id)
-	return id, err
 }
 
 func notFound(err error) error {

@@ -34,10 +34,10 @@ func (s *Server) claimRun(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("run claimed", "run_id", run.ID, "phase", phase, "agent", agent.Name)
 	writeJSON(w, http.StatusOK, api.Assignment{
-		RunID:         run.ID,
-		EnvironmentID: run.EnvironmentID,
-		Phase:         phase,
-		Token:         token,
+		RunID:   run.ID,
+		StackID: run.StackID,
+		Phase:   phase,
+		Token:   token,
 	})
 }
 

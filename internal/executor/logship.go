@@ -49,6 +49,8 @@ func (m *Masker) Mask(s string) string {
 // second. Shipping whole lines keeps a secret from being split across chunks
 // where the masker could not see it.
 type LogShipper struct {
+	// sendMu keeps chunks in order between the background loop and Flush.
+	sendMu sync.Mutex
 	mu     sync.Mutex
 	buf    bytes.Buffer
 	masker *Masker
@@ -106,7 +108,14 @@ func (l *LogShipper) take(final bool) string {
 	return out
 }
 
+// Flush ships everything written so far, including an unfinished line.
+func (l *LogShipper) Flush() {
+	l.flush(true)
+}
+
 func (l *LogShipper) flush(final bool) {
+	l.sendMu.Lock()
+	defer l.sendMu.Unlock()
 	chunk := l.take(final)
 	if chunk == "" {
 		return

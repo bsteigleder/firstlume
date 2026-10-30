@@ -59,42 +59,42 @@ make run-agent     # outro terminal: agent com driver local (sem Kubernetes)
 
 O driver `local` roda o executor como subprocesso, sem isolamento. Use só para desenvolvimento.
 
-Abra http://127.0.0.1:8787 e entre com o `FIRSTLUME_ADMIN_TOKEN` do `.env`. `deploy/dev/demo.sh` cria um template e um ambiente de exemplo e dispara um apply.
+`deploy/dev/demo.sh` cria uma pasta e um stack de exemplo (`examples/hello` deste repositório) e dispara um apply. A UI está sendo refeita para o novo modelo de organizações, pastas e stacks (spec 0001); até lá, use a API.
 
 Para mexer na UI com hot reload, rode `make web-dev` (Vite em http://localhost:5173, com proxy para a API em 8787).
 
-O mesmo fluxo pela API, com o token admin que está em `.env`:
+O fluxo pela API, com o token admin que está em `.env` (a organização `default` é criada na subida):
 
 ```bash
 source .env
 H="Authorization: Bearer $FIRSTLUME_ADMIN_TOKEN"
+O=127.0.0.1:8787/api/v1/orgs/default
 
-# 1. template: onde está o código e quais versões usar
-TPL=$(curl -s -H "$H" 127.0.0.1:8787/api/v1/templates -d '{
-  "name": "hello", "repository": "https://github.com/sua-org/infra.git",
-  "path": "examples/hello", "default_ref": "main",
-  "engine": "terraform", "engine_version": "1.9.8"
-}' | jq -r .id)
+# 1. uma pasta (opcional: stacks também podem ficar na raiz)
+F=$(curl -s -H "$H" $O/folders -d '{"name": "Ambientes"}' | jq -r .id)
 
-# 2. ambiente
-ENV=$(curl -s -H "$H" 127.0.0.1:8787/api/v1/environments -d "{
-  \"template_id\": \"$TPL\", \"name\": \"dev\"
-}" | jq -r .id)
-
-# 3. variáveis (as sensíveis são criptografadas e mascaradas nos logs)
-curl -s -X PUT -H "$H" 127.0.0.1:8787/api/v1/environments/$ENV/variables -d '{
+# 2. variáveis e segredos da pasta, herdados pelos stacks abaixo dela
+curl -s -X PUT -H "$H" $O/folders/$F/settings -d '{
+  "require_approval": true,
   "variables": [
     {"key": "greeting", "category": "terraform", "value": "olá"},
     {"key": "AWS_SECRET_ACCESS_KEY", "category": "env", "sensitive": true, "value": "..."}
   ]
 }'
 
-# 4. run de apply, acompanhando os logs ao vivo (SSE)
-RUN=$(curl -s -H "$H" 127.0.0.1:8787/api/v1/environments/$ENV/runs -d '{"type": "apply"}' | jq -r .id)
-curl -N -H "$H" "127.0.0.1:8787/api/v1/runs/$RUN/logs?follow=true"
+# 3. o stack: a pasta do repositório que contém .firstlume/config.yaml
+ST=$(curl -s -H "$H" $O/stacks -d "{
+  \"folder_id\": \"$F\", \"name\": \"hello\",
+  \"repository\": \"https://github.com/sua-org/infra.git\", \"path\": \"examples/hello\"
+}" | jq -r .id)
 
-# 5. aprovar o plano
-curl -s -X POST -H "$H" 127.0.0.1:8787/api/v1/runs/$RUN/approve
+# 4. run de apply, acompanhando os logs ao vivo (SSE)
+RUN=$(curl -s -H "$H" $O/stacks/$ST/runs -d '{"type": "apply"}' | jq -r .id)
+curl -N -H "$H" "$O/runs/$RUN/logs?follow=true"
+
+# 5. revisar o que muda, recurso por recurso, e aprovar
+curl -s -H "$H" $O/runs/$RUN/changes | jq .
+curl -s -X POST -H "$H" $O/runs/$RUN/approve -d '{"acknowledged": []}'
 ```
 
 Testes:

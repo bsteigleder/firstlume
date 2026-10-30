@@ -21,7 +21,8 @@ const logPageSize = 500
 func (s *Server) runLogs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	runID := id(r)
-	if _, err := s.store.GetRun(ctx, s.cfg.OrganizationID, runID); err != nil {
+	org := orgID(r)
+	if _, err := s.store.GetRun(ctx, org, runID); err != nil {
 		s.storeError(w, r, err, "run")
 		return
 	}
@@ -51,7 +52,7 @@ func (s *Server) runLogs(w http.ResponseWriter, r *http.Request) {
 	for {
 		// Read the status before the logs: if the run was already finished, every
 		// chunk it will ever have is visible to the read that follows.
-		run, err := s.store.GetRun(ctx, s.cfg.OrganizationID, runID)
+		run, err := s.store.GetRun(ctx, org, runID)
 		if err != nil {
 			return
 		}
@@ -61,7 +62,7 @@ func (s *Server) runLogs(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			for _, c := range chunks {
-				data, _ := json.Marshal(map[string]string{"phase": string(c.Phase), "data": c.Data})
+				data, _ := json.Marshal(map[string]string{"phase": string(c.Phase), "step": c.Step, "data": c.Data})
 				fmt.Fprintf(w, "id: %d\nevent: log\ndata: %s\n\n", c.ID, data)
 				cursor = c.ID
 			}
@@ -91,8 +92,10 @@ func waitingForInput(s api.RunStatus) bool {
 	return s == api.StatusAwaitingApproval
 }
 
+// plainLogs writes the whole log, or one step's with ?step=NAME (and optionally &phase=plan|apply).
 func (s *Server) plainLogs(w http.ResponseWriter, r *http.Request, runID string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	step, phase := r.URL.Query().Get("step"), api.Phase(r.URL.Query().Get("phase"))
 	var cursor int64
 	for {
 		chunks, err := s.store.ListLogs(r.Context(), runID, cursor, logPageSize)
@@ -101,8 +104,11 @@ func (s *Server) plainLogs(w http.ResponseWriter, r *http.Request, runID string)
 			return
 		}
 		for _, c := range chunks {
-			_, _ = w.Write([]byte(c.Data))
 			cursor = c.ID
+			if (step != "" && c.Step != step) || (phase != "" && c.Phase != phase) {
+				continue
+			}
+			_, _ = w.Write([]byte(c.Data))
 		}
 		if len(chunks) < logPageSize {
 			return

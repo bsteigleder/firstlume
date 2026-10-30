@@ -20,7 +20,6 @@ import (
 
 type Config struct {
 	Addr             string
-	OrganizationID   string
 	AdminToken       string
 	RunTokenTTL      time.Duration
 	HeartbeatTimeout time.Duration
@@ -179,6 +178,7 @@ type ctxKey int
 const (
 	ctxAgent ctxKey = iota
 	ctxRunClaims
+	ctxOrg
 )
 
 func (s *Server) requireAdmin(next http.Handler) http.Handler {

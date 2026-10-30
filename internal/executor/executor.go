@@ -17,6 +17,7 @@ import (
 
 	"github.com/bsteigleder/firstlume/internal/api"
 	"github.com/bsteigleder/firstlume/internal/apiclient"
+	"github.com/bsteigleder/firstlume/internal/stackconfig"
 )
 
 type Config struct {
@@ -47,12 +48,13 @@ func Run(ctx context.Context, cfg Config) error {
 			sensitive = append(sensitive, v.Value)
 		}
 	}
-	logs := NewLogShipper(NewMasker(sensitive), cfg.Local, client.AppendLog)
+	masker := NewMasker(sensitive)
+	logs := NewLogShipper(masker, cfg.Local, client.AppendLog)
 
 	hbCtx, stopHeartbeat := context.WithCancel(ctx)
 	go heartbeat(hbCtx, client)
 
-	e := &executor{cfg: cfg, spec: spec, client: client, out: logs}
+	e := &executor{cfg: cfg, spec: spec, client: client, out: logs, mask: masker.Mask, logs: logs}
 	res, runErr := e.run(ctx)
 	stopHeartbeat()
 
@@ -61,7 +63,9 @@ func Run(ctx context.Context, cfg Config) error {
 		return runErr
 	}
 	if runErr != nil {
-		fmt.Fprintf(logs, "\n==> Error: %v\n", runErr)
+		if !errors.As(runErr, new(loggedError)) {
+			fmt.Fprintf(logs, "\n==> Error: %v\n", runErr)
+		}
 		res = api.CompleteRequest{Success: false, Error: runErr.Error()}
 	}
 	if err := logs.Close(); err != nil && !errors.Is(err, apiclient.ErrNoLongerOwner) {
@@ -98,6 +102,11 @@ type executor struct {
 	spec   *api.ExecSpec
 	client *apiclient.Client
 	out    io.Writer
+	// mask hides secret values in what is sent back besides logs (plan changes).
+	mask  func(string) string
+	stack *api.StackConfig
+	// logs is the shipper behind out, flushed between steps.
+	logs *LogShipper
 }
 
 func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
@@ -112,91 +121,254 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 	gitEnvs := gitEnv(s.GitToken)
 	baseEnv := append(inheritedEnv(), "HOME="+homeDir)
 	baseEnv = append(baseEnv, gitEnvs...)
-
-	fmt.Fprintf(e.out, "==> Checking out %s @ %s\n", s.Repository, describeTarget(s))
-	sha, err := checkout(ctx, srcDir, s.Repository, s.Ref, s.CommitSHA, baseEnv, e.out)
-	if err != nil {
-		return api.CompleteRequest{}, err
-	}
-	fmt.Fprintf(e.out, "==> Commit %s\n", sha)
-	if s.Phase == api.PhasePlan {
-		if err := e.client.SetCommit(ctx, sha); err != nil {
-			return api.CompleteRequest{}, err
-		}
-	}
-
-	inst := &Installer{Dir: e.cfg.ToolsDir, Log: e.out}
-	engineBin, err := inst.Install(ctx, s.Engine, s.EngineVersion)
-	if err != nil {
-		return api.CompleteRequest{}, err
-	}
-	bin := engineBin
-	if s.TerragruntVersion != "" {
-		if bin, err = inst.Install(ctx, "terragrunt", s.TerragruntVersion); err != nil {
-			return api.CompleteRequest{}, err
-		}
-	}
-
-	workDir, err := resolveWorkDir(srcDir, s.Path)
-	if err != nil {
-		return api.CompleteRequest{}, err
-	}
-	env := append(baseEnv, toolEnv(engineBin, filepath.Join(e.cfg.WorkDir, "plugin-cache"))...)
-	env = append(env, userEnv(s.Variables)...)
-	r := &runner{dir: workDir, bin: bin, env: env, out: e.out}
 	planPath := filepath.Join(e.cfg.WorkDir, planFile)
 
-	if s.Phase == api.PhasePlan {
-		return e.plan(ctx, r, planPath)
+	var workDir string
+	var r *runner
+	var res api.CompleteRequest
+	last := "Plan"
+	if s.Phase == api.PhaseApply {
+		last = "Apply"
 	}
-	return e.apply(ctx, r, planPath)
+	err := e.runSteps(ctx, []step{
+		{"Checkout", func() error {
+			fmt.Fprintf(e.out, "==> Checking out %s @ %s\n", s.Repository, describeTarget(s))
+			sha, err := checkout(ctx, srcDir, s.Repository, s.Ref, s.CommitSHA, baseEnv, e.out)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(e.out, "==> Commit %s\n", sha)
+			if workDir, err = resolveWorkDir(srcDir, s.Path); err != nil {
+				return err
+			}
+			// The tooling comes from the commit being run, so plan and apply (same
+			// commit) always agree, and upgrading Terraform is just a commit.
+			cfg, cfgErr := stackconfig.Load(workDir, s.Path)
+			e.stack = cfg
+			if s.Phase == api.PhasePlan {
+				commit := api.CommitRequest{SHA: sha, Config: cfg}
+				if commit.AuthorName, commit.AuthorEmail, commit.Message, err = commitInfo(ctx, srcDir, baseEnv); err != nil {
+					fmt.Fprintf(e.out, "==> Warning: could not read the commit author: %v\n", err)
+				}
+				if err := e.client.SetCommit(ctx, commit); err != nil {
+					return err
+				}
+			}
+			if cfgErr != nil {
+				return cfgErr
+			}
+			fmt.Fprintf(e.out, "==> %s %s%s (from %s)\n", cfg.Engine, cfg.EngineVersion, terragruntSuffix(cfg),
+				filepath.ToSlash(filepath.Join(s.Path, stackconfig.RelPath)))
+			return nil
+		}},
+		{"Init", func() error {
+			cfg := e.stack
+			inst := &Installer{Dir: e.cfg.ToolsDir, Log: e.out}
+			engineBin, err := inst.Install(ctx, cfg.Engine, cfg.EngineVersion)
+			if err != nil {
+				return err
+			}
+			bin := engineBin
+			if cfg.TerragruntVersion != "" {
+				if bin, err = inst.Install(ctx, "terragrunt", cfg.TerragruntVersion); err != nil {
+					return err
+				}
+			}
+			env := append(baseEnv, toolEnv(engineBin, filepath.Join(e.cfg.WorkDir, "plugin-cache"))...)
+			env = append(env, userEnv(s.Variables)...)
+			r = &runner{dir: workDir, bin: bin, env: env, out: e.out}
+			if cfg.RunAll {
+				fmt.Fprintln(e.out, "==> terragrunt initializes each unit as part of run --all")
+				return nil
+			}
+			_, err = r.run(ctx, "init", "-input=false", "-no-color")
+			return err
+		}},
+		{last, func() (err error) {
+			if s.Phase == api.PhasePlan {
+				res, err = e.plan(ctx, r, planPath)
+			} else {
+				res, err = e.apply(ctx, r, planPath)
+			}
+			return err
+		}},
+	})
+	return res, err
+}
+
+// step is one reported stage of a run phase.
+type step struct {
+	name string
+	run  func() error
+}
+
+// loggedError is an error already written to the run's log.
+type loggedError struct{ error }
+
+func (e loggedError) Unwrap() error { return e.error }
+
+// runSteps runs steps in order, reporting each to the control plane so the UI
+// can show them and attribute their logs. After a failure the remaining steps
+// are reported as skipped.
+func (e *executor) runSteps(ctx context.Context, steps []step) error {
+	for i, st := range steps {
+		if err := e.reportStep(ctx, st.name, api.StepRunning); err != nil {
+			return err
+		}
+		err := st.run()
+		status := api.StepSucceeded
+		if err != nil {
+			status = api.StepFailed
+			fmt.Fprintf(e.out, "\n==> Error: %v\n", err) // inside the step, so it shows in its log
+			err = loggedError{err}
+		}
+		if rerr := e.reportStep(ctx, st.name, status); rerr != nil && err == nil {
+			err = rerr
+		}
+		if err != nil {
+			for _, rest := range steps[i+1:] {
+				_ = e.reportStep(ctx, rest.name, api.StepSkipped)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// reportStep flushes the log first, so output lands on the step that produced
+// it. Only losing ownership of the run is fatal; other reporting errors are logged.
+func (e *executor) reportStep(ctx context.Context, name string, status api.StepStatus) error {
+	if e.logs != nil {
+		e.logs.Flush()
+	}
+	err := e.client.Step(ctx, api.StepRequest{Name: name, Kind: api.StepCore, Status: status})
+	if errors.Is(err, apiclient.ErrNoLongerOwner) {
+		return err
+	}
+	if err != nil {
+		fmt.Fprintf(e.out, "==> Warning: could not report step %s: %v\n", name, err)
+	}
+	return nil
 }
 
 func (e *executor) plan(ctx context.Context, r *runner, planPath string) (api.CompleteRequest, error) {
-	if _, err := r.run(ctx, "init", "-input=false", "-no-color"); err != nil {
-		return api.CompleteRequest{}, err
-	}
-	args := []string{"plan", "-input=false", "-no-color", "-detailed-exitcode", "-out=" + planPath}
-	if e.spec.Type == api.RunDestroy {
-		args = append(args, "-destroy")
-	}
-	code, err := r.run(ctx, args...)
-	if code != 0 && code != 2 {
-		return api.CompleteRequest{}, err
-	}
-	res := api.CompleteRequest{Success: true, HasChanges: code == 2}
-
-	if res.HasChanges {
-		raw, err := r.capture(ctx, "show", "-json", "-no-color", planPath)
-		if err != nil {
-			return api.CompleteRequest{}, fmt.Errorf("reading plan: %w", err)
-		}
-		if res.PlanSummary, err = SummarizePlan(raw); err != nil {
-			return api.CompleteRequest{}, fmt.Errorf("parsing plan: %w", err)
-		}
-		label := "Plan"
-		if e.spec.Type == api.RunDrift {
-			label = "Drift detected"
-		}
-		fmt.Fprintf(e.out, "==> %s: %d to add, %d to change, %d to destroy\n",
-			label, res.PlanSummary.Add, res.PlanSummary.Change, res.PlanSummary.Destroy)
-		if e.spec.Type.Applies() {
-			data, err := os.ReadFile(planPath)
-			if err != nil {
-				return api.CompleteRequest{}, err
-			}
-			if err := e.client.PutArtifact(ctx, "plan", data); err != nil {
-				return api.CompleteRequest{}, fmt.Errorf("uploading plan: %w", err)
-			}
-		}
+	var changes []api.ResourceChange
+	var hasChanges bool
+	var err error
+	if e.stack.RunAll {
+		hasChanges, changes, err = e.planAll(ctx, r)
 	} else {
+		hasChanges, changes, err = e.planOne(ctx, r, planPath)
+	}
+	if err != nil {
+		return api.CompleteRequest{}, err
+	}
+	res := api.CompleteRequest{Success: true, HasChanges: hasChanges}
+	if !hasChanges {
 		if e.spec.Type == api.RunDrift {
 			fmt.Fprintln(e.out, "==> No drift: the infrastructure matches the code")
 		} else {
 			fmt.Fprintln(e.out, "==> No changes")
 		}
+		return res, nil
+	}
+
+	res.PlanSummary = Summarize(changes)
+	label := "Plan"
+	if e.spec.Type == api.RunDrift {
+		label = "Drift detected"
+	}
+	sum := res.PlanSummary
+	fmt.Fprintf(e.out, "==> %s: %d to create, %d to update, %d to replace, %d to delete\n",
+		label, sum.Add, sum.Change, sum.Replace, sum.Destroy)
+	if err := e.client.PutChanges(ctx, changes); err != nil {
+		return api.CompleteRequest{}, fmt.Errorf("uploading the plan's changes: %w", err)
+	}
+	if e.spec.Type.Applies() {
+		var data []byte
+		if e.stack.RunAll {
+			data, err = packDir(e.allPlansDir())
+		} else {
+			data, err = os.ReadFile(planPath)
+		}
+		if err != nil {
+			return api.CompleteRequest{}, err
+		}
+		if err := e.client.PutArtifact(ctx, "plan", data); err != nil {
+			return api.CompleteRequest{}, fmt.Errorf("uploading plan: %w", err)
+		}
 	}
 	return res, nil
+}
+
+func (e *executor) planArgs(extra ...string) []string {
+	args := append([]string{"plan", "-input=false", "-no-color", "-detailed-exitcode"}, extra...)
+	if e.spec.Type == api.RunDestroy {
+		args = append(args, "-destroy")
+	}
+	return args
+}
+
+// planOne plans the single root module (or Terragrunt unit) in the stack's directory.
+func (e *executor) planOne(ctx context.Context, r *runner, planPath string) (bool, []api.ResourceChange, error) {
+	code, err := r.run(ctx, e.planArgs("-out="+planPath)...)
+	if code != 0 && code != 2 {
+		return false, nil, err
+	}
+	if code == 0 {
+		return false, nil, nil
+	}
+	raw, err := r.capture(ctx, "show", "-json", "-no-color", planPath)
+	if err != nil {
+		return false, nil, fmt.Errorf("reading plan: %w", err)
+	}
+	changes, err := ExtractChanges(raw, "", e.mask)
+	if err != nil {
+		return false, nil, fmt.Errorf("parsing plan: %w", err)
+	}
+	return true, changes, nil
+}
+
+func (e *executor) allPlansDir() string { return filepath.Join(e.cfg.WorkDir, "plans") }
+
+// planAll runs `terragrunt run --all` over every unit below the stack's
+// directory. Terragrunt saves each unit's plan (and its JSON) under a
+// directory tree mirroring the units, which travels to the apply phase whole.
+func (e *executor) planAll(ctx context.Context, r *runner) (bool, []api.ResourceChange, error) {
+	jsonDir := filepath.Join(e.cfg.WorkDir, "plans-json")
+	args := append([]string{"run", "--all", "--non-interactive", "--out-dir", e.allPlansDir(), "--json-out-dir", jsonDir, "--"},
+		e.planArgs()...)
+	code, err := r.run(ctx, args...)
+	if code != 0 && code != 2 { // with --all, 2 means at least one unit has changes
+		return false, nil, err
+	}
+	if code == 0 {
+		return false, nil, nil
+	}
+	var changes []api.ResourceChange
+	err = filepath.WalkDir(jsonDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "tfplan.json" {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		unit, err := filepath.Rel(jsonDir, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		unitChanges, err := ExtractChanges(raw, filepath.ToSlash(unit), e.mask)
+		if err != nil {
+			return fmt.Errorf("parsing the plan of %s: %w", unit, err)
+		}
+		changes = append(changes, unitChanges...)
+		return nil
+	})
+	if err != nil {
+		return false, nil, err
+	}
+	return true, changes, nil
 }
 
 func (e *executor) apply(ctx context.Context, r *runner, planPath string) (api.CompleteRequest, error) {
@@ -204,16 +376,34 @@ func (e *executor) apply(ctx context.Context, r *runner, planPath string) (api.C
 	if err != nil {
 		return api.CompleteRequest{}, fmt.Errorf("downloading plan: %w", err)
 	}
-	if err := os.WriteFile(planPath, data, 0o600); err != nil {
-		return api.CompleteRequest{}, err
+	if e.stack.RunAll {
+		if err := unpackDir(data, e.allPlansDir()); err != nil {
+			return api.CompleteRequest{}, fmt.Errorf("unpacking plans: %w", err)
+		}
+		// With --out-dir, Terragrunt applies each unit's saved plan.
+		if _, err := r.run(ctx, "run", "--all", "--non-interactive", "--out-dir", e.allPlansDir(), "--",
+			"apply", "-input=false", "-no-color"); err != nil {
+			return api.CompleteRequest{}, err
+		}
+		return api.CompleteRequest{Success: true}, nil
 	}
-	if _, err := r.run(ctx, "init", "-input=false", "-no-color"); err != nil {
+	if err := os.WriteFile(planPath, data, 0o600); err != nil {
 		return api.CompleteRequest{}, err
 	}
 	if _, err := r.run(ctx, "apply", "-input=false", "-no-color", "-auto-approve", planPath); err != nil {
 		return api.CompleteRequest{}, err
 	}
 	return api.CompleteRequest{Success: true}, nil
+}
+
+func terragruntSuffix(c *api.StackConfig) string {
+	switch {
+	case c.TerragruntVersion == "":
+		return ""
+	case c.RunAll:
+		return " with terragrunt " + c.TerragruntVersion + " (run --all)"
+	}
+	return " with terragrunt " + c.TerragruntVersion
 }
 
 func describeTarget(s *api.ExecSpec) string {
@@ -260,6 +450,9 @@ func toolEnv(engineBin, pluginCache string) []string {
 		"TERRAGRUNT_TFPATH=" + engineBin,
 		"TG_NON_INTERACTIVE=true",
 		"TERRAGRUNT_NON_INTERACTIVE=true",
+		// Logs are shown in a browser: no ANSI color codes.
+		"TG_NO_COLOR=true",
+		"NO_COLOR=1",
 	}
 }
 
