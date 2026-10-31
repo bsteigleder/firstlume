@@ -140,6 +140,7 @@ export function SettingsEditor({ level, path }: { level: Level; path: string }) 
                       <select value={v.category} aria-label="Kind" onChange={(e) => update(i, { category: e.target.value as Variable["category"] })}>
                         <option value="terraform">Terraform</option>
                         <option value="env">Env var</option>
+                        <option value="file">File</option>
                       </select>
                     </td>
                     <td>
@@ -161,7 +162,7 @@ export function SettingsEditor({ level, path }: { level: Level; path: string }) 
                 <tr key={`i${v.category}/${v.key}`} className="inherited">
                   <td className="mono">{v.key}</td>
                   <td className="mono">{v.sensitive ? "••••••••" : v.value}</td>
-                  <td>{v.category === "env" ? "Env var" : "Terraform"}</td>
+                  <td>{categoryLabel[v.category]}</td>
                   <td>{v.sensitive ? "Yes" : ""}</td>
                   <td>
                     <OriginLink origin={v.origin} />
@@ -269,3 +270,4 @@ function Cascade({ level }: { level: Level }) {
   );
 }
 
+const categoryLabel: Record<Variable["category"], string> = { terraform: "Terraform", env: "Env var", file: "File" };

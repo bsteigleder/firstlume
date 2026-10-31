@@ -156,6 +156,54 @@ Para experimentar localmente: `make dev-state-bundle` gera `deploy/dev/state-bun
 
 A aba State na UI vem no próximo marco da spec.
 
+### Arquivos e variáveis do run
+
+Além das variáveis das configurações (`env` vira variável de ambiente, `terraform` vira `TF_VAR_`), um run recebe ([spec 0003](docs/specs/0003-arquivos-vault-registries.md)):
+
+- **variáveis do tipo arquivo** (`"category": "file"`) nas configurações: a chave é o caminho do arquivo, relativo à pasta do stack, e o valor é o conteúdo. São herdadas como as outras e servem para quem não usa Vault, ou para um arquivo comum a muitos stacks;
+- o que o **repositório declara** em `.firstlume/config.yaml`: arquivos montados em um formato, mais variáveis de ambiente e do Terraform.
+
+```yaml
+version: 1
+engine: terraform
+engine_version: 1.15.6
+terragrunt_version: 1.1.6
+run_all: true
+
+files:
+  # Um arquivo em cada pasta que casa com sp*/*; ${name} é o nome da pasta, ${dir} o caminho.
+  - path: sp*/*/connection.hcl
+    format: hcl
+    block: locals            # read_terragrunt_config não aceita atributos soltos
+    values:
+      host: "${name}.lan"
+      user: { var: SSH_USER } # variável das configurações do Firstlume
+      port: 22
+  - path: credentials.auto.tfvars.json
+    format: json
+    values:
+      buckets: { logs: { var: LOGS_KEY } }
+  - path: ssh/id_ed25519
+    format: raw
+    content: { var: SSH_KEY }
+
+env:
+  TF_LOG: ""
+terraform:
+  zone: sp1                  # vira TF_VAR_zone; mapas e listas viram JSON
+```
+
+- **Formatos:** `hcl`, `json`, `yaml`, `env` (lido pelo `source` do shell) e `raw` (o conteúdo como está). O Firstlume faz o escape. No `hcl`, um valor com `${` ou `%{` continua texto, nunca vira expressão do Terraform.
+- **Fontes:** um literal, ou `{var: NOME}`, que lê uma variável `env` ou `terraform` das configurações. A fonte `{vault: caminho, field: campo}` vem com o Vault (marco F2 da spec).
+- **Por pastas:** o curinga só vale nas pastas do `path`, não no nome do arquivo, e não casa com pastas ocultas (`.terragrunt-cache`). Um padrão que não casa com nenhuma pasta falha o run, para um erro de digitação não passar despercebido.
+- **Quando:** os arquivos são escritos depois do checkout e antes do `init`, no passo **Prepare**, em toda fase. O apply recebe os mesmos valores do plan.
+- **Segurança:**
+  - um arquivo que usa uma variável sensível é sensível: sai com permissão `0600` e o conteúdo é mascarado no log, linha a linha;
+  - o Firstlume não sobrescreve um arquivo que já existe no repositório, não escreve o mesmo arquivo duas vezes e não segue link simbólico para fora da pasta do stack. Nesses casos o run falha;
+  - o `path` não pode ter `..` nem apontar para `.git` ou `.firstlume`.
+- **O mesmo nome** em `env` ou `terraform` da declaração e nas configurações: vencem as configurações, e o log registra a troca, sem valores.
+- `GET /api/v1/orgs/{org}/stacks/{id}/declaration` mostra o que o último commit declara, com as referências e sem valores.
+
 ## Rodando localmente
 
 Requisitos: Go 1.26+, Node 22+, Docker e git.
@@ -271,7 +319,7 @@ deploy/docker/        Dockerfile
 1. ✅ Runs de plan/apply, logs, aprovação configurável, drift detection agendado (só reporta), UI web, agent com Kubernetes e chart Helm
 2. State backend HTTP próprio, por unit, com lock, versões e criptografia, no Postgres ou no Garage/S3 (✅ marcos S1 e S2), importação de state existente e modo "só state" para quem continua usando o CI atual (✅ marco S3); aba State na UI
 3. Terragrunt nativo: descoberta de units, grafo de dependências, um run por unit e agents com labels por rede/zona
-4. Segredos vindos do Vault (JWT emitido pelo Firstlume por run, Kubernetes auth ou AppRole), sem o Firstlume virar um segundo cofre; variáveis do tipo arquivo
+4. Arquivos e variáveis declarados no repositório e variáveis do tipo arquivo (✅ marco F1 da spec 0003); segredos vindos do Vault com JWT emitido pelo Firstlume por run, sem o Firstlume virar um segundo cofre; credenciais de registry
 5. Usuários, grupos e SSO; aprovadores por pessoa ou grupo; trilha de auditoria
 6. Integração Git (Gitea/Forgejo, GitHub, GitLab): plan em PR, commit status, apply no merge e gatilho por impacto
 7. Observabilidade: export via OpenTelemetry (métricas, eventos, logs e traces) e notificações (webhook, Slack, Rocket.Chat)

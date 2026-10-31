@@ -14,34 +14,54 @@ const (
 	flushInterval   = time.Second
 	maxBufferedLine = 256 << 10
 	minSecretLen    = 3
+	// minSecretLineLen is the shortest line of a multi-line secret that is masked.
+	minSecretLineLen = 6
 )
 
-// Masker replaces sensitive values with "***".
+// Masker replaces sensitive values with "***". Secrets found during the
+// phase, like the content of generated files, can be added later.
 type Masker struct {
+	mu       sync.RWMutex
+	parts    []string
 	replacer *strings.Replacer
 }
 
 func NewMasker(secrets []string) *Masker {
-	var parts []string
+	m := &Masker{}
+	m.Add(secrets...)
+	return m
+}
+
+// Add masks more secrets from now on. A multi-line secret (e.g. a private
+// key) is masked line by line, since output is shipped in lines; its lines
+// shorter than minSecretLineLen are left alone, so the log stays readable.
+func (m *Masker) Add(secrets ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, s := range secrets {
-		// Mask multi-line secrets (e.g. private keys) line by line, since output
-		// is shipped in lines.
-		for _, line := range strings.Split(s, "\n") {
-			if line = strings.TrimSpace(line); len(line) >= minSecretLen {
-				parts = append(parts, line)
+		lines := strings.Split(s, "\n")
+		min := minSecretLen
+		if len(lines) > 1 {
+			min = minSecretLineLen
+		}
+		for _, line := range lines {
+			if line = strings.TrimSpace(line); len(line) >= min {
+				m.parts = append(m.parts, line)
 			}
 		}
 	}
 	// Longest first, so a secret that contains another is masked whole.
-	sort.Slice(parts, func(i, j int) bool { return len(parts[i]) > len(parts[j]) })
-	pairs := make([]string, 0, 2*len(parts))
-	for _, p := range parts {
+	sort.Slice(m.parts, func(i, j int) bool { return len(m.parts[i]) > len(m.parts[j]) })
+	pairs := make([]string, 0, 2*len(m.parts))
+	for _, p := range m.parts {
 		pairs = append(pairs, p, "***")
 	}
-	return &Masker{replacer: strings.NewReplacer(pairs...)}
+	m.replacer = strings.NewReplacer(pairs...)
 }
 
 func (m *Masker) Mask(s string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.replacer.Replace(s)
 }
 

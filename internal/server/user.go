@@ -44,6 +44,7 @@ func (s *Server) userRoutes(r chi.Router) {
 		r.With(s.requireID).Get("/stacks/{id}/state", s.listStateUnits)
 		r.With(s.requireID).Delete("/stacks/{id}/state", s.deleteState)
 		r.With(s.requireID).Post("/stacks/{id}/state/import", s.importState)
+		r.With(s.requireID).Get("/stacks/{id}/declaration", s.getDeclaration)
 		r.With(s.requireID).Get("/stacks/{id}/state/tokens", s.listStateTokens)
 		r.With(s.requireID).Post("/stacks/{id}/state/tokens", s.createStateToken)
 		r.With(s.requireID).Delete("/stacks/{id}/state/tokens/{token}", s.revokeStateToken)
@@ -479,6 +480,21 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
+}
+
+// getDeclaration returns what the last commit a run read declares in
+// .firstlume/config.yaml (spec 0003), without values.
+func (s *Server) getDeclaration(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store.GetStack(r.Context(), orgID(r), id(r))
+	if err != nil {
+		s.storeError(w, r, err, "stack")
+		return
+	}
+	out := &api.Declaration{}
+	if st.Config != nil && st.Config.Declaration != nil {
+		out = st.Config.Declaration
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {

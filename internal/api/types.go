@@ -174,6 +174,42 @@ type StackConfig struct {
 	TerragruntVersion string `json:"terragrunt_version,omitempty"`
 	// RunAll runs `terragrunt run --all` over every unit below the stack's directory.
 	RunAll bool `json:"run_all,omitempty"`
+	// Declaration summarizes what the run needs besides the code (spec 0003),
+	// without values.
+	Declaration *Declaration `json:"declaration,omitempty"`
+}
+
+// Declaration is what .firstlume/config.yaml declares a run needs: files,
+// environment and Terraform variables, and registry credentials. References
+// say where values come from ("var:NAME", "vault:path#field"); literal values
+// are left out.
+type Declaration struct {
+	Files      []DeclaredFile     `json:"files,omitempty"`
+	Env        []DeclaredVariable `json:"env,omitempty"`
+	Terraform  []DeclaredVariable `json:"terraform,omitempty"`
+	Registries []DeclaredRegistry `json:"registries,omitempty"`
+}
+
+type DeclaredFile struct {
+	Path   string `json:"path"`
+	Format string `json:"format"`
+	Block  string `json:"block,omitempty"`
+	// Sensitive is true when declared so or when a value comes from Vault; a
+	// value from a sensitive variable also makes the file sensitive in the run.
+	Sensitive bool     `json:"sensitive"`
+	Refs      []string `json:"refs,omitempty"`
+}
+
+type DeclaredVariable struct {
+	Name string `json:"name"`
+	// Ref is empty for a literal value.
+	Ref string `json:"ref,omitempty"`
+}
+
+type DeclaredRegistry struct {
+	Host string   `json:"host"`
+	Kind string   `json:"kind"`
+	Refs []string `json:"refs,omitempty"`
 }
 
 // GitConnection links an organization to a Git account. The service token is never returned.
@@ -338,6 +374,9 @@ type VariableCategory string
 const (
 	CategoryEnv       VariableCategory = "env"
 	CategoryTerraform VariableCategory = "terraform"
+	// CategoryFile variables are written as files: the key is the path,
+	// relative to the stack's directory, and the value the content (spec 0003).
+	CategoryFile VariableCategory = "file"
 )
 
 // Variable is returned by the API; sensitive values are never echoed back.

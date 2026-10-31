@@ -102,6 +102,43 @@ remote_state {
 }
 HCL
 
+# Machines whose connection.hcl Firstlume writes from the declaration in
+# config.yaml (spec 0003): one per machine directory, never committed.
+mkdir -p environments/machines/.firstlume
+cat > environments/machines/.firstlume/config.yaml <<'YAML'
+version: 1
+engine: terraform
+engine_version: 1.15.6
+terragrunt_version: 1.1.6
+run_all: true
+files:
+  - path: sp*/*/connection.hcl
+    format: hcl
+    block: locals
+    values:
+      host: "${name}.lan"
+      user: { var: SSH_USER }
+      port: 22
+YAML
+cp environments/tg/root.hcl environments/machines/root.hcl
+echo 'connection.hcl' > environments/machines/.gitignore
+for m in sp1/n01 sp1/n02 sp2/n03; do
+  mkdir -p "environments/machines/$m"
+  cat > "environments/machines/$m/terragrunt.hcl" <<'HCL'
+include "root" { path = find_in_parent_folders("root.hcl") }
+locals {
+  connection = read_terragrunt_config("connection.hcl").locals
+}
+inputs = local.connection
+HCL
+  cat > "environments/machines/$m/main.tf" <<'TF'
+variable "host" { type = string }
+variable "user" { type = string }
+variable "port" { type = number }
+resource "terraform_data" "machine" { input = "${var.user}@${var.host}:${var.port}" }
+TF
+done
+
 mkdir -p legacy/vpn/.firstlume
 printf 'version: 1\nengine: terraform\nengine_version: latest\n' > legacy/vpn/.firstlume/config.yaml
 echo 'resource "terraform_data" "vpn" {}' > legacy/vpn/main.tf

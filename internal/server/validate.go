@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bsteigleder/firstlume/internal/api"
+	"github.com/bsteigleder/firstlume/internal/stackconfig"
 )
 
 var (
@@ -182,18 +183,21 @@ func validateVariables(vars []api.Variable) error {
 			if !tfVarKeyRe.MatchString(v.Key) {
 				return fmt.Errorf("invalid terraform variable name %q", v.Key)
 			}
+		case api.CategoryFile:
+			if err := stackconfig.ValidFilePath(v.Key, false); err != nil {
+				return fmt.Errorf("file variable: %w", err)
+			}
+			if len(v.Value) > maxFileVariable {
+				return fmt.Errorf("file variable %s: the content is larger than %d KiB", v.Key, maxFileVariable>>10)
+			}
 		default:
-			return fmt.Errorf("variable category must be env or terraform")
+			return fmt.Errorf("variable category must be env, terraform or file")
 		}
 	}
 	return nil
 }
 
-func reservedEnv(key string) bool {
-	upper := strings.ToUpper(key)
-	switch upper {
-	case "PATH", "HOME", "TF_IN_AUTOMATION", "TF_INPUT", "TF_CLI_CONFIG_FILE", "TF_DATA_DIR", "TF_PLUGIN_CACHE_DIR":
-		return true
-	}
-	return strings.HasPrefix(upper, "FIRSTLUME_") || strings.HasPrefix(upper, "GIT_")
-}
+func reservedEnv(key string) bool { return stackconfig.ReservedEnv(key) }
+
+// maxFileVariable bounds a file variable's content (spec 0003, R2.7).
+const maxFileVariable = 256 << 10

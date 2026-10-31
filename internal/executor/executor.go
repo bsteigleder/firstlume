@@ -56,7 +56,7 @@ func Run(ctx context.Context, cfg Config) error {
 	hbCtx, stopHeartbeat := context.WithCancel(ctx)
 	go heartbeat(hbCtx, client)
 
-	e := &executor{cfg: cfg, spec: spec, client: client, out: logs, mask: masker.Mask, logs: logs}
+	e := &executor{cfg: cfg, spec: spec, client: client, out: logs, mask: masker.Mask, masker: masker, logs: logs}
 	res, runErr := e.run(ctx)
 	stopHeartbeat()
 
@@ -105,8 +105,13 @@ type executor struct {
 	client *apiclient.Client
 	out    io.Writer
 	// mask hides secret values in what is sent back besides logs (plan changes).
-	mask  func(string) string
-	stack *api.StackConfig
+	mask   func(string) string
+	masker *Masker
+	stack  *api.StackConfig
+	// decl is what the stack's config declares the run needs (spec 0003).
+	decl *stackconfig.Declaration
+	// prepared is what the Prepare step wrote and exported.
+	prepared *prepared
 	// logs is the shipper behind out, flushed between steps.
 	logs *LogShipper
 }
@@ -133,7 +138,7 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 		last = "Apply"
 	}
 	err := e.runSteps(ctx, []step{
-		{"Checkout", func() error {
+		{name: "Checkout", run: func() error {
 			fmt.Fprintf(e.out, "==> Checking out %s @ %s\n", s.Repository, describeTarget(s))
 			sha, err := checkout(ctx, srcDir, s.Repository, s.Ref, s.CommitSHA, baseEnv, e.out)
 			if err != nil {
@@ -145,8 +150,8 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			}
 			// The tooling comes from the commit being run, so plan and apply (same
 			// commit) always agree, and upgrading Terraform is just a commit.
-			cfg, cfgErr := stackconfig.Load(workDir, s.Path)
-			e.stack = cfg
+			cfg, decl, cfgErr := stackconfig.LoadDeclaration(workDir, s.Path)
+			e.stack, e.decl = cfg, decl
 			if s.Phase == api.PhasePlan {
 				commit := api.CommitRequest{SHA: sha, Config: cfg}
 				if commit.AuthorName, commit.AuthorEmail, commit.Message, err = commitInfo(ctx, srcDir, baseEnv); err != nil {
@@ -163,7 +168,11 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 				filepath.ToSlash(filepath.Join(s.Path, stackconfig.RelPath)))
 			return nil
 		}},
-		{"Init", func() error {
+		{name: "Prepare", skip: func() bool { return !e.needsPrepare() }, run: func() (err error) {
+			e.prepared, err = prepare(workDir, e.decl, s.Variables, e.masker, e.out)
+			return err
+		}},
+		{name: "Init", run: func() error {
 			cfg := e.stack
 			inst := &Installer{Dir: e.cfg.ToolsDir, Log: e.out}
 			engineBin, err := inst.Install(ctx, cfg.Engine, cfg.EngineVersion)
@@ -179,6 +188,9 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			env := append(baseEnv, toolEnv(engineBin, filepath.Join(e.cfg.WorkDir, "plugin-cache"))...)
 			env = append(env, stateEnv(e.cfg.APIURL, s)...)
 			env = append(env, userEnv(s.Variables)...)
+			if e.prepared != nil {
+				env = append(env, e.prepared.env...)
+			}
 			r = &runner{dir: workDir, bin: bin, env: env, out: e.out}
 			if cfg.RunAll {
 				fmt.Fprintln(e.out, "==> terragrunt initializes each unit as part of run --all")
@@ -189,7 +201,7 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			}
 			return checkBackends(workDir, "", e.out)
 		}},
-		{last, func() (err error) {
+		{name: last, run: func() (err error) {
 			if s.Phase == api.PhasePlan {
 				if res, err = e.plan(ctx, r, planPath); err == nil && e.stack.RunAll {
 					// Terragrunt initialized the units while planning: check them now.
@@ -208,6 +220,21 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 type step struct {
 	name string
 	run  func() error
+	// skip, when set and true at its turn, leaves the step out entirely.
+	skip func() bool
+}
+
+// needsPrepare reports whether the phase has files or variables to prepare.
+func (e *executor) needsPrepare() bool {
+	if e.decl != nil {
+		return true
+	}
+	for _, v := range e.spec.Variables {
+		if v.Category == api.CategoryFile {
+			return true
+		}
+	}
+	return false
 }
 
 // loggedError is an error already written to the run's log.
@@ -220,6 +247,9 @@ func (e loggedError) Unwrap() error { return e.error }
 // are reported as skipped.
 func (e *executor) runSteps(ctx context.Context, steps []step) error {
 	for i, st := range steps {
+		if st.skip != nil && st.skip() {
+			continue
+		}
 		if err := e.reportStep(ctx, st.name, api.StepRunning); err != nil {
 			return err
 		}

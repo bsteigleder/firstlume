@@ -125,7 +125,7 @@ export interface DiscoverResponse {
 
 export type UpdateStackRequest = Partial<Pick<CreateStackRequest, "name" | "repository" | "ref" | "path" | "git_token">>;
 
-export type VariableCategory = "env" | "terraform";
+export type VariableCategory = "env" | "terraform" | "file";
 
 export interface Variable {
   key: string;
