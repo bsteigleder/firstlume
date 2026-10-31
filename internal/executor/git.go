@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -13,7 +14,9 @@ import (
 // gitEnv returns environment entries that make git non-interactive, restrict
 // transports, and (for HTTPS) authenticate with the stack's token. The token
 // is passed through GIT_CONFIG_* so it never appears in argv, and child git
-// processes (e.g. Terraform fetching private modules) inherit it.
+// processes (e.g. Terraform fetching private modules) inherit it. It is
+// scoped to the repository's scheme, host and port: a module on any other
+// host is fetched without it.
 //
 // Plain http is allowed only when the repository itself is http://, which the
 // server accepts only from an organization's Git connection: an administrator
@@ -27,15 +30,25 @@ func gitEnv(repo, token string) []string {
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ALLOW_PROTOCOL=" + protocols,
 	}
-	if token != "" {
+	if origin := httpOrigin(repo); token != "" && origin != "" {
 		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 		env = append(env,
 			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=http.extraHeader",
+			"GIT_CONFIG_KEY_0=http."+origin+"/.extraHeader",
 			"GIT_CONFIG_VALUE_0=Authorization: Basic "+basic,
 		)
 	}
 	return env
+}
+
+// httpOrigin returns scheme://host[:port] of an http(s) repository URL, or ""
+// for other transports, which don't use the token.
+func httpOrigin(repo string) string {
+	u, err := url.Parse(repo)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 type git struct {

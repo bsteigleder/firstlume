@@ -1,7 +1,16 @@
+# Kept out of the Docker build context: secrets, private notes, local tool
+# state and what the image builds by itself.
 .git
 bin
 deploy/helm
 *.md
 .env
+.env.*
+docs/private
+.claude
 web/node_modules
 web/dist
+**/.terraform
+**/.terragrunt-cache
+*.tfstate
+*.tfstate.*

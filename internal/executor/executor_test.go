@@ -7,7 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -321,5 +324,42 @@ func TestCheckBackends(t *testing.T) {
 	out.Reset()
 	if err := checkBackends(work, plans, &out); err != nil || !strings.Contains(out.String(), "3 unit(s)") {
 		t.Fatalf("all units on http: %v\n%s", err, out.String())
+	}
+}
+
+// TestGitTokenOnlyGoesToTheRepositoryHost runs git against two servers: the
+// stack's Git host gets the token, any other host (a module on another
+// forge, say) must not.
+func TestGitTokenOnlyGoesToTheRepositoryHost(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	var mu sync.Mutex
+	auth := func(seen *string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			*seen = r.Header.Get("Authorization")
+			mu.Unlock()
+			http.NotFound(w, r)
+		}))
+	}
+	var atRepoHost, atOtherHost string
+	repoHost, otherHost := auth(&atRepoHost), auth(&atOtherHost)
+	defer repoHost.Close()
+	defer otherHost.Close()
+
+	env := append(gitEnv(repoHost.URL+"/acme/infra.git", "s3cr3t-token"), "HOME="+t.TempDir(), "PATH="+os.Getenv("PATH"))
+	for _, url := range []string{repoHost.URL + "/acme/modules.git", otherHost.URL + "/someone/module.git"} {
+		cmd := exec.Command("git", "ls-remote", url)
+		cmd.Env = env
+		_ = cmd.Run() // both answer 404; only the headers matter
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if atRepoHost == "" {
+		t.Error("the repository host got no token")
+	}
+	if atOtherHost != "" {
+		t.Errorf("another host got the token: %q", atOtherHost)
 	}
 }
