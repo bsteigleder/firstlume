@@ -78,7 +78,29 @@ remote_state {
 - **Código com outro backend** (por exemplo `s3`) continua funcionando: as variáveis do Firstlume são ignoradas. Código **sem backend** falha no Init, porque o state ficaria no disco do runner e se perderia.
 - **Um stack com recursos no state não pode ser excluído.** Rode um destroy ou exclua o state antes (`DELETE /api/v1/orgs/{org}/stacks/{id}/state`). O state excluído fica guardado por 30 dias.
 
-O tamanho máximo de uma versão é `FIRSTLUME_STATE_MAX_MIB` (64 por padrão). Por enquanto o state fica no Postgres; Garage/S3, a importação de states existentes, os tokens para uso fora dos runs e a aba State na UI vêm nos próximos marcos da spec.
+#### Onde o state fica
+
+Configurado uma vez, na instalação. O Firstlume sempre cifra cada versão antes de gravar, e a chave do objeto só tem ids (nada de nome de stack ou unit).
+
+| Variável | Padrão | |
+|---|---|---|
+| `FIRSTLUME_STATE_STORAGE` | `postgres` | `postgres` ou `s3` (qualquer S3 compatível, testado com Garage) |
+| `FIRSTLUME_STATE_S3_ENDPOINT` | | por exemplo `http://garage.garage.svc:3900` |
+| `FIRSTLUME_STATE_S3_BUCKET` | | |
+| `FIRSTLUME_STATE_S3_REGION` | `garage` | |
+| `FIRSTLUME_STATE_S3_PREFIX` | | para dividir um bucket |
+| `FIRSTLUME_STATE_S3_ACCESS_KEY_ID`, `FIRSTLUME_STATE_S3_SECRET_ACCESS_KEY` | | a chave precisa ler, gravar, apagar e listar no bucket |
+| `FIRSTLUME_STATE_S3_PATH_STYLE` | `true` | o Garage precisa de path-style |
+| `FIRSTLUME_STATE_KEEP_VERSIONS` | `0` | versões guardadas por unit; `0` guarda todas |
+| `FIRSTLUME_STATE_MAX_MIB` | `64` | tamanho máximo de uma versão |
+
+Com `s3`, o server grava, lê e apaga um objeto de teste ao subir. Se falhar, ele não sobe e diz o motivo: endpoint fora do ar, credencial recusada, bucket inexistente ou chave sem permissão. No Helm, use `controlPlane.state.storage: s3` e `controlPlane.state.s3.*`, com a chave num Secret existente.
+
+Trocar de storage não move as versões já gravadas.
+
+> **Backend `s3` direto no Garage:** o Garage (testado na v2.4.1) ignora a escrita condicional (`If-None-Match`), então o `use_lockfile` do backend `s3` do Terraform **não trava nada** nele: um apply passa por cima da trava de outro. Com o backend do Firstlume, a trava fica no Postgres e funciona com qualquer storage.
+
+A importação de states existentes, os tokens para uso fora dos runs e a aba State na UI vêm nos próximos marcos da spec.
 
 ## Rodando localmente
 
@@ -90,6 +112,8 @@ make dev-env       # gera .env com chave mestra e tokens
 make run-server    # UI e API em http://127.0.0.1:8787 (compila a UI antes)
 make run-agent     # outro terminal: agent com driver local (sem Kubernetes)
 ```
+
+Opcionais: `make dev-gitea` sobe um Gitea com uma organização de exemplo, e `make dev-garage` sobe um Garage e passa o state do server de dev para ele.
 
 O driver `local` roda o executor como subprocesso, sem isolamento. Use só para desenvolvimento.
 
@@ -189,7 +213,7 @@ deploy/docker/        Dockerfile
 ## Roadmap
 
 1. ✅ Runs de plan/apply, logs, aprovação configurável, drift detection agendado (só reporta), UI web, agent com Kubernetes e chart Helm
-2. State backend HTTP próprio, por unit, com lock, versões e criptografia (✅ marco S1); Garage/S3, importação de state existente, modo "só state" para quem continua usando o CI atual e aba State na UI
+2. State backend HTTP próprio, por unit, com lock, versões e criptografia, no Postgres ou no Garage/S3 (✅ marcos S1 e S2); importação de state existente, modo "só state" para quem continua usando o CI atual e aba State na UI
 3. Terragrunt nativo: descoberta de units, grafo de dependências, um run por unit e agents com labels por rede/zona
 4. Segredos vindos do Vault (JWT emitido pelo Firstlume por run, Kubernetes auth ou AppRole), sem o Firstlume virar um segundo cofre; variáveis do tipo arquivo
 5. Usuários, grupos e SSO; aprovadores por pessoa ou grupo; trilha de auditoria

@@ -12,7 +12,7 @@ TEST_DATABASE_URL := postgres://firstlume:firstlume@localhost:5432/firstlume_tes
 -include .env
 export
 
-.PHONY: build web web-dev test test-integration vet dev-db dev-gitea dev-env run-server run-agent helm-lint docker-build clean
+.PHONY: build web web-dev test test-integration vet dev-db dev-gitea dev-garage dev-env run-server run-agent helm-lint docker-build clean
 
 build: web
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/firstlume
@@ -38,10 +38,15 @@ TOOLS_CACHE        := $(wildcard $(HOME)/Library/Caches/firstlume/tools $(HOME)/
 TEST_TERRAFORM     ?= $(or $(shell command -v terraform),$(lastword $(sort $(wildcard $(addsuffix /terraform/*/terraform,$(TOOLS_CACHE))))))
 TEST_TERRAGRUNT    ?= $(or $(shell command -v terragrunt),$(lastword $(sort $(wildcard $(addsuffix /terragrunt/*/terragrunt,$(TOOLS_CACHE))))))
 
-## Needs `make dev-db`. The state tests with real tools are skipped when they aren't found.
+## Needs `make dev-db`. The state tests with real tools are skipped when they
+## aren't found, and also run on Garage after `make dev-garage`.
 test-integration:
-	FIRSTLUME_TEST_DATABASE_URL=$(TEST_DATABASE_URL) FIRSTLUME_TEST_TERRAFORM=$(TEST_TERRAFORM) \
-	FIRSTLUME_TEST_TERRAGRUNT=$(TEST_TERRAGRUNT) go test -race -count=1 ./...
+	@FIRSTLUME_TEST_DATABASE_URL=$(TEST_DATABASE_URL) FIRSTLUME_TEST_TERRAFORM=$(TEST_TERRAFORM) \
+	FIRSTLUME_TEST_TERRAGRUNT=$(TEST_TERRAGRUNT) \
+	FIRSTLUME_TEST_S3_ENDPOINT=$(if $(FIRSTLUME_DEV_GARAGE_TEST_BUCKET),$(FIRSTLUME_STATE_S3_ENDPOINT)) \
+	FIRSTLUME_TEST_S3_BUCKET=$(FIRSTLUME_DEV_GARAGE_TEST_BUCKET) FIRSTLUME_TEST_S3_REGION=$(FIRSTLUME_STATE_S3_REGION) \
+	FIRSTLUME_TEST_S3_ACCESS_KEY_ID=$(FIRSTLUME_STATE_S3_ACCESS_KEY_ID) FIRSTLUME_TEST_S3_SECRET_ACCESS_KEY=$(FIRSTLUME_STATE_S3_SECRET_ACCESS_KEY) \
+	go test -race -count=1 ./...
 
 vet:
 	go vet ./...
@@ -55,6 +60,11 @@ dev-db:
 dev-gitea:
 	docker compose --profile gitea up -d --wait gitea
 	deploy/dev/gitea-setup.sh
+
+## Local Garage (S3) as the Terraform state storage: buckets and a key, saved
+## to .env, which switches the dev server to FIRSTLUME_STATE_STORAGE=s3.
+dev-garage:
+	deploy/dev/garage-setup.sh
 
 ## Generates local secrets into .env (only once).
 dev-env: build
@@ -71,6 +81,9 @@ run-agent: build
 helm-lint:
 	helm lint $(CHART)
 	helm template test $(CHART) --set controlPlane.database.url=postgres://x > /dev/null
+	helm template test $(CHART) --set controlPlane.database.url=postgres://x --set controlPlane.state.storage=s3 \
+	  --set controlPlane.state.s3.endpoint=http://garage:3900 --set controlPlane.state.s3.bucket=state \
+	  --set controlPlane.state.s3.existingSecret=state-s3 > /dev/null
 
 docker-build:
 	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE) .

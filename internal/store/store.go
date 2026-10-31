@@ -37,6 +37,8 @@ type Store struct {
 	pool  *pgxpool.Pool
 	keys  *secrets.Keys
 	blobs Blobs
+	// keepVersions caps the state versions kept per unit; 0 keeps all.
+	keepVersions int
 }
 
 func New(pool *pgxpool.Pool, keys *secrets.Keys) *Store {

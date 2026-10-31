@@ -34,6 +34,24 @@ controlPlane:
   state:
     # Largest state version accepted, in MiB.
     maxMiB: 64
+    # Versions kept per unit; 0 keeps them all.
+    keepVersions: 0
+    # Where state versions are stored, always encrypted by Firstlume:
+    # postgres (the database) or s3 (any S3-compatible service, e.g. Garage).
+    # Changing it does not move the versions already stored.
+    storage: postgres
+    s3:
+      endpoint: ""        # e.g. http://garage.garage.svc:3900
+      bucket: ""
+      region: garage
+      # Optional, to share a bucket.
+      prefix: ""
+      # Garage and most self-hosted services need path-style addressing.
+      pathStyle: true
+      # Secret holding the access key (required with storage: s3).
+      existingSecret: ""
+      accessKeyIdKey: access-key-id
+      secretAccessKeyKey: secret-access-key
 
   service:
     type: ClusterIP

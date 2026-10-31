@@ -33,6 +33,8 @@ type harness struct {
 	org   string // slug
 	store *store.Store
 	pool  *pgxpool.Pool
+	// blobs is where the server stores state versions.
+	blobs store.Blobs
 	agent *apiclient.Client
 	logs  *syncBuffer
 }
@@ -102,7 +104,7 @@ func newHarnessWith(t *testing.T, cfg Config) *harness {
 	srv := New(cfg, st, keys, log)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &harness{t: t, url: ts.URL, org: slug, store: st, pool: pool, agent: apiclient.New(ts.URL, agentToken), logs: logs}
+	return &harness{t: t, url: ts.URL, org: slug, store: st, pool: pool, blobs: store.PostgresBlobs(pool), agent: apiclient.New(ts.URL, agentToken), logs: logs}
 }
 
 func randomSuffix() string {

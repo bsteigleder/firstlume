@@ -30,6 +30,7 @@ import (
 	"github.com/bsteigleder/firstlume/internal/agent"
 	"github.com/bsteigleder/firstlume/internal/apiclient"
 	"github.com/bsteigleder/firstlume/internal/executor"
+	"github.com/bsteigleder/firstlume/internal/s3"
 	"github.com/bsteigleder/firstlume/internal/secrets"
 	"github.com/bsteigleder/firstlume/internal/server"
 	"github.com/bsteigleder/firstlume/internal/store"
@@ -124,6 +125,9 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 	}
 
 	st := store.New(pool, keys)
+	if err := configureStateStorage(ctx, st, log); err != nil {
+		return err
+	}
 	// The bootstrap organization (by slug) owns the bootstrap agent.
 	orgID, err := st.EnsureOrganization(ctx, env("FIRSTLUME_ORGANIZATION", "default"))
 	if err != nil {
@@ -145,6 +149,50 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 		UI:               web.FS(),
 	}, st, keys, log)
 	return srv.Run(ctx)
+}
+
+// configureStateStorage picks where state versions are stored (spec 0002,
+// R4). With S3, a server that can't write, read and delete in the bucket
+// refuses to start, saying what is wrong.
+func configureStateStorage(ctx context.Context, st *store.Store, log *slog.Logger) error {
+	keep, err := intEnv("FIRSTLUME_STATE_KEEP_VERSIONS", 0)
+	if err != nil {
+		return err
+	}
+	if keep < 0 {
+		return errors.New("FIRSTLUME_STATE_KEEP_VERSIONS must be 0 (keep all) or more")
+	}
+	st.SetStateRetention(keep)
+
+	switch kind := env("FIRSTLUME_STATE_STORAGE", "postgres"); kind {
+	case "postgres":
+		log.Info("state storage", "kind", "postgres", "keep_versions", keep)
+		return nil
+	case "s3":
+		cfg := s3.Config{
+			Endpoint:        os.Getenv("FIRSTLUME_STATE_S3_ENDPOINT"),
+			Bucket:          os.Getenv("FIRSTLUME_STATE_S3_BUCKET"),
+			Region:          env("FIRSTLUME_STATE_S3_REGION", "garage"),
+			Prefix:          os.Getenv("FIRSTLUME_STATE_S3_PREFIX"),
+			AccessKeyID:     os.Getenv("FIRSTLUME_STATE_S3_ACCESS_KEY_ID"),
+			SecretAccessKey: os.Getenv("FIRSTLUME_STATE_S3_SECRET_ACCESS_KEY"),
+			PathStyle:       boolEnv("FIRSTLUME_STATE_S3_PATH_STYLE", true),
+		}
+		client, err := s3.New(cfg)
+		if err != nil {
+			return fmt.Errorf("state storage: %w", err)
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		if err := client.Check(checkCtx); err != nil {
+			return err
+		}
+		st.SetStateBlobs(client)
+		log.Info("state storage", "kind", "s3", "endpoint", cfg.Endpoint, "bucket", cfg.Bucket, "prefix", cfg.Prefix, "keep_versions", keep)
+		return nil
+	default:
+		return fmt.Errorf("FIRSTLUME_STATE_STORAGE must be postgres or s3, got %q", kind)
+	}
 }
 
 func runMigrate(ctx context.Context, log *slog.Logger) error {

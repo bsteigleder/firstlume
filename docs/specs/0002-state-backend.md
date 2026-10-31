@@ -1,6 +1,6 @@
 # Spec 0002: state backend do Firstlume (HTTP, por unit, guardado no Garage)
 
-- **Status:** aprovada; Marco S1 implementado em 2026-10-30
+- **Status:** aprovada; Marcos S1 e S2 implementados em 2026-10-30
 - **Data:** 2026-10-30
 - **Depende de:** spec 0001 (organizações, pastas, stacks e conexão Gitea), já implementada até o Marco 2
 
@@ -34,7 +34,7 @@ Um stack cujo código declara `backend "s3"` apontando para o Garage já roda ho
 
 O que falta nesse caminho:
 
-- **lock:** o `use_lockfile` depende de escrita condicional no S3, e o suporte do Garage a isso ainda precisa ser confirmado (D4);
+- **lock:** o `use_lockfile` depende de escrita condicional no S3, e o Garage (v2.4.1) a ignora: nele, o `use_lockfile` não trava nada (D4);
 - **versões e rollback por unit;**
 - **tela e importação.**
 
@@ -274,11 +274,13 @@ Testes: `internal/server/state_test.go` (protocolo, e Terraform e Terragrunt rea
 
 ### Marco S2: storage no Garage
 
-- [ ] **CAS2.1** Com `FIRSTLUME_STATE_STORAGE=s3` apontando para o Garage do `make dev-garage`, os CAS1.1 a CAS1.3 passam iguais.
-- [ ] **CAS2.2** Os objetos no bucket não contêm o valor sensível do state de teste. As chaves não têm nome de stack nem de unit.
-- [ ] **CAS2.3** Com credencial errada, bucket inexistente ou endpoint fora do ar, o servidor não sobe e o log diz qual dos três.
-- [ ] **CAS2.4** Uma queda entre gravar o objeto e gravar os metadados (simulada no teste) não muda a versão atual. O objeto órfão some na limpeza.
-- [ ] **CAS2.5** Com `KEEP_VERSIONS=3`, depois de 5 applies a unit tem 3 versões e o bucket tem 3 objetos dela.
+Testes: `internal/s3` (cliente, contra o Garage real) e os testes de state de `internal/server`, que rodam no Postgres e, com `make dev-garage`, também no Garage. Também verificado ponta a ponta com o agent.
+
+- [x] **CAS2.1** Com `FIRSTLUME_STATE_STORAGE=s3` apontando para o Garage do `make dev-garage`, os CAS1.1 a CAS1.3 passam iguais.
+- [x] **CAS2.2** Os objetos no bucket não contêm o valor sensível do state de teste. As chaves não têm nome de stack nem de unit.
+- [x] **CAS2.3** Com credencial errada, bucket inexistente ou endpoint fora do ar, o servidor não sobe e o log diz qual dos três.
+- [x] **CAS2.4** Uma queda entre gravar o objeto e gravar os metadados (simulada no teste) não muda a versão atual. O objeto órfão some na limpeza.
+- [x] **CAS2.5** Com `KEEP_VERSIONS=3`, depois de 5 applies a unit tem 3 versões e o bucket tem 3 objetos dela.
 
 ### Marco S3: importação e modo "só state"
 
@@ -307,7 +309,7 @@ Testes: `internal/server/state_test.go` (protocolo, e Terraform e Terragrunt rea
   - os trechos de R1.1 e R1.3;
   - as variáveis de R4.1;
   - o passo a passo de migração de um bundle (R7.6 e R9).
-- [ ] **CGS4** Helm: `state.storage` e `state.s3.*` com Secret existente. `helm lint` e `helm template` passam com Postgres e com S3.
+- [x] **CGS4** Helm: `state.storage` e `state.s3.*` com Secret existente. `helm lint` e `helm template` passam com Postgres e com S3.
 - [ ] **CGS5** Nada de dados reais da empresa no repositório público.
 
 ## 8. Decisões pendentes
@@ -317,6 +319,6 @@ Testes: `internal/server/state_test.go` (protocolo, e Terraform e Terragrunt rea
 | D1 | Onde ficam os bytes do state na instalação da empresa? | **Garage**, num bucket só do Firstlume, como pedido. O Postgres continua padrão para instalações pequenas e para dev. |
 | D2 | O primeiro projeto migra primeiro só o state (pipeline atual + token) ou já os runs? | **Primeiro só o state** (R7.6): ganha lock e versões sem trocar de pipeline. Os runs migram depois. |
 | D3 | Retenção padrão | Guardar todas (`0`). Revisar quando houver volume. |
-| D4 | O `backend "s3"` com `use_lockfile` funciona no Garage? | Testar no Marco S2 e registrar no README. Não bloqueia esta spec. |
+| D4 | O `backend "s3"` com `use_lockfile` funciona no Garage? | **Testado no S2: não trava.** O Garage v2.4.1 ignora `If-None-Match` (um `PUT` condicional sobre objeto existente devolve 200), e um apply passou por cima da trava de outro. Registrado no README. |
 | D5 | Quem pode baixar state, que tem segredos? | Só admin nesta versão. Vira uma permissão própria na spec de papéis. |
 | D6 | O token de leitura pode travar? | Não (R7.3). Um plan por fora usa `-lock=false`. Assim um token de leitura nunca segura uma unit. |

@@ -1,4 +1,5 @@
-# Local development services. Postgres: make dev-db. Gitea (optional): make dev-gitea
+# Local development services. Postgres: make dev-db. Gitea (optional): make dev-gitea.
+# Garage (optional, S3 storage for Terraform state): make dev-garage
 services:
   postgres:
     image: postgres:17-alpine
@@ -37,6 +38,24 @@ services:
       timeout: 3s
       retries: 40
 
+  # S3-compatible storage for Terraform state (profile "garage").
+  garage:
+    image: dxflrs/garage:v2.4.1
+    profiles: ["garage"]
+    environment:
+      GARAGE_RPC_SECRET: ${FIRSTLUME_DEV_GARAGE_RPC_SECRET:-run make dev-garage}
+    ports:
+      - "127.0.0.1:3900:3900"
+    volumes:
+      - ./deploy/dev/garage.toml:/etc/garage.toml:ro
+      - garagedata:/var/lib/garage
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
 volumes:
   pgdata:
   giteadata:
+  garagedata:

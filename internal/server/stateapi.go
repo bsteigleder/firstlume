@@ -238,7 +238,7 @@ func (s *Server) purgeState(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			n, err := s.store.PurgeState(ctx)
+			n, err := s.store.PurgeState(ctx, store.OrphanAge)
 			if err != nil {
 				s.log.Error("purging state", "err", err)
 			} else if n > 0 {

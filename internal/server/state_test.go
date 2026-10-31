@@ -3,17 +3,24 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/bsteigleder/firstlume/internal/api"
 	"github.com/bsteigleder/firstlume/internal/apiclient"
+	"github.com/bsteigleder/firstlume/internal/s3"
+	"github.com/bsteigleder/firstlume/internal/store"
 )
 
 // applyPhase starts an apply run on the stack (approval off) and returns it in its apply phase.
@@ -90,8 +97,10 @@ func (h *harness) units(stackID string) map[string]api.StateUnit {
 	return out
 }
 
-func TestStateProtocol(t *testing.T) {
-	h := newHarnessWith(t, Config{StateMaxBytes: 64 << 10})
+func TestStateProtocol(t *testing.T) { forEachStorage(t, testStateProtocol) }
+
+func testStateProtocol(t *testing.T, storage stateStorage) {
+	h := storage.harness(t, Config{StateMaxBytes: 64 << 10})
 	ctx := context.Background()
 	st := h.stack("", "network", "")
 	other := h.stack("", "other", "")
@@ -173,12 +182,8 @@ func TestStateProtocol(t *testing.T) {
 		t.Fatalf("app unit %+v", u)
 	}
 
-	// Stored encrypted (R4.2).
-	var leaks int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM state_objects WHERE position($1::bytea in data) > 0`,
-		[]byte("s3cr3t-value")).Scan(&leaks); err != nil || leaks != 0 {
-		t.Fatalf("state stored in clear (%d objects, %v)", leaks, err)
-	}
+	// Stored encrypted, under keys made of ids only (R4.2, R4.5).
+	h.assertStoredEncrypted(st.ID, "s3cr3t-value")
 	for _, secret := range []string{tok, plan} {
 		if strings.Contains(h.logs.String(), secret) {
 			t.Fatal("a state token reached the server log")
@@ -276,10 +281,13 @@ func toolEnv(h *harness, stackID, token string, extra ...string) []string {
 	}, extra...)
 }
 
-// TestStateWithRealTerraform covers CAS1.1, CAS1.5, CAS1.6 and CAS1.9 with Terraform itself.
-func TestStateWithRealTerraform(t *testing.T) {
+// TestStateWithRealTerraform covers CAS1.1, CAS1.5, CAS1.6 and CAS1.9 with
+// Terraform itself, on every storage (CAS2.1).
+func TestStateWithRealTerraform(t *testing.T) { forEachStorage(t, testStateWithRealTerraform) }
+
+func testStateWithRealTerraform(t *testing.T, storage stateStorage) {
 	bin := tool(t, "FIRSTLUME_TEST_TERRAFORM", "terraform")
-	h := newHarness(t)
+	h := storage.harness(t, Config{})
 	ctx := context.Background()
 	st := h.stack("", "network", "")
 	dir := t.TempDir()
@@ -344,11 +352,7 @@ resource "terraform_data" "a" {
 	}
 
 	// CAS1.9: the secret isn't stored in clear, and no token reaches the server log.
-	var leaks int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM state_objects WHERE position($1::bytea in data) > 0`,
-		[]byte("s3cr3t-value")).Scan(&leaks); err != nil || leaks != 0 {
-		t.Fatalf("state stored in clear (%d objects, %v)", leaks, err)
-	}
+	h.assertStoredEncrypted(st.ID, "s3cr3t-value")
 	for _, tok := range []string{spec.StateToken, planSpec.StateToken} {
 		if strings.Contains(h.logs.String(), tok) {
 			t.Fatal("a state token reached the server log")
@@ -370,10 +374,12 @@ remote_state {
 
 // TestStateWithRealTerragrunt covers CAS1.2 and CAS1.3: one state per unit,
 // dependency outputs across units, and a failing unit not losing the others.
-func TestStateWithRealTerragrunt(t *testing.T) {
+func TestStateWithRealTerragrunt(t *testing.T) { forEachStorage(t, testStateWithRealTerragrunt) }
+
+func testStateWithRealTerragrunt(t *testing.T, storage stateStorage) {
 	tg := tool(t, "FIRSTLUME_TEST_TERRAGRUNT", "terragrunt")
 	tfBin := tool(t, "FIRSTLUME_TEST_TERRAFORM", "terraform")
-	h := newHarness(t)
+	h := storage.harness(t, Config{})
 	st := h.stack("", "platform", "")
 	dir := t.TempDir()
 	files := map[string]string{
@@ -435,4 +441,180 @@ resource "terraform_data" "app" {
 	if out := run.must("run", "--all", "--non-interactive", "--", "plan", "-input=false"); strings.Contains(out, "to add") {
 		t.Fatalf("a plan after apply should have no changes:\n%s", out)
 	}
+}
+
+// stateStorage is a storage the state tests run on: Postgres always, and a
+// real S3 (make dev-garage) when FIRSTLUME_TEST_S3_ENDPOINT is set (CAS2.1).
+type stateStorage struct {
+	name string
+	s3   *s3.Config
+}
+
+func stateStorages() []stateStorage {
+	out := []stateStorage{{name: "postgres"}}
+	if ep := os.Getenv("FIRSTLUME_TEST_S3_ENDPOINT"); ep != "" {
+		out = append(out, stateStorage{name: "s3", s3: &s3.Config{
+			Endpoint:        ep,
+			Bucket:          os.Getenv("FIRSTLUME_TEST_S3_BUCKET"),
+			Region:          os.Getenv("FIRSTLUME_TEST_S3_REGION"),
+			AccessKeyID:     os.Getenv("FIRSTLUME_TEST_S3_ACCESS_KEY_ID"),
+			SecretAccessKey: os.Getenv("FIRSTLUME_TEST_S3_SECRET_ACCESS_KEY"),
+			PathStyle:       true,
+		}})
+	}
+	return out
+}
+
+func forEachStorage(t *testing.T, test func(*testing.T, stateStorage)) {
+	for _, s := range stateStorages() {
+		t.Run(s.name, func(t *testing.T) { test(t, s) })
+	}
+}
+
+// harness starts a server whose state goes to this storage; with S3, under a
+// prefix of its own.
+func (s stateStorage) harness(t *testing.T, cfg Config) *harness {
+	t.Helper()
+	h := newHarnessWith(t, cfg)
+	if s.s3 != nil {
+		c := *s.s3
+		c.Prefix = "test/" + randomSuffix()
+		client, err := s3.New(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.store.SetStateBlobs(client)
+		h.blobs = client
+		t.Cleanup(func() {
+			keys, _ := client.List(context.Background(), time.Now().Add(time.Hour))
+			for _, k := range keys {
+				_ = client.Delete(context.Background(), k)
+			}
+		})
+	}
+	return h
+}
+
+var idKey = regexp.MustCompile(`^[0-9a-f-]{36}/[0-9a-f-]{36}/[0-9a-f-]{36}$`)
+
+// assertStoredEncrypted checks every stored version of the stack: present,
+// keyed by ids only, and without the secret in clear.
+func (h *harness) assertStoredEncrypted(stackID, secret string) {
+	h.t.Helper()
+	rows, err := h.pool.Query(context.Background(), `
+		SELECT v.object_key FROM state_versions v JOIN state_units u ON u.id = v.unit_id WHERE u.stack_id = $1`, stackID)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(keys) == 0 {
+		h.t.Fatalf("no stored versions (%v)", err)
+	}
+	for _, k := range keys {
+		if !idKey.MatchString(k) {
+			h.t.Errorf("object key %q is not made of ids", k)
+		}
+		data, err := h.blobs.Get(context.Background(), k)
+		if err != nil {
+			h.t.Fatalf("reading %s: %v", k, err)
+		}
+		if bytes.Contains(data, []byte(secret)) || bytes.Contains(data, []byte(`"lineage"`)) {
+			h.t.Fatalf("object %s is stored in clear", k)
+		}
+	}
+}
+
+// stackObjects returns the stored objects of a stack, whatever has a version or not.
+func (h *harness) stackObjects(stackID string) []string {
+	h.t.Helper()
+	all, err := h.blobs.List(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var out []string
+	for _, k := range all {
+		if strings.Contains(k, "/"+stackID+"/") {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// failingPut stores the object and then fails, like a crash between the
+// object and its metadata (CAS2.4).
+type failingPut struct{ store.Blobs }
+
+func (f failingPut) Put(ctx context.Context, key string, data []byte) error {
+	if err := f.Blobs.Put(ctx, key, data); err != nil {
+		return err
+	}
+	return errors.New("crashed after storing the object")
+}
+
+func TestStateOrphanObjects(t *testing.T) {
+	forEachStorage(t, func(t *testing.T, storage stateStorage) {
+		h := storage.harness(t, Config{})
+		ctx := context.Background()
+		st := h.stack("", "network", "")
+		_, spec := h.applyPhase(st.ID)
+		root := h.stateURL(st.ID, "")
+		h.wantState("POST", root, spec.StateToken, tfState(1, "lin", 1, "v1"), http.StatusOK)
+
+		h.store.SetStateBlobs(failingPut{h.blobs})
+		h.wantState("POST", root, spec.StateToken, tfState(2, "lin", 1, "v2"), http.StatusInternalServerError)
+		h.store.SetStateBlobs(h.blobs)
+		if got := h.wantState("GET", root, spec.StateToken, nil, http.StatusOK); !strings.Contains(got, `"v1"`) {
+			t.Fatalf("a failed write changed the current version: %s", got)
+		}
+		if objs := h.stackObjects(st.ID); len(objs) != 2 {
+			t.Fatalf("expected the version and an orphan, got %v", objs)
+		}
+		// Recent orphans are kept: a write may still be committing.
+		if _, err := h.store.PurgeState(ctx, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if objs := h.stackObjects(st.ID); len(objs) != 2 {
+			t.Fatalf("a recent orphan was purged: %v", objs)
+		}
+		if _, err := h.store.PurgeState(ctx, 0); err != nil {
+			t.Fatal(err)
+		}
+		if objs := h.stackObjects(st.ID); len(objs) != 1 {
+			t.Fatalf("after purging orphans: %v", objs)
+		}
+		if got := h.wantState("GET", root, spec.StateToken, nil, http.StatusOK); !strings.Contains(got, `"v1"`) {
+			t.Fatalf("the current version was purged: %s", got)
+		}
+		// The same write now goes through.
+		h.wantState("POST", root, spec.StateToken, tfState(2, "lin", 1, "v2"), http.StatusOK)
+	})
+}
+
+func TestStateRetention(t *testing.T) {
+	forEachStorage(t, func(t *testing.T, storage stateStorage) {
+		h := storage.harness(t, Config{})
+		h.store.SetStateRetention(3)
+		st := h.stack("", "network", "")
+		_, spec := h.applyPhase(st.ID)
+		root := h.stateURL(st.ID, "")
+		for serial := 1; serial <= 5; serial++ {
+			h.wantState("POST", root, spec.StateToken, tfState(serial, "lin", 1, fmt.Sprint("v", serial)), http.StatusOK)
+		}
+		var versions []int
+		rows, _ := h.pool.Query(context.Background(), `
+			SELECT v.number FROM state_versions v JOIN state_units u ON u.id = v.unit_id WHERE u.stack_id = $1 ORDER BY 1`, st.ID)
+		versions, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil || fmt.Sprint(versions) != "[3 4 5]" {
+			t.Fatalf("versions kept: %v, %v", versions, err)
+		}
+		if objs := h.stackObjects(st.ID); len(objs) != 3 {
+			t.Fatalf("objects kept: %v", objs)
+		}
+		if u := h.units(st.ID)[""]; u.Version != 5 || u.Serial != 5 {
+			t.Fatalf("unit %+v", u)
+		}
+		if got := h.wantState("GET", root, spec.StateToken, nil, http.StatusOK); !strings.Contains(got, `"v5"`) {
+			t.Fatalf("current state: %s", got)
+		}
+	})
 }

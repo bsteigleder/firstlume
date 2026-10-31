@@ -68,8 +68,38 @@ spec:
               value: {{ .Values.controlPlane.organization | quote }}
             - name: FIRSTLUME_HEARTBEAT_TIMEOUT
               value: {{ .Values.controlPlane.heartbeatTimeout | quote }}
+            {{- with .Values.controlPlane.state }}
             - name: FIRSTLUME_STATE_MAX_MIB
-              value: {{ .Values.controlPlane.state.maxMiB | quote }}
+              value: {{ .maxMiB | quote }}
+            - name: FIRSTLUME_STATE_KEEP_VERSIONS
+              value: {{ .keepVersions | quote }}
+            - name: FIRSTLUME_STATE_STORAGE
+              value: {{ .storage | quote }}
+            {{- if eq .storage "s3" }}
+            - name: FIRSTLUME_STATE_S3_ENDPOINT
+              value: {{ required "controlPlane.state.s3.endpoint is required with storage: s3" .s3.endpoint | quote }}
+            - name: FIRSTLUME_STATE_S3_BUCKET
+              value: {{ required "controlPlane.state.s3.bucket is required with storage: s3" .s3.bucket | quote }}
+            - name: FIRSTLUME_STATE_S3_REGION
+              value: {{ .s3.region | quote }}
+            - name: FIRSTLUME_STATE_S3_PREFIX
+              value: {{ .s3.prefix | quote }}
+            - name: FIRSTLUME_STATE_S3_PATH_STYLE
+              value: {{ .s3.pathStyle | quote }}
+            - name: FIRSTLUME_STATE_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "controlPlane.state.s3.existingSecret is required with storage: s3" .s3.existingSecret }}
+                  key: {{ .s3.accessKeyIdKey }}
+            - name: FIRSTLUME_STATE_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .s3.existingSecret }}
+                  key: {{ .s3.secretAccessKeyKey }}
+            {{- else if ne .storage "postgres" }}
+            {{- fail "controlPlane.state.storage must be postgres or s3" }}
+            {{- end }}
+            {{- end }}
             - name: FIRSTLUME_DATABASE_URL
               valueFrom:
                 secretKeyRef:

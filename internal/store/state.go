@@ -50,8 +50,14 @@ type Blobs interface {
 // SetStateBlobs replaces where state versions are stored (Postgres by default).
 func (s *Store) SetStateBlobs(b Blobs) { s.blobs = b }
 
+// SetStateRetention keeps at most n versions per unit; 0 keeps them all (R4.6).
+func (s *Store) SetStateRetention(n int) { s.keepVersions = n }
+
 // pgBlobs keeps state versions in the state_objects table.
 type pgBlobs struct{ pool *pgxpool.Pool }
+
+// PostgresBlobs returns the default storage, the state_objects table.
+func PostgresBlobs(pool *pgxpool.Pool) Blobs { return pgBlobs{pool} }
 
 func (b pgBlobs) Put(ctx context.Context, key string, data []byte) error {
 	_, err := b.pool.Exec(ctx, `INSERT INTO state_objects (key, data) VALUES ($1, $2)`, key, data)
@@ -192,11 +198,13 @@ func (s *Store) WriteState(ctx context.Context, a *StateActor, key, lockID strin
 	if err != nil {
 		return err
 	}
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	var unitID string
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		u, err := lockUnit(ctx, tx, a, key)
 		if err != nil {
 			return err
 		}
+		unitID = u.id
 		if u.lockID != nil && *u.lockID != lockID {
 			return &StateLockedError{Info: u.lockInfo}
 		}
@@ -240,6 +248,34 @@ func (s *Store) WriteState(ctx context.Context, a *StateActor, key, lockID strin
 		_, err = tx.Exec(ctx, `UPDATE state_units SET current_version = $2, updated_at = now() WHERE id = $1`, u.id, u.current+1)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	s.pruneVersions(ctx, unitID)
+	return nil
+}
+
+// pruneVersions drops the unit's versions beyond the retention, never the
+// current one. It runs after the write is committed and can't fail it: an
+// object left behind is an orphan PurgeState removes later.
+func (s *Store) pruneVersions(ctx context.Context, unitID string) {
+	if s.keepVersions <= 0 {
+		return
+	}
+	rows, err := s.pool.Query(ctx, `
+		DELETE FROM state_versions v USING state_units u
+		WHERE v.unit_id = u.id AND u.id = $1 AND v.number <= u.current_version - $2
+		RETURNING v.object_key`, unitID, s.keepVersions)
+	if err != nil {
+		return
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return
+	}
+	for _, k := range keys {
+		_ = s.blobs.Delete(ctx, k)
+	}
 }
 
 // LockState takes the unit's lock for the LockInfo Terraform sent. Locking
@@ -412,16 +448,16 @@ func (s *Store) DeleteState(ctx context.Context, orgID, stackID, actor string) e
 	})
 }
 
-const (
-	// stateRetention is how long a deleted state is kept (R6.2).
-	stateRetention = 30 * 24 * time.Hour
-	// orphanAge is how old an object without a version must be to be removed (R4.3).
-	orphanAge = 24 * time.Hour
-)
+// stateRetention is how long a deleted state is kept (R6.2).
+const stateRetention = 30 * 24 * time.Hour
 
-// PurgeState removes deleted states past their retention and objects that
-// never got a version. It returns how many objects it deleted.
-func (s *Store) PurgeState(ctx context.Context) (int, error) {
+// OrphanAge is how old an object without a version must be to be removed: a
+// write in progress has stored its object but not committed its version yet (R4.3).
+const OrphanAge = 24 * time.Hour
+
+// PurgeState removes deleted states past their retention and objects older
+// than orphanAge that never got a version. It returns how many objects it deleted.
+func (s *Store) PurgeState(ctx context.Context, orphanAge time.Duration) (int, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT v.object_key FROM state_units u JOIN state_versions v ON v.unit_id = u.id
 		WHERE u.deleted_at < now() - make_interval(secs => $1)`, stateRetention.Seconds())
