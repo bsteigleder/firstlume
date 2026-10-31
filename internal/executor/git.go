@@ -11,13 +11,21 @@ import (
 )
 
 // gitEnv returns environment entries that make git non-interactive, restrict
-// transports, and (for HTTPS) authenticate with the template's token. The token
+// transports, and (for HTTPS) authenticate with the stack's token. The token
 // is passed through GIT_CONFIG_* so it never appears in argv, and child git
 // processes (e.g. Terraform fetching private modules) inherit it.
-func gitEnv(token string) []string {
+//
+// Plain http is allowed only when the repository itself is http://, which the
+// server accepts only from an organization's Git connection: an administrator
+// chose that URL.
+func gitEnv(repo, token string) []string {
+	protocols := "https:ssh:file"
+	if strings.HasPrefix(repo, "http://") {
+		protocols = "http:" + protocols
+	}
 	env := []string{
 		"GIT_TERMINAL_PROMPT=0",
-		"GIT_ALLOW_PROTOCOL=https:ssh:file",
+		"GIT_ALLOW_PROTOCOL=" + protocols,
 	}
 	if token != "" {
 		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))

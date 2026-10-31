@@ -490,8 +490,10 @@ func (s *Store) ExecSpec(ctx context.Context, runID string, phase api.Phase) (*a
 	var commit *string
 	var tokenEnc []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT r.id, r.organization_id, r.stack_id, r.type, r.ref, r.commit_sha, st.repository, st.path, st.git_token_enc
+		SELECT r.id, r.organization_id, r.stack_id, r.type, r.ref, r.commit_sha, st.repository, st.path,
+		       coalesce(gc.token_enc, st.git_token_enc)
 		FROM runs r JOIN stacks st ON st.id = r.stack_id
+		LEFT JOIN git_connections gc ON gc.id = st.connection_id
 		WHERE r.id = $1 AND r.status = $2`, runID, statusForPhase(phase)).Scan(
 		&spec.RunID, &orgID, &spec.StackID, &spec.Type, &spec.Ref, &commit, &spec.Repository, &spec.Path, &tokenEnc)
 	if err != nil {

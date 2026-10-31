@@ -133,6 +133,8 @@ type Stack struct {
 	Ref         string `json:"ref"`
 	Path        string `json:"path"`
 	HasGitToken bool   `json:"has_git_token"`
+	// ConnectionID is set when the stack clones through the organization's Git connection.
+	ConnectionID string `json:"connection_id,omitempty"`
 	// Config is the last .firstlume/config.yaml a run read, for display only.
 	Config    *StackConfig `json:"config,omitempty"`
 	Drift     *Drift       `json:"drift,omitempty"`
@@ -141,12 +143,18 @@ type Stack struct {
 }
 
 type CreateStackRequest struct {
-	FolderID   string `json:"folder_id"`
-	Name       string `json:"name"`
-	Repository string `json:"repository"`
-	Ref        string `json:"ref"`
-	Path       string `json:"path"`
-	GitToken   string `json:"git_token"`
+	FolderID string `json:"folder_id"`
+	Name     string `json:"name"`
+	// GitRepository ("owner/name") picks a repository of the organization's
+	// Git connection; the stack then clones with the connection's service
+	// token. Otherwise Repository is a clone URL.
+	GitRepository string `json:"git_repository,omitempty"`
+	// ConnectionID is set by the server for stacks created from the connection.
+	ConnectionID string `json:"-"`
+	Repository   string `json:"repository"`
+	Ref          string `json:"ref"`
+	Path         string `json:"path"`
+	GitToken     string `json:"git_token"`
 }
 
 // UpdateStackRequest changes only the fields that are set. An empty GitToken removes it.
@@ -166,6 +174,66 @@ type StackConfig struct {
 	TerragruntVersion string `json:"terragrunt_version,omitempty"`
 	// RunAll runs `terragrunt run --all` over every unit below the stack's directory.
 	RunAll bool `json:"run_all,omitempty"`
+}
+
+// GitConnection links an organization to a Git account. The service token is never returned.
+type GitConnection struct {
+	Provider    string    `json:"provider"`
+	URL         string    `json:"url"`
+	Account     string    `json:"account"`
+	AccountKind string    `json:"account_kind"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// PutGitConnectionRequest saves the connection after checking it works. An
+// empty Token keeps the stored one.
+type PutGitConnectionRequest struct {
+	Provider string `json:"provider"`
+	URL      string `json:"url"`
+	Account  string `json:"account"`
+	Token    string `json:"token"`
+}
+
+type GitConnectionResponse struct {
+	GitConnection
+	// Repositories is how many repositories the token sees in the account.
+	Repositories int `json:"repositories"`
+}
+
+type GitRepo struct {
+	FullName      string `json:"full_name"`
+	Owner         string `json:"owner"`
+	Name          string `json:"name"`
+	DefaultBranch string `json:"default_branch"`
+	Private       bool   `json:"private"`
+	Empty         bool   `json:"empty"`
+	WebURL        string `json:"web_url"`
+}
+
+// StackRef points at a stack, e.g. the one already managing a discovered folder.
+type StackRef struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	FolderID string `json:"folder_id,omitempty"`
+}
+
+// DiscoveredStack is a .firstlume folder found in a repository.
+type DiscoveredStack struct {
+	// Path is the stack directory (the one holding .firstlume); "." for the root.
+	Path   string       `json:"path"`
+	Config *StackConfig `json:"config,omitempty"`
+	// Error says why the folder cannot be used (missing or invalid config.yaml).
+	Error string `json:"error,omitempty"`
+	// UsedBy is the stack already managing this repository, branch and path.
+	UsedBy *StackRef `json:"used_by,omitempty"`
+}
+
+type DiscoverResponse struct {
+	Repository string            `json:"repository"`
+	Ref        string            `json:"ref"`
+	Commit     string            `json:"commit"`
+	Stacks     []DiscoveredStack `json:"stacks"`
 }
 
 // StackSummary is a stack as listed in the navigation tree.

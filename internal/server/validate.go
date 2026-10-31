@@ -104,8 +104,11 @@ func normalizeStack(req *api.CreateStackRequest) error {
 	if req.FolderID != "" && !validUUID(req.FolderID) {
 		return fmt.Errorf("folder_id must be a folder id")
 	}
-	if req.Repository, err = cleanRepository(req.Repository); err != nil {
-		return err
+	// Clone URLs of connection repositories come from the Git provider itself.
+	if req.ConnectionID == "" {
+		if req.Repository, err = cleanRepository(req.Repository); err != nil {
+			return err
+		}
 	}
 	if req.Ref = strings.TrimSpace(req.Ref); req.Ref == "" {
 		req.Ref = "main"

@@ -61,6 +61,8 @@ export interface Stack {
   ref: string;
   path: string;
   has_git_token: boolean;
+  /** Set when the stack clones through the organization's Git connection. */
+  connection_id?: string;
   config?: StackConfig;
   drift?: Drift;
   created_at: string;
@@ -79,10 +81,46 @@ export interface Tree {
 export interface CreateStackRequest {
   folder_id: string;
   name: string;
+  /** "owner/name" of a repository of the organization's Git connection. */
+  git_repository?: string;
   repository: string;
   ref: string;
   path: string;
   git_token: string;
+}
+
+export interface GitConnection {
+  provider: string;
+  url: string;
+  account: string;
+  account_kind: "organization" | "user";
+  created_at: string;
+  updated_at: string;
+  repositories?: number;
+}
+
+export interface GitRepo {
+  full_name: string;
+  owner: string;
+  name: string;
+  default_branch: string;
+  private: boolean;
+  empty: boolean;
+  web_url: string;
+}
+
+export interface DiscoveredStack {
+  path: string;
+  config?: StackConfig;
+  error?: string;
+  used_by?: { id: string; name: string; folder_id?: string };
+}
+
+export interface DiscoverResponse {
+  repository: string;
+  ref: string;
+  commit: string;
+  stacks: DiscoveredStack[];
 }
 
 export type UpdateStackRequest = Partial<Pick<CreateStackRequest, "name" | "repository" | "ref" | "path" | "git_token">>;
@@ -324,6 +362,15 @@ export const api = {
       discardRun: (id: string) => request<Run>("POST", `${p}/runs/${id}/discard`),
       cancelRun: (id: string) => request<Run>("POST", `${p}/runs/${id}/cancel`),
       logsURL: (id: string) => `/api/v1${p}/runs/${id}/logs`,
+
+      gitConnection: () => request<GitConnection>("GET", `${p}/git/connection`),
+      putGitConnection: (req: { provider: string; url: string; account: string; token: string }) =>
+        request<GitConnection>("PUT", `${p}/git/connection`, req),
+      deleteGitConnection: () => request<void>("DELETE", `${p}/git/connection`),
+      gitRepos: () => request<GitRepo[]>("GET", `${p}/git/repos`),
+      gitBranches: (fullName: string) => request<string[]>("GET", `${p}/git/repos/${fullName}/branches`),
+      discover: (fullName: string, ref: string) =>
+        request<DiscoverResponse>("GET", `${p}/git/repos/${fullName}/discover?ref=${encodeURIComponent(ref)}`),
 
       listAgents: () => request<Agent[]>("GET", `${p}/agents`),
       createAgent: (name: string) => request<CreateAgentResponse>("POST", `${p}/agents`, { name }),

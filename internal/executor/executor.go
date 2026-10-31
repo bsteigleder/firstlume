@@ -118,7 +118,7 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 	if err := os.MkdirAll(homeDir, 0o700); err != nil {
 		return api.CompleteRequest{}, err
 	}
-	gitEnvs := gitEnv(s.GitToken)
+	gitEnvs := gitEnv(s.Repository, s.GitToken)
 	baseEnv := append(inheritedEnv(), "HOME="+homeDir)
 	baseEnv = append(baseEnv, gitEnvs...)
 	planPath := filepath.Join(e.cfg.WorkDir, planFile)

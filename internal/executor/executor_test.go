@@ -240,3 +240,17 @@ func TestInheritedEnvStripsRunToken(t *testing.T) {
 		t.Fatal("cloud environment was not passed through")
 	}
 }
+
+func TestGitEnvAllowsHTTPOnlyForHTTPRepositories(t *testing.T) {
+	cases := map[string]string{
+		"https://git.example.com/acme/infra.git": "GIT_ALLOW_PROTOCOL=https:ssh:file",
+		"git@git.example.com:acme/infra.git":     "GIT_ALLOW_PROTOCOL=https:ssh:file",
+		"http://127.0.0.1:3000/acme/infra.git":   "GIT_ALLOW_PROTOCOL=http:https:ssh:file",
+	}
+	for repo, want := range cases {
+		env := gitEnv(repo, "")
+		if !strings.Contains(strings.Join(env, "\n"), want) {
+			t.Errorf("gitEnv(%q) = %v, want %s", repo, env, want)
+		}
+	}
+}

@@ -1,4 +1,4 @@
-# Local development database. Start with: make dev-db
+# Local development services. Postgres: make dev-db. Gitea (optional): make dev-gitea
 services:
   postgres:
     image: postgres:17-alpine
@@ -17,5 +17,26 @@ services:
       timeout: 3s
       retries: 30
 
+  # A Git server to develop the Gitea connection against (profile "gitea").
+  gitea:
+    image: gitea/gitea:1.27.3
+    profiles: ["gitea"]
+    environment:
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__server__ROOT_URL: http://127.0.0.1:3000/
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - giteadata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/v1/version || wget -qO- http://localhost:3000/api/v1/version"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
 volumes:
   pgdata:
+  giteadata:

@@ -219,7 +219,8 @@ function Source({ stack, onSaved }: { stack: Stack; onSaved: () => Promise<void>
         <div className="grid-2">
           <label className="field span-2">
             Repository URL
-            <input className="mono" value={form.repository} onChange={set("repository")} required />
+            <input className="mono" value={form.repository} onChange={set("repository")} required disabled={!!stack.connection_id} />
+            {stack.connection_id && <span className="hint">From the organization’s Git connection: it clones with the connection’s service token.</span>}
           </label>
           <label className="field">
             Branch
@@ -229,7 +230,7 @@ function Source({ stack, onSaved }: { stack: Stack; onSaved: () => Promise<void>
             Folder that contains <span className="mono">.firstlume</span>
             <input className="mono" value={form.path} onChange={set("path")} />
           </label>
-          <label className="field span-2">
+          {!stack.connection_id && <label className="field span-2">
             Access token{" "}
             <span className="optional">{stack.has_git_token ? "saved, never shown" : "none — only needed for private repositories"}</span>
             {changeToken ? (
@@ -239,7 +240,7 @@ function Source({ stack, onSaved }: { stack: Stack; onSaved: () => Promise<void>
                 {stack.has_git_token ? "Replace or remove token" : "Add a token"}
               </button>
             )}
-          </label>
+          </label>}
         </div>
         {(form.path !== stack.path || form.repository !== stack.repository) && (
           <p className="notice notice-attention">Changing the repository or folder changes which infrastructure this stack manages.</p>

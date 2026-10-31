@@ -51,6 +51,8 @@ func (s *Server) userRoutes(r chi.Router) {
 		r.With(s.requireID).Get("/runs/{id}/changes", s.runChanges)
 		r.With(s.requireID).Get("/runs/{id}/steps", s.runSteps)
 
+		s.gitRoutes(r)
+
 		r.Get("/agents", s.listAgents)
 		r.Post("/agents", s.createAgent)
 		r.With(s.requireID).Delete("/agents/{id}", s.deleteAgent)
@@ -264,6 +266,9 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.GitRepository != "" && !s.resolveGitRepository(w, r, &req) {
+		return
+	}
 	if err := normalizeStack(&req); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
@@ -292,6 +297,17 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := normalizeStackUpdate(&req); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	cur, err := s.store.GetStack(r.Context(), orgID(r), id(r))
+	if err != nil {
+		s.storeError(w, r, err, "stack")
+		return
+	}
+	// A connection stack clones with the organization's service token, which
+	// must never be sent to another repository.
+	if cur.ConnectionID != "" && ((req.Repository != nil && *req.Repository != cur.Repository) || req.GitToken != nil) {
+		writeError(w, http.StatusUnprocessableEntity, "this stack comes from the Git connection: its repository and token can't change; create another stack instead")
 		return
 	}
 	st, err := s.store.UpdateStack(r.Context(), orgID(r), id(r), req)

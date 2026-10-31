@@ -12,7 +12,7 @@ TEST_DATABASE_URL := postgres://firstlume:firstlume@localhost:5432/firstlume_tes
 -include .env
 export
 
-.PHONY: build web web-dev test test-integration vet dev-db dev-env run-server run-agent helm-lint docker-build clean
+.PHONY: build web web-dev test test-integration vet dev-db dev-gitea dev-env run-server run-agent helm-lint docker-build clean
 
 build: web
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/firstlume
@@ -42,6 +42,12 @@ vet:
 
 dev-db:
 	docker compose up -d --wait postgres
+
+## Local Gitea with an example organization, a bot account and repositories
+## with .firstlume folders. Writes its URL, account and bot token to .env.
+dev-gitea:
+	docker compose --profile gitea up -d --wait gitea
+	deploy/dev/gitea-setup.sh
 
 ## Generates local secrets into .env (only once).
 dev-env: build

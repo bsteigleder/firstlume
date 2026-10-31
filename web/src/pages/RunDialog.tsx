@@ -11,12 +11,12 @@ const kinds: { type: RunType; title: string; text: string; danger?: boolean }[] 
   { type: "destroy", title: "Destroy", text: "Plans deleting everything this stack manages. Always shows the plan first.", danger: true },
 ];
 
-/** Starts a run by hand: what to run, on which branch or commit. */
-export function RunDialog({ stack, onClose }: { stack: Stack; onClose: () => void }) {
+/** Starts a run by hand: what to run, on which branch or commit. `again` presets them from an earlier run. */
+export function RunDialog({ stack, again, onClose }: { stack: Stack; again?: { type: RunType; ref: string }; onClose: () => void }) {
   const { api, link, reloadActive } = useOrg();
   const navigate = useNavigate();
-  const [type, setType] = useState<RunType>("apply");
-  const [ref, setRef] = useState(stack.ref);
+  const [type, setType] = useState<RunType>(again?.type ?? "apply");
+  const [ref, setRef] = useState(again?.ref || stack.ref);
   const { busy, error, run } = useAction();
 
   async function submit(e: FormEvent) {

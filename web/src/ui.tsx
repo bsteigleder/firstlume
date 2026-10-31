@@ -106,8 +106,8 @@ export function repoLabel(repo: string) {
 
 /** The repository's web address, when it can be derived (https or scp-like ssh URLs). */
 export function repoWebURL(repo: string): string | null {
-  let m = repo.match(/^https?:\/\/(.+?)(\.git)?\/?$/);
-  if (m) return `https://${m[1]}`;
+  let m = repo.match(/^(https?):\/\/(.+?)(\.git)?\/?$/);
+  if (m) return `${m[1]}://${m[2]}`;
   m = repo.match(/^(?:ssh:\/\/)?git@([^:/]+)[:/](.+?)(\.git)?$/);
   if (m) return `https://${m[1]}/${m[2]}`;
   return null;

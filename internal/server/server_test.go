@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -862,6 +863,159 @@ func TestPlanReview(t *testing.T) {
 	// Changes can only be sent during the plan phase.
 	if err := exec2.PutChanges(ctx, changes); err == nil {
 		t.Fatal("changes accepted after the plan phase")
+	}
+}
+
+// fakeGitea serves the parts of the Gitea API the connection uses: the
+// organization "acme" with 60 repositories, one of them (infra) with stacks.
+type fakeGitea struct {
+	token string
+	url   string
+}
+
+func (f *fakeGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") != "token "+f.token {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	q := r.URL.Query()
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page == 0 {
+		page = 1
+	}
+	repo := func(name string) map[string]any {
+		return map[string]any{"full_name": "acme/" + name, "name": name, "default_branch": "main", "private": name == "infra",
+			"clone_url": f.url + "/acme/" + name + ".git", "html_url": f.url + "/acme/" + name, "owner": map[string]string{"login": "acme"}}
+	}
+	files := map[string]string{
+		"environments/prod/.firstlume/config.yaml": "version: 1\nengine: terraform\nengine_version: 1.15.6\n",
+		"environments/edge/.firstlume/config.yaml": "version: 1\nengine: opentofu\nengine_version: 1.10.2\n",
+		"legacy/vpn/.firstlume/config.yaml":        "version: 1\nengine: terraform\nengine_version: latest\n",
+	}
+	switch p := strings.TrimPrefix(r.URL.Path, "/api/v1"); {
+	case p == "/orgs/acme":
+		writeJSON(w, http.StatusOK, map[string]string{"username": "acme"})
+	case p == "/orgs/acme/repos":
+		var out []map[string]any
+		for i := (page-1)*50 + 1; i <= 60 && i <= page*50; i++ {
+			name := fmt.Sprintf("repo%02d", i)
+			if i == 1 {
+				name = "infra"
+			}
+			out = append(out, repo(name))
+		}
+		w.Header().Set("X-Total-Count", "60")
+		writeJSON(w, http.StatusOK, out)
+	case p == "/repos/acme/infra":
+		writeJSON(w, http.StatusOK, repo("infra"))
+	case p == "/repos/acme/infra/branches":
+		writeJSON(w, http.StatusOK, []map[string]string{{"name": "main"}, {"name": "next"}})
+	case p == "/repos/acme/infra/branches/main":
+		writeJSON(w, http.StatusOK, map[string]any{"commit": map[string]string{"id": "c0ffee"}})
+	case p == "/repos/acme/infra/git/trees/c0ffee":
+		var tree []map[string]string
+		for f := range files {
+			dir := strings.TrimSuffix(f, "/config.yaml")
+			tree = append(tree, map[string]string{"path": dir, "type": "tree"}, map[string]string{"path": f, "type": "blob"})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"tree": tree, "truncated": false, "total_count": len(tree)})
+	case strings.HasPrefix(p, "/repos/acme/infra/raw/"):
+		content, ok := files[strings.TrimPrefix(p, "/repos/acme/infra/raw/")]
+		if !ok || q.Get("ref") != "c0ffee" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(content))
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// CA2.1–CA2.9: the Git connection, listing, discovery and stacks created from it.
+func TestGitConnection(t *testing.T) {
+	h := newHarness(t)
+	fg := &fakeGitea{token: "gitea-s3rvice-token"}
+	gs := httptest.NewServer(fg)
+	defer gs.Close()
+	fg.url = gs.URL
+
+	h.call("GET", "/git/connection", nil, http.StatusNotFound, nil)
+	h.call("GET", "/git/repos", nil, http.StatusNotFound, nil)
+	bad := map[string]api.PutGitConnectionRequest{
+		"rejected":  {URL: gs.URL, Account: "acme", Token: "wrong"},
+		"not found": {URL: gs.URL, Account: "nobody", Token: fg.token},
+		"url must":  {URL: "ftp://x", Account: "acme", Token: fg.token},
+		"required":  {URL: gs.URL, Account: "acme"},
+	}
+	for want, req := range bad {
+		raw := h.call("PUT", "/git/connection", req, http.StatusUnprocessableEntity, nil)
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("%q: %s", want, raw)
+		}
+	}
+	var conn api.GitConnectionResponse
+	raw := h.call("PUT", "/git/connection", api.PutGitConnectionRequest{URL: gs.URL + "/", Account: "acme", Token: fg.token}, http.StatusOK, &conn)
+	if conn.Repositories != 60 || conn.AccountKind != "organization" || conn.URL != gs.URL || strings.Contains(string(raw), fg.token) {
+		t.Fatalf("connection %s", raw)
+	}
+	// Saving again without a token keeps the stored one.
+	h.call("PUT", "/git/connection", api.PutGitConnectionRequest{URL: gs.URL, Account: "acme"}, http.StatusOK, nil)
+
+	var repos []api.GitRepo
+	h.call("GET", "/git/repos", nil, http.StatusOK, &repos)
+	if len(repos) != 60 || repos[0].FullName != "acme/infra" || !repos[0].Private {
+		t.Fatalf("%d repos, first %+v", len(repos), repos[0])
+	}
+	var branches []string
+	h.call("GET", "/git/repos/acme/infra/branches", nil, http.StatusOK, &branches)
+	if strings.Join(branches, ",") != "main,next" {
+		t.Fatalf("branches %v", branches)
+	}
+	h.call("GET", "/git/repos/someone-else/infra/discover", nil, http.StatusNotFound, nil)
+
+	var found api.DiscoverResponse
+	h.call("GET", "/git/repos/acme/infra/discover", nil, http.StatusOK, &found)
+	if found.Ref != "main" || found.Commit != "c0ffee" || len(found.Stacks) != 3 {
+		t.Fatalf("discover %+v", found)
+	}
+	byPath := map[string]api.DiscoveredStack{}
+	for _, d := range found.Stacks {
+		byPath[d.Path] = d
+	}
+	if c := byPath["environments/edge"].Config; c == nil || c.Engine != "opentofu" {
+		t.Fatalf("edge %+v", byPath["environments/edge"])
+	}
+	if !strings.Contains(byPath["legacy/vpn"].Error, "engine_version") || byPath["legacy/vpn"].Config != nil {
+		t.Fatalf("invalid config %+v", byPath["legacy/vpn"])
+	}
+
+	// A stack from the connection clones with its service token.
+	var st api.Stack
+	h.call("POST", "/stacks", api.CreateStackRequest{GitRepository: "acme/infra", Name: "prod", Path: "environments/prod"}, http.StatusCreated, &st)
+	if st.Repository != gs.URL+"/acme/infra.git" || st.Ref != "main" || st.ConnectionID == "" || st.HasGitToken {
+		t.Fatalf("stack %+v", st)
+	}
+	h.call("POST", "/stacks", api.CreateStackRequest{GitRepository: "other/infra", Name: "x"}, http.StatusUnprocessableEntity, nil)
+	h.call("GET", "/git/repos/acme/infra/discover?ref=main", nil, http.StatusOK, &found)
+	for _, d := range found.Stacks {
+		if (d.Path == "environments/prod") != (d.UsedBy != nil) || (d.UsedBy != nil && d.UsedBy.ID != st.ID) {
+			t.Fatalf("in-use marking: %+v", d)
+		}
+	}
+	run := h.run(st.ID, api.RunPlan)
+	if _, spec := h.spec(run.ID); spec.GitToken != fg.token || spec.Repository != st.Repository {
+		t.Fatalf("executor spec repository %q, token from the connection: %v", spec.Repository, spec.GitToken == fg.token)
+	}
+
+	// The service token can never be pointed at another repository.
+	other := "https://evil.example.com/x.git"
+	h.call("PATCH", "/stacks/"+st.ID, api.UpdateStackRequest{Repository: &other}, http.StatusUnprocessableEntity, nil)
+	path := "environments/edge"
+	h.call("PATCH", "/stacks/"+st.ID, api.UpdateStackRequest{Path: &path}, http.StatusOK, nil)
+	h.call("DELETE", "/git/connection", nil, http.StatusConflict, nil)
+
+	if strings.Contains(h.logs.String(), fg.token) {
+		t.Fatal("the service token reached the server log")
 	}
 }
 

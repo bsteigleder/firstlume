@@ -176,7 +176,7 @@ export function RunPage() {
           {s && <ConfigCard run={r} stack={s} />}
         </aside>
       </div>
-      {reconcile && s && <RunDialog stack={s} onClose={() => setReconcile(false)} />}
+      {reconcile && s && <RunDialog stack={s} again={{ type: r.type, ref: r.ref }} onClose={() => setReconcile(false)} />}
     </div>
   );
 }

@@ -1,6 +1,6 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router";
-import { api as rootAPI, settingsPath, type CreateAgentResponse } from "../api";
+import { api as rootAPI, settingsPath, type CreateAgentResponse, type GitConnection } from "../api";
 import { Logo } from "../icons";
 import { PageTitle, rememberOrg, useCrumbs, useOrg } from "../org";
 import { Empty, ErrorBanner, slugify, timeAgo, useAction, useData } from "../ui";
@@ -42,13 +42,7 @@ export function OrgSettingsPage() {
           <p className="muted">The organization is the last level a stack looks at: anything set in a folder or on the stack wins.</p>
           <SettingsEditor level={{ kind: "organization", id: org.id, name: org.name }} path={settingsPath({ kind: "organization" })} />
         </section>
-        <section id="git-connection" className="card">
-          <h2 className="section-title">Git connection</h2>
-          <p className="muted">
-            Connecting a Gitea account lets Firstlume list its repositories and find <span className="mono">.firstlume</span> folders for you. It comes
-            in the next milestone; until then, stacks are created by typing the repository URL.
-          </p>
-        </section>
+        <GitConnectionSection />
         <Agents />
         <section id="members" className="card">
           <h2 className="section-title">Members</h2>
@@ -94,6 +88,95 @@ function General() {
       <div className="form-actions">
         <button className="primary" disabled={busy || name.trim() === org.name || !name.trim()}>
           Save
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function GitConnectionSection() {
+  const { api } = useOrg();
+  // undefined while loading, null when there is none.
+  const [conn, setConn] = useState<GitConnection | null | undefined>(undefined);
+  const [form, setForm] = useState({ url: "", account: "", token: "" });
+  const [repos, setRepos] = useState<number | null>(null);
+  const save = useAction();
+  const remove = useAction();
+
+  useEffect(() => {
+    api.gitConnection().then(
+      (c) => (setConn(c), setForm({ url: c.url, account: c.account, token: "" })),
+      () => setConn(null),
+    );
+  }, [api]);
+  const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    await save.run(async () => {
+      const c = await api.putGitConnection({ provider: "gitea", ...form });
+      setConn(c);
+      setRepos(c.repositories ?? null);
+      setForm((f) => ({ ...f, token: "" }));
+    });
+  }
+
+  return (
+    <form id="git-connection" className="card form-card" onSubmit={submit}>
+      <div className="section-head">
+        <h2 className="section-title">Git connection</h2>
+        {conn && <span className="badge ok">Connected{repos !== null ? ` · ${repos} repositories` : ""}</span>}
+      </div>
+      <p className="muted">
+        Firstlume lists the account’s repositories, finds <span className="mono">.firstlume</span> folders and clones with a service token, not
+        anyone’s personal login, so scheduled runs keep working when people leave.
+      </p>
+      {conn !== undefined && (
+        <div className="grid-2">
+          <label className="field">
+            Provider
+            <select disabled value="gitea">
+              <option value="gitea">Gitea</option>
+            </select>
+          </label>
+          <label className="field">
+            Gitea URL
+            <input type="url" value={form.url} onChange={set("url")} placeholder="https://git.example.com" required />
+            {form.url.startsWith("http://") && <span className="hint warn-text">Over http the service token travels unencrypted: use https outside a local test.</span>}
+          </label>
+          <label className="field">
+            Account <span className="optional">organization or user</span>
+            <input value={form.account} onChange={set("account")} placeholder="infra" required />
+          </label>
+          <label className="field">
+            Service token
+            <input type="password" autoComplete="off" value={form.token} onChange={set("token")}
+              placeholder={conn ? "•••••••• (saved, never shown)" : "token of a bot account"} required={!conn} />
+            <span className="hint">From a bot account with read access to the repositories.</span>
+          </label>
+        </div>
+      )}
+      {save.error && <div className="form-error">{save.error}</div>}
+      {remove.error && <div className="form-error">{remove.error}</div>}
+      <div className="form-actions">
+        {conn && (
+          <button
+            type="button"
+            disabled={remove.busy}
+            onClick={() => {
+              if (!confirm("Disconnect Gitea? Stacks created from it must be deleted first.")) return;
+              void remove.run(async () => {
+                await api.deleteGitConnection();
+                setConn(null);
+                setRepos(null);
+              });
+            }}
+          >
+            Disconnect
+          </button>
+        )}
+        <button className="primary" disabled={save.busy || !form.url || !form.account || (!conn && !form.token)}>
+          {save.busy ? "Testing…" : conn ? "Test and save" : "Connect"}
         </button>
       </div>
     </form>

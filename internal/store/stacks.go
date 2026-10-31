@@ -12,19 +12,19 @@ import (
 )
 
 const stackColumns = `st.id, st.folder_id, st.name, st.repository, st.ref, st.path, st.git_token_enc IS NOT NULL,
-	st.config, st.drift_status, st.drift_run_id, st.drift_checked_at, st.created_at, st.updated_at`
+	st.config, st.drift_status, st.drift_run_id, st.drift_checked_at, st.created_at, st.updated_at, st.connection_id`
 
 func scanStack(row pgx.Row, extra ...any) (*api.Stack, error) {
 	var st api.Stack
-	var folder, driftStatus, driftRun *string
+	var folder, driftStatus, driftRun, connection *string
 	var driftChecked *time.Time
 	var cfg []byte
 	dest := []any{&st.ID, &folder, &st.Name, &st.Repository, &st.Ref, &st.Path, &st.HasGitToken,
-		&cfg, &driftStatus, &driftRun, &driftChecked, &st.CreatedAt, &st.UpdatedAt}
+		&cfg, &driftStatus, &driftRun, &driftChecked, &st.CreatedAt, &st.UpdatedAt, &connection}
 	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return nil, notFound(err)
 	}
-	st.FolderID = deref(folder)
+	st.FolderID, st.ConnectionID = deref(folder), deref(connection)
 	if cfg != nil {
 		st.Config = &api.StackConfig{}
 		if err := json.Unmarshal(cfg, st.Config); err != nil {
@@ -92,11 +92,11 @@ func (s *Store) CreateStack(ctx context.Context, orgID string, req api.CreateSta
 		}
 		st, err = scanStack(tx.QueryRow(ctx, `
 			WITH st AS (
-				INSERT INTO stacks (organization_id, folder_id, name, repository, ref, path, git_token_enc)
-				VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *
+				INSERT INTO stacks (organization_id, folder_id, name, repository, ref, path, git_token_enc, connection_id)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *
 			)
 			SELECT `+stackColumns+` FROM st`,
-			orgID, nullable(req.FolderID), req.Name, req.Repository, req.Ref, req.Path, tokenEnc))
+			orgID, nullable(req.FolderID), req.Name, req.Repository, req.Ref, req.Path, tokenEnc, nullable(req.ConnectionID)))
 		return classify(err)
 	})
 	return st, err

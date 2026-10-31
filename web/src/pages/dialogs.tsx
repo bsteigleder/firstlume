@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router";
-import type { Folder } from "../api";
+import { useEffect, useState, type FormEvent } from "react";
+import { Link, useNavigate } from "react-router";
+import type { Folder, GitConnection } from "../api";
 import { useOrg } from "../org";
 import { Modal, useAction } from "../ui";
+import { NewStackWizard } from "./NewStackWizard";
 
 /** Creates a folder (parentID) or renames one (folder). */
 export function FolderNameDialog({ parentID, folder, onClose }: { parentID?: string; folder?: Folder; onClose: () => void }) {
@@ -105,10 +106,33 @@ export function DeleteFolderDialog({ folder, onClose }: { folder: Folder; onClos
 }
 
 /**
- * New stack without a Git connection (milestone 1): the repository URL and
- * the folder holding .firstlume are typed in. Milestone 2 adds discovery.
+ * New stack: from the organization's Git connection when there is one
+ * (repository, branch and a discovered .firstlume folder), otherwise by typing
+ * the repository URL and folder.
  */
 export function NewStackDialog({ folderID, onClose }: { folderID: string; onClose: () => void }) {
+  const { api } = useOrg();
+  // undefined while loading, null when the organization has no connection.
+  const [conn, setConn] = useState<GitConnection | null | undefined>(undefined);
+  const [manual, setManual] = useState(false);
+  useEffect(() => {
+    api.gitConnection().then(setConn, () => setConn(null));
+  }, [api]);
+  if (conn === undefined) return null;
+  return (
+    <Modal title="New stack" onClose={onClose} wide>
+      {conn && !manual ? (
+        <div className="modal-body">
+          <NewStackWizard folderID={folderID} conn={conn} onClose={onClose} onManual={() => setManual(true)} />
+        </div>
+      ) : (
+        <ManualStack folderID={folderID} onClose={onClose} connected={!!conn} />
+      )}
+    </Modal>
+  );
+}
+
+function ManualStack({ folderID, onClose, connected }: { folderID: string; onClose: () => void; connected: boolean }) {
   const { api, reloadTree, folderLabel, link } = useOrg();
   const navigate = useNavigate();
   const [form, setForm] = useState({ name: "", repository: "", ref: "main", path: "", git_token: "" });
@@ -127,14 +151,19 @@ export function NewStackDialog({ folderID, onClose }: { folderID: string; onClos
   }
 
   return (
-    <Modal title="New stack" onClose={onClose} wide>
-      <form className="modal-body" onSubmit={submit}>
+    <form className="modal-body" onSubmit={submit}>
         <p className="muted">
           In <strong className="ink">{folderLabel(folderID)}</strong>. It will inherit the settings and secrets above it.
         </p>
         <div className="notice">
-          This organization has no Git connection yet, so repositories and <span className="mono">.firstlume</span> folders can’t be listed. Type
-          them instead.
+          {connected ? (
+            "Type any repository URL. Stacks created this way clone with the token you give here, not the Git connection’s."
+          ) : (
+            <>
+              This organization has no Git connection, so repositories and <span className="mono">.firstlume</span> folders can’t be listed. Type
+              them instead, or <Link to={link("settings#git-connection")} onClick={onClose}>connect Gitea</Link>.
+            </>
+          )}
         </div>
         <div className="grid-2">
           <label className="field span-2">
@@ -171,7 +200,6 @@ export function NewStackDialog({ folderID, onClose }: { folderID: string; onClos
             {busy ? "Creating…" : "Create stack"}
           </button>
         </div>
-      </form>
-    </Modal>
+    </form>
   );
 }
