@@ -12,7 +12,7 @@ TEST_DATABASE_URL := postgres://firstlume:firstlume@localhost:5432/firstlume_tes
 -include .env
 export
 
-.PHONY: build web web-dev test test-integration vet dev-db dev-gitea dev-garage dev-env run-server run-agent helm-lint docker-build clean
+.PHONY: build web web-dev test test-integration vet dev-db dev-gitea dev-garage dev-state-bundle dev-env run-server run-agent helm-lint docker-build clean
 
 build: web
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/firstlume
@@ -65,6 +65,10 @@ dev-gitea:
 ## to .env, which switches the dev server to FIRSTLUME_STATE_STORAGE=s3.
 dev-garage:
 	deploy/dev/garage-setup.sh
+
+## Example bundle of local Terraform states to try the state import with.
+dev-state-bundle:
+	TERRAGRUNT=$(TEST_TERRAGRUNT) TG_TF_PATH=$(TEST_TERRAFORM) deploy/dev/state-bundle.sh
 
 ## Generates local secrets into .env (only once).
 dev-env: build

@@ -5,6 +5,7 @@
 # .env (git-ignored) and are never printed.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+. deploy/dev/tg-example.sh
 touch .env
 set -a; . ./.env; set +a
 
@@ -88,9 +89,7 @@ TF
 done
 
 # A Terragrunt stack: two units, one state each, app reading net's outputs.
-mkdir -p environments/tg/.firstlume environments/tg/net environments/tg/app
-printf 'version: 1\nengine: terraform\nengine_version: 1.15.6\nterragrunt_version: 1.1.6\nrun_all: true\n' \
-  > environments/tg/.firstlume/config.yaml
+write_tg_units environments/tg
 cat > environments/tg/root.hcl <<'HCL'
 remote_state {
   backend  = "http"
@@ -102,24 +101,6 @@ remote_state {
   }
 }
 HCL
-echo 'include "root" { path = find_in_parent_folders("root.hcl") }' > environments/tg/net/terragrunt.hcl
-cat > environments/tg/net/main.tf <<'TF'
-resource "terraform_data" "vpc" { input = "10.0.0.0/16" }
-output "cidr" { value = terraform_data.vpc.output }
-TF
-cat > environments/tg/app/terragrunt.hcl <<'HCL'
-include "root" { path = find_in_parent_folders("root.hcl") }
-dependency "net" {
-  config_path                             = "../net"
-  mock_outputs                            = { cidr = "10.0.0.0/16" }
-  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
-}
-inputs = { cidr = dependency.net.outputs.cidr }
-HCL
-cat > environments/tg/app/main.tf <<'TF'
-variable "cidr" { type = string }
-resource "terraform_data" "app" { input = "app in ${var.cidr}" }
-TF
 
 mkdir -p legacy/vpn/.firstlume
 printf 'version: 1\nengine: terraform\nengine_version: latest\n' > legacy/vpn/.firstlume/config.yaml

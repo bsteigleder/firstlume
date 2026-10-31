@@ -39,9 +39,10 @@ func (s *Server) stateRoutes(r chi.Router) {
 	r.HandleFunc("/stacks/{stack}/*", s.stateProtocol)
 }
 
-// requireStateActor authenticates Basic credentials whose password is a state
-// token, scoped to one stack (R3.1, R3.2). Any failure is the same 401, so
-// the response says nothing about whether the stack exists.
+// requireStateActor authenticates Basic credentials whose password is a run
+// phase's state token or a stack's state token, both scoped to one stack
+// (R3.1, R3.2). Any failure is a 401 that says nothing about whether the
+// stack exists.
 func (s *Server) requireStateActor(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, password, ok := r.BasicAuth()
@@ -50,15 +51,25 @@ func (s *Server) requireStateActor(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "invalid or missing state token")
 			return
 		}
-		claims, err := s.keys.ParseStateToken(password)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid or missing state token")
-			return
-		}
-		actor, err := s.store.StateRunActor(r.Context(), claims.RunID, api.Phase(claims.Phase))
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusUnauthorized, "the run is no longer executing this phase")
-			return
+		var actor *store.StateActor
+		var err error
+		if strings.HasPrefix(password, store.StateTokenPrefix) {
+			actor, err = s.store.StateTokenActor(r.Context(), password)
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusUnauthorized, "invalid, expired or revoked state token")
+				return
+			}
+		} else {
+			claims, perr := s.keys.ParseStateToken(password)
+			if perr != nil {
+				writeError(w, http.StatusUnauthorized, "invalid or missing state token")
+				return
+			}
+			actor, err = s.store.StateRunActor(r.Context(), claims.RunID, api.Phase(claims.Phase))
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusUnauthorized, "the run is no longer executing this phase")
+				return
+			}
 		}
 		if err != nil {
 			s.internalError(w, r, err)
@@ -132,7 +143,11 @@ func (s *Server) readState(w http.ResponseWriter, r *http.Request, actor *store.
 
 func (s *Server) writeState(w http.ResponseWriter, r *http.Request, actor *store.StateActor, key string) {
 	if !actor.CanWrite {
-		writeError(w, http.StatusForbidden, "a plan never writes state: only the apply phase can")
+		if actor.TokenID != "" {
+			writeError(w, http.StatusForbidden, "this state token is read-only")
+		} else {
+			writeError(w, http.StatusForbidden, "a plan never writes state: only the apply phase can")
+		}
 		return
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.StateMaxBytes))
@@ -155,6 +170,10 @@ func (s *Server) writeState(w http.ResponseWriter, r *http.Request, actor *store
 }
 
 func (s *Server) lockState(w http.ResponseWriter, r *http.Request, actor *store.StateActor, key string) {
+	if !actor.CanLock {
+		writeError(w, http.StatusForbidden, "this state token is read-only and can't lock: plan with -lock=false")
+		return
+	}
 	info, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxLockInfoBody))
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, "lock info too large")

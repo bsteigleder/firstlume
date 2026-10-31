@@ -83,22 +83,24 @@ func (b pgBlobs) List(ctx context.Context, before time.Time) ([]string, error) {
 	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
-// StateActor is who uses the state protocol: a run phase (or, later, a state token).
+// StateActor is who uses the state protocol: a run phase or a state token.
 type StateActor struct {
 	OrganizationID string
 	StackID        string
 	RunID          string
 	Phase          api.Phase
+	TokenID        string
 	// Name describes the actor in locks and versions.
 	Name string
-	// CanWrite allows writing state; locking and reading are always allowed.
+	// CanWrite allows writing state, and CanLock locking it; reading is always allowed.
 	CanWrite bool
+	CanLock  bool
 }
 
 // StateRunActor returns the actor for a run phase's state token, as long as
 // the run is still executing that phase (R5.1).
 func (s *Store) StateRunActor(ctx context.Context, runID string, phase api.Phase) (*StateActor, error) {
-	a := StateActor{RunID: runID, Phase: phase, CanWrite: phase == api.PhaseApply}
+	a := StateActor{RunID: runID, Phase: phase, CanWrite: phase == api.PhaseApply, CanLock: true}
 	err := s.pool.QueryRow(ctx, `SELECT organization_id, stack_id FROM runs WHERE id = $1 AND status = $2`,
 		runID, statusForPhase(phase)).Scan(&a.OrganizationID, &a.StackID)
 	if err != nil {
@@ -189,15 +191,11 @@ func (s *Store) ReadState(ctx context.Context, a *StateActor, key string) ([]byt
 // Terraform sends while it holds the lock. Writing the same serial and content
 // again is accepted without a new version.
 func (s *Store) WriteState(ctx context.Context, a *StateActor, key, lockID string, data []byte) error {
-	meta, managed, err := parseState(data)
+	meta, _, err := parseState(data)
 	if err != nil {
 		return err
 	}
 	sum := sha256.Sum256(data)
-	sealed, err := s.keys.State().Encrypt(data)
-	if err != nil {
-		return err
-	}
 	var unitID string
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		u, err := lockUnit(ctx, tx, a, key)
@@ -228,24 +226,7 @@ func (s *Store) WriteState(ctx context.Context, a *StateActor, key, lockID strin
 			}
 		}
 
-		// The object goes first: a crash before the commit leaves only an
-		// orphan object, which PurgeState removes; readers never see it (R4.3).
-		versionID, err := newUUID()
-		if err != nil {
-			return err
-		}
-		objectKey := a.OrganizationID + "/" + a.StackID + "/" + versionID
-		if err := s.blobs.Put(ctx, objectKey, sealed); err != nil {
-			return fmt.Errorf("storing state object: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO state_versions (id, unit_id, number, serial, lineage, sha256, size, resources, object_key, run_id, phase, written_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-			versionID, u.id, u.current+1, *meta.Serial, meta.Lineage, sum[:], len(data), managed, objectKey,
-			nullable(a.RunID), nullable(string(a.Phase)), a.Name); err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `UPDATE state_units SET current_version = $2, updated_at = now() WHERE id = $1`, u.id, u.current+1)
+		_, err = s.insertVersion(ctx, tx, a, u.id, u.current+1, data)
 		return err
 	})
 	if err != nil {

@@ -100,7 +100,61 @@ Trocar de storage não move as versões já gravadas.
 
 > **Backend `s3` direto no Garage:** o Garage (testado na v2.4.1) ignora a escrita condicional (`If-None-Match`), então o `use_lockfile` do backend `s3` do Terraform **não trava nada** nele: um apply passa por cima da trava de outro. Com o backend do Firstlume, a trava fica no Postgres e funciona com qualquer storage.
 
-A importação de states existentes, os tokens para uso fora dos runs e a aba State na UI vêm nos próximos marcos da spec.
+#### Usar o state fora dos runs ("só state")
+
+Uma pipeline que ainda não roda no Firstlume (Woodpecker, GitLab CI, etc.) pode usar o state dele com um **token de state** do stack. Assim ela ganha lock e versões antes de os runs migrarem.
+
+```bash
+curl -X POST -H "Authorization: Bearer $ADMIN" "$API/api/v1/orgs/$ORG/stacks/$STACK/state/tokens" \
+  -d '{"name": "woodpecker", "write": true}'   # "expires_at" é opcional
+```
+
+O token aparece só nessa resposta. Ele pode ser revogado com `DELETE .../state/tokens/{id}`, e `GET .../state/tokens` mostra o último uso.
+
+- **Leitura e escrita** (`"write": true`): lê, trava e grava. Cada versão gravada leva o nome do token. Uma trava do token não se solta sozinha: só com o `UNLOCK` do próprio Terraform.
+- **Só leitura**: só lê. O plan roda com `-lock=false`.
+
+Na pipeline, com o `root.hcl` acima:
+
+```bash
+export FIRSTLUME_STATE_URL=https://firstlume.example.com/state/v1/stacks/$STACK
+export TF_HTTP_USERNAME=firstlume TF_HTTP_PASSWORD=$FIRSTLUME_STATE_TOKEN
+terragrunt run --all -- plan -lock=false      # token de leitura
+terragrunt run --all -- apply                 # token de escrita
+```
+
+#### Importar um state existente
+
+Um bundle `tar.gz` (ou um `terraform.tfstate` avulso) vira o state das units:
+
+- cada `<caminho>/terraform.tfstate` do bundle vira a unit `<caminho>`. Um state dentro do `.terragrunt-cache` de uma unit vai para a unit;
+- `prefix` remove o começo dos caminhos, para que a chave fique igual ao `path_relative_to_include()`;
+- backups (`*.tfstate.backup`), pastas `.terraform` e metadados do macOS (`._*`) são ignorados;
+- qualquer outro arquivo, link, caminho com `..` ou state inválido recusa o bundle inteiro, com a lista do que está errado;
+- a importação grava tudo ou nada.
+
+```bash
+# Simula: mostra, por unit, serial, recursos e o que aconteceria. Não grava nada.
+curl -X POST -H "Authorization: Bearer $ADMIN" "$API/api/v1/orgs/$ORG/stacks/$STACK/state/import?dry_run=true" \
+  -F file=@prod.tar.gz -F prefix=environments/prod
+# Importa.
+curl -X POST -H "Authorization: Bearer $ADMIN" "$API/api/v1/orgs/$ORG/stacks/$STACK/state/import" \
+  -F file=@prod.tar.gz -F prefix=environments/prod
+```
+
+Uma unit sem state ganha a versão 1. Uma unit que já tem state aparece como `same`, `newer`, `older` ou `conflict` (outro lineage) e só muda se for marcada com `-F replace=<unit>` (uma vez por unit). Nesse caso ganha uma versão nova, e o histórico fica. Se o state importado tiver o mesmo lineage e um serial que não passa do atual, o serial sobe, para que um plano salvo antes não seja aplicado em cima dele. Uma unit travada não pode receber importação.
+
+#### Migrar uma pipeline que guarda o state num bundle
+
+1. Crie o stack no Firstlume apontando para a pasta do ambiente.
+2. Pare os applies da pipeline. Importe o bundle atual com `dry_run=true` e confira as units e o `prefix`. Depois importe de verdade.
+3. Troque o `root.hcl` pelo trecho acima e crie os tokens de state (um de leitura para o plan e um de escrita para o apply).
+4. Na pipeline, exporte `FIRSTLUME_STATE_URL` e `TF_HTTP_PASSWORD` e remova os passos de baixar e subir o bundle.
+5. Confira: `terragrunt run --all -- plan -lock=false` deve dar **"No changes" em todas as units**. Guarde o bundle antigo por um tempo, só para leitura.
+
+Para experimentar localmente: `make dev-state-bundle` gera `deploy/dev/state-bundle.tar.gz` com o state do stack Terragrunt de exemplo (`acme/infra`, `environments/tg`). Importe-o com `prefix=environments/tg`.
+
+A aba State na UI vem no próximo marco da spec.
 
 ## Rodando localmente
 
@@ -215,7 +269,7 @@ deploy/docker/        Dockerfile
 ## Roadmap
 
 1. ✅ Runs de plan/apply, logs, aprovação configurável, drift detection agendado (só reporta), UI web, agent com Kubernetes e chart Helm
-2. State backend HTTP próprio, por unit, com lock, versões e criptografia, no Postgres ou no Garage/S3 (✅ marcos S1 e S2); importação de state existente, modo "só state" para quem continua usando o CI atual e aba State na UI
+2. State backend HTTP próprio, por unit, com lock, versões e criptografia, no Postgres ou no Garage/S3 (✅ marcos S1 e S2), importação de state existente e modo "só state" para quem continua usando o CI atual (✅ marco S3); aba State na UI
 3. Terragrunt nativo: descoberta de units, grafo de dependências, um run por unit e agents com labels por rede/zona
 4. Segredos vindos do Vault (JWT emitido pelo Firstlume por run, Kubernetes auth ou AppRole), sem o Firstlume virar um segundo cofre; variáveis do tipo arquivo
 5. Usuários, grupos e SSO; aprovadores por pessoa ou grupo; trilha de auditoria

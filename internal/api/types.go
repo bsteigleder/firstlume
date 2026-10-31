@@ -606,3 +606,60 @@ type StateLock struct {
 type DeleteStateRequest struct {
 	Confirm string `json:"confirm"`
 }
+
+// StateToken lets a pipeline outside Firstlume use a stack's state ("state
+// only" mode, spec 0002 R7). The secret is shown only when it is created.
+type StateToken struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Write      bool       `json:"write"`
+	CreatedBy  string     `json:"created_by"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+}
+
+type CreateStateTokenRequest struct {
+	Name string `json:"name"`
+	// Write allows locking and writing; without it the token only reads.
+	Write     bool       `json:"write"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+type CreateStateTokenResponse struct {
+	StateToken StateToken `json:"state_token"`
+	Token      string     `json:"token"`
+}
+
+// StateImportUnit is what importing does to one unit (spec 0002 R9.3).
+type StateImportUnit struct {
+	Key       string `json:"key"`
+	Serial    int64  `json:"serial"`
+	Lineage   string `json:"lineage"`
+	Resources int    `json:"resources"`
+	// Status compares the imported state with the unit's current one: new
+	// (no state yet), same, newer, older or conflict (another lineage).
+	Status         string `json:"status"`
+	CurrentVersion int    `json:"current_version,omitempty"`
+	CurrentSerial  int64  `json:"current_serial,omitempty"`
+	// Action is create, replace or skip. Only units marked to be replaced
+	// change a state that already exists (R9.4).
+	Action   string `json:"action"`
+	LockedBy string `json:"locked_by,omitempty"`
+	// Version is the version the import created.
+	Version int `json:"version,omitempty"`
+}
+
+type StateImportProblem struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
+}
+
+type StateImportResult struct {
+	DryRun bool              `json:"dry_run"`
+	Units  []StateImportUnit `json:"units"`
+	// Ignored lists files the bundle may carry that are not states, like backups.
+	Ignored  []string             `json:"ignored,omitempty"`
+	Problems []StateImportProblem `json:"problems,omitempty"`
+	Error    string               `json:"error,omitempty"`
+}

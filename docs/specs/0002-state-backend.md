@@ -1,6 +1,6 @@
 # Spec 0002: state backend do Firstlume (HTTP, por unit, guardado no Garage)
 
-- **Status:** aprovada; Marcos S1 e S2 implementados em 2026-10-30
+- **Status:** aprovada; Marcos S1 e S2 implementados em 2026-10-30, Marco S3 em 2026-10-31
 - **Data:** 2026-10-30
 - **Depende de:** spec 0001 (organizações, pastas, stacks e conexão Gitea), já implementada até o Marco 2
 
@@ -199,7 +199,7 @@ O desenho das telas vem antes da implementação, como na spec 0001. A aba tem o
 ### 4.9 Importação
 
 - **R9.1** Aceita um **bundle `tar.gz`** ou um `terraform.tfstate` avulso, pela API e pela aba State.
-- **R9.2** No bundle, cada `<caminho>/terraform.tfstate` vira a unit `<caminho>`. Um **prefixo a remover** permite alinhar as chaves com o que o `path_relative_to_include()` vai gerar.
+- **R9.2** No bundle, cada `<caminho>/terraform.tfstate` vira a unit `<caminho>`. Um state em `<caminho>/.terragrunt-cache/…` também vai para a unit `<caminho>`, porque é lá que o Terragrunt guarda o state local. Um **prefixo a remover** permite alinhar as chaves com o que o `path_relative_to_include()` vai gerar. Backups (`*.tfstate.backup`), pastas `.terraform` e metadados do macOS (`._*`) são ignorados e listados.
 - **R9.3** Antes, a importação **simula**. Mostra por unit:
   - a chave;
   - o serial, o lineage e o número de recursos;
@@ -284,14 +284,16 @@ Testes: `internal/s3` (cliente, contra o Garage real) e os testes de state de `i
 
 ### Marco S3: importação e modo "só state"
 
-- [ ] **CAS3.1** Importar o bundle de exemplo:
+Testes: `internal/server/stateimport_test.go` (bundles montados no teste, tokens, e Terraform e Terragrunt reais), no Postgres e no Garage. Também verificado ponta a ponta com o agent: o bundle de `make dev-state-bundle` importado no stack `environments/tg` do Gitea de dev, e o plan seguinte deu "No changes" nas duas units.
+
+- [x] **CAS3.1** Importar o bundle de exemplo:
   - com simulação, mostra as units, os seriais e o número de recursos, sem gravar nada;
   - confirmado, cria a versão 1 de cada unit.
-- [ ] **CAS3.2** Depois de importar e trocar o `root.hcl` para R1.3, o `terragrunt run --all plan` dá **"No changes" em todas as units**, tanto pelo Firstlume quanto por fora com um token de leitura e `-lock=false`.
-- [ ] **CAS3.3** Uma unit que já tem state aparece como igual, mais nova ou conflito. Sem marcação, não é substituída. Com marcação, ganha uma versão nova e mantém o histórico.
-- [ ] **CAS3.4** Um bundle com `../x/terraform.tfstate`, um link simbólico ou um arquivo que não é state é recusado inteiro, com a lista do que está errado.
-- [ ] **CAS3.5** **Só state:** o `terragrunt run --all apply` rodado por fora com um token de escrita grava versões com o nome do token. Revogado o token, o próximo pedido dá 401.
-- [ ] **CAS3.6** Dois `apply` por fora ao mesmo tempo na mesma unit: um espera ou falha com a trava; o state não se corrompe.
+- [x] **CAS3.2** Depois de importar e trocar o `root.hcl` para R1.3, o `terragrunt run --all plan` dá **"No changes" em todas as units**, tanto pelo Firstlume quanto por fora com um token de leitura e `-lock=false`.
+- [x] **CAS3.3** Uma unit que já tem state aparece como igual, mais nova ou conflito. Sem marcação, não é substituída. Com marcação, ganha uma versão nova e mantém o histórico.
+- [x] **CAS3.4** Um bundle com `../x/terraform.tfstate`, um link simbólico ou um arquivo que não é state é recusado inteiro, com a lista do que está errado.
+- [x] **CAS3.5** **Só state:** o `terragrunt run --all apply` rodado por fora com um token de escrita grava versões com o nome do token. Revogado o token, o próximo pedido dá 401.
+- [x] **CAS3.6** Dois `apply` por fora ao mesmo tempo na mesma unit: um espera ou falha com a trava; o state não se corrompe.
 
 ### Marco S4: aba State (depois do desenho aprovado)
 
@@ -305,7 +307,7 @@ Testes: `internal/s3` (cliente, contra o Garage real) e os testes de state de `i
 
 - [ ] **CGS1** `make vet`, os testes unitários, os de integração e o `tsc` passam.
 - [ ] **CGS2** Os testes de protocolo usam o **Terraform e o Terragrunt reais** (como no Marco 1b), não só chamadas HTTP feitas à mão.
-- [ ] **CGS3** README com:
+- [x] **CGS3** README com:
   - os trechos de R1.1 e R1.3;
   - as variáveis de R4.1;
   - o passo a passo de migração de um bundle (R7.6 e R9).
