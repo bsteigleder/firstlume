@@ -254,3 +254,72 @@ func TestGitEnvAllowsHTTPOnlyForHTTPRepositories(t *testing.T) {
 		}
 	}
 }
+
+func TestStateEnv(t *testing.T) {
+	spec := &api.ExecSpec{StackID: "s1", StateToken: "fls_tok"}
+	env := strings.Join(stateEnv("http://fl:8080/", spec), "\n")
+	for _, want := range []string{
+		"TF_HTTP_ADDRESS=http://fl:8080/state/v1/stacks/s1", "TF_HTTP_LOCK_ADDRESS=http://fl:8080/state/v1/stacks/s1",
+		"TF_HTTP_USERNAME=firstlume", "TF_HTTP_PASSWORD=fls_tok", "FIRSTLUME_STATE_URL=http://fl:8080/state/v1/stacks/s1",
+	} {
+		if !strings.Contains(env, want) {
+			t.Errorf("missing %s in\n%s", want, env)
+		}
+	}
+	if stateEnv("http://fl", &api.ExecSpec{StackID: "s1"}) != nil {
+		t.Error("no token, no state environment")
+	}
+}
+
+func writeBackend(t *testing.T, dir, typ string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(dir, ".terraform"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"version":3,"terraform_version":"1.15.6"}`
+	if typ != "" {
+		body = fmt.Sprintf(`{"version":3,"backend":{"type":%q,"config":{}}}`, typ)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".terraform", "terraform.tfstate"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckBackends(t *testing.T) {
+	var out bytes.Buffer
+	dir := t.TempDir()
+	if err := checkBackends(dir, "", &out); err == nil || !strings.Contains(out.String(), `backend "http" {}`) {
+		t.Fatalf("no backend at all must fail with help: %v\n%s", err, out.String())
+	}
+	writeBackend(t, dir, "http")
+	if err := checkBackends(dir, "", &out); err != nil {
+		t.Fatalf("http backend: %v", err)
+	}
+	writeBackend(t, dir, "s3")
+	if err := checkBackends(dir, "", &out); err != nil {
+		t.Fatalf("the code's own backend must be accepted: %v", err)
+	}
+
+	// run --all: units are the planned ones; one with a source initializes in its cache.
+	work, plans := t.TempDir(), t.TempDir()
+	for _, u := range []string{"net", "app", "edge/dns"} {
+		if err := os.MkdirAll(filepath.Join(plans, u), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(plans, u, "tfplan.json"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeBackend(t, filepath.Join(work, "net"), "http")
+	writeBackend(t, filepath.Join(work, "app", ".terragrunt-cache", "abc", "def", "modules", "app"), "http")
+	out.Reset()
+	err := checkBackends(work, plans, &out)
+	if err == nil || !strings.Contains(out.String(), "(edge/dns)") {
+		t.Fatalf("edge/dns has no backend: %v\n%s", err, out.String())
+	}
+	writeBackend(t, filepath.Join(work, "edge", "dns"), "http")
+	out.Reset()
+	if err := checkBackends(work, plans, &out); err != nil || !strings.Contains(out.String(), "3 unit(s)") {
+		t.Fatalf("all units on http: %v\n%s", err, out.String())
+	}
+}

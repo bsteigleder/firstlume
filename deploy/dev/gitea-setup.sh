@@ -56,16 +56,28 @@ fi
 save FIRSTLUME_DEV_GITEA_URL "$GITEA"
 save FIRSTLUME_DEV_GITEA_ACCOUNT "$ORG"
 
-# Content of acme/infra, pushed once.
+# Content of acme/infra. Rewritten on every run and committed only when it
+# changed, so existing setups pick up new examples.
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
 if [ "$(api "$GITEA/api/v1/repos/$ORG/infra" | jq -r .empty)" = "true" ]; then
-  WORK=$(mktemp -d)
-  trap 'rm -rf "$WORK"' EXIT
-  cd "$WORK"
-  git init -q -b main
-  for env in prod edge dev; do
-    mkdir -p "environments/$env/.firstlume"
-    printf 'version: 1\nengine: terraform\nengine_version: 1.15.6\n' > "environments/$env/.firstlume/config.yaml"
-    cat > "environments/$env/main.tf" <<TF
+  git init -q -b main "$WORK"
+  AUTHOR=(-c user.name="Ana Souza" -c user.email=ana@example.com)
+  MESSAGE="Environments prod, edge and dev"
+else
+  git -c http.extraHeader="$AUTH" clone -q "$GITEA/$ORG/infra.git" "$WORK"
+  AUTHOR=(-c user.name="Bruno Lima" -c user.email=bruno@example.com)
+  MESSAGE="Keep state in Firstlume and add a Terragrunt stack"
+fi
+cd "$WORK"
+for env in prod edge dev; do
+  mkdir -p "environments/$env/.firstlume"
+  printf 'version: 1\nengine: terraform\nengine_version: 1.15.6\n' > "environments/$env/.firstlume/config.yaml"
+  cat > "environments/$env/main.tf" <<TF
+# The state lives in Firstlume, which fills in the address and credentials.
+terraform {
+  backend "http" {}
+}
 variable "greeting" {
   type    = string
   default = "hello"
@@ -73,15 +85,52 @@ variable "greeting" {
 resource "terraform_data" "$env" { input = "\${var.greeting} from $env" }
 output "message" { value = terraform_data.$env.output }
 TF
-  done
-  mkdir -p legacy/vpn/.firstlume
-  printf 'version: 1\nengine: terraform\nengine_version: latest\n' > legacy/vpn/.firstlume/config.yaml
-  echo 'resource "terraform_data" "vpn" {}' > legacy/vpn/main.tf
-  git add -A
-  git -c user.name="Ana Souza" -c user.email=ana@example.com commit -qm "Environments prod, edge and dev"
+done
+
+# A Terragrunt stack: two units, one state each, app reading net's outputs.
+mkdir -p environments/tg/.firstlume environments/tg/net environments/tg/app
+printf 'version: 1\nengine: terraform\nengine_version: 1.15.6\nterragrunt_version: 1.1.6\nrun_all: true\n' \
+  > environments/tg/.firstlume/config.yaml
+cat > environments/tg/root.hcl <<'HCL'
+remote_state {
+  backend  = "http"
+  generate = { path = "backend.tf", if_exists = "overwrite_terragrunt" }
+  config = {
+    address        = "${get_env("FIRSTLUME_STATE_URL")}/${path_relative_to_include()}"
+    lock_address   = "${get_env("FIRSTLUME_STATE_URL")}/${path_relative_to_include()}"
+    unlock_address = "${get_env("FIRSTLUME_STATE_URL")}/${path_relative_to_include()}"
+  }
+}
+HCL
+echo 'include "root" { path = find_in_parent_folders("root.hcl") }' > environments/tg/net/terragrunt.hcl
+cat > environments/tg/net/main.tf <<'TF'
+resource "terraform_data" "vpc" { input = "10.0.0.0/16" }
+output "cidr" { value = terraform_data.vpc.output }
+TF
+cat > environments/tg/app/terragrunt.hcl <<'HCL'
+include "root" { path = find_in_parent_folders("root.hcl") }
+dependency "net" {
+  config_path                             = "../net"
+  mock_outputs                            = { cidr = "10.0.0.0/16" }
+  mock_outputs_allowed_terraform_commands = ["plan", "validate"]
+}
+inputs = { cidr = dependency.net.outputs.cidr }
+HCL
+cat > environments/tg/app/main.tf <<'TF'
+variable "cidr" { type = string }
+resource "terraform_data" "app" { input = "app in ${var.cidr}" }
+TF
+
+mkdir -p legacy/vpn/.firstlume
+printf 'version: 1\nengine: terraform\nengine_version: latest\n' > legacy/vpn/.firstlume/config.yaml
+echo 'resource "terraform_data" "vpn" {}' > legacy/vpn/main.tf
+
+git add -A
+if ! git diff --cached --quiet; then
+  git "${AUTHOR[@]}" commit -qm "$MESSAGE"
   git -c http.extraHeader="$AUTH" push -q "$GITEA/$ORG/infra.git" main
-  cd - >/dev/null
 fi
+cd - >/dev/null
 
 echo "Gitea ready at $GITEA: organization $ORG, bot $BOT (token in .env as FIRSTLUME_DEV_GITEA_TOKEN)."
 echo "Sign in to Gitea as $ADMIN with the password in .env (FIRSTLUME_DEV_GITEA_ADMIN_PASSWORD)."

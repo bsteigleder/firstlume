@@ -41,6 +41,8 @@ func (s *Server) userRoutes(r chi.Router) {
 		r.With(s.requireID).Put("/stacks/{id}/settings", s.putSettings(api.LevelStack))
 		r.With(s.requireID).Get("/stacks/{id}/runs", s.listRuns)
 		r.With(s.requireID).Post("/stacks/{id}/runs", s.createRun)
+		r.With(s.requireID).Get("/stacks/{id}/state", s.listStateUnits)
+		r.With(s.requireID).Delete("/stacks/{id}/state", s.deleteState)
 
 		r.Get("/runs", s.listActiveRuns)
 		r.With(s.requireID).Get("/runs/{id}", s.getRun)
@@ -319,9 +321,13 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteStack(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteStack(r.Context(), orgID(r), id(r)); err != nil {
+	if err := s.store.DeleteStack(r.Context(), orgID(r), id(r), adminIdentity); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "a stack with a run in progress cannot be deleted")
+			return
+		}
+		if errors.Is(err, store.ErrStateNotEmpty) {
+			writeError(w, http.StatusConflict, "the stack's state still manages resources: run a destroy, or delete the state first")
 			return
 		}
 		s.storeError(w, r, err, "stack")

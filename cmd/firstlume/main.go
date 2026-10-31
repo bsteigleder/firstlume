@@ -104,6 +104,13 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	stateMaxMiB, err := intEnv("FIRSTLUME_STATE_MAX_MIB", 64)
+	if err != nil {
+		return err
+	}
+	if stateMaxMiB < 1 {
+		return errors.New("FIRSTLUME_STATE_MAX_MIB must be at least 1")
+	}
 
 	pool, err := store.Connect(ctx, dbURL)
 	if err != nil {
@@ -134,6 +141,7 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 		Addr:             env("FIRSTLUME_LISTEN_ADDR", ":8080"),
 		AdminToken:       adminToken,
 		HeartbeatTimeout: heartbeat,
+		StateMaxBytes:    int64(stateMaxMiB) << 20,
 		UI:               web.FS(),
 	}, st, keys, log)
 	return srv.Run(ctx)

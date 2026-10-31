@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/bsteigleder/firstlume/internal/api"
 	"github.com/bsteigleder/firstlume/internal/apiclient"
 	"github.com/bsteigleder/firstlume/internal/secrets"
@@ -30,6 +32,7 @@ type harness struct {
 	url   string
 	org   string // slug
 	store *store.Store
+	pool  *pgxpool.Pool
 	agent *apiclient.Client
 	logs  *syncBuffer
 }
@@ -54,6 +57,12 @@ func (b *syncBuffer) String() string {
 // newHarness needs a disposable Postgres database, e.g.
 // FIRSTLUME_TEST_DATABASE_URL=postgres://firstlume:firstlume@localhost:5432/firstlume_test?sslmode=disable
 func newHarness(t *testing.T) *harness {
+	t.Helper()
+	return newHarnessWith(t, Config{})
+}
+
+// newHarnessWith starts the server with cfg (the admin token is set here).
+func newHarnessWith(t *testing.T, cfg Config) *harness {
 	t.Helper()
 	dbURL := os.Getenv("FIRSTLUME_TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -89,10 +98,11 @@ func newHarness(t *testing.T) *harness {
 
 	logs := &syncBuffer{}
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	srv := New(Config{AdminToken: testAdminToken}, st, keys, log)
+	cfg.AdminToken = testAdminToken
+	srv := New(cfg, st, keys, log)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &harness{t: t, url: ts.URL, org: slug, store: st, agent: apiclient.New(ts.URL, agentToken), logs: logs}
+	return &harness{t: t, url: ts.URL, org: slug, store: st, pool: pool, agent: apiclient.New(ts.URL, agentToken), logs: logs}
 }
 
 func randomSuffix() string {

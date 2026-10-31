@@ -2,7 +2,7 @@
 
 Plataforma de automação de Infraestrutura como Código (Terraform, OpenTofu e Terragrunt), no estilo do env0, instalável via Helm em qualquer cluster Kubernetes.
 
-> **Status: fase 1 (MVP).** Já existem os runs de plan/apply com logs e aprovação configurável, drift detection agendado, uma UI web, o agent que cria Jobs no Kubernetes e o chart Helm. Ainda não existem o state backend próprio, usuários e a integração com Git. Veja o [roadmap](#roadmap).
+> **Status: fase 2.** Já existem organizações, pastas e stacks com configurações herdadas, runs de plan/apply com revisão por recurso e aprovação configurável, drift detection agendado, a conexão com o Gitea, o state backend próprio (por unit, com lock e versões), uma UI web, o agent que cria Jobs no Kubernetes e o chart Helm. Ainda não existem usuários e login. Veja o [roadmap](#roadmap).
 
 ## Arquitetura
 
@@ -12,6 +12,7 @@ Plataforma de automação de Infraestrutura como Código (Terraform, OpenTofu e 
   (UI/API)   │  /api/v1   usuários (admin)  │      └──────────┘
              │  /agent/v1 agents            │
              │  /exec/v1  executores        │
+             │  /state/v1 state (Terraform) │
              └──────▲───────────────▲───────┘
                     │ claim (pull)  │ spec, logs, plano, resultado
              ┌──────┴───────┐       │ (token válido só para 1 fase)
@@ -45,6 +46,39 @@ A aprovação é configurável por ambiente, na UI ou com `PATCH /api/v1/environ
 Cada ambiente pode ter um intervalo de verificação (`drift_interval_minutes`, de 15 min a 7 dias). O server cria um run `drift` quando a verificação vence e o ambiente está livre. Esse run é um `plan` que **só reporta**: nunca aplica, não pede aprovação e não guarda o arquivo de plano. O resultado (`in_sync`, `drifted` ou `error`) fica no ambiente e aparece na UI. Também dá para verificar na hora, com um run do tipo `drift`. Mudanças na branch que ainda não foram aplicadas também aparecem como drift.
 
 Se o executor parar de enviar heartbeat por `FIRSTLUME_HEARTBEAT_TIMEOUT` (10 min por padrão), o run é marcado como `failed`. Se o pod morrer (por exemplo, por OOM ou deadline), o agent reporta a falha.
+
+### State
+
+O Firstlume é o backend de state dos stacks ([spec 0002](docs/specs/0002-state-backend.md)). Ele usa o backend `http` do Terraform e do OpenTofu, sem plugin. O código declara o backend e o Firstlume preenche o endereço e a credencial em cada run:
+
+```hcl
+terraform {
+  backend "http" {}
+}
+```
+
+No Terragrunt, cada unit tem o seu state. O `root.hcl` monta o endereço de cada uma a partir de `FIRSTLUME_STATE_URL`:
+
+```hcl
+remote_state {
+  backend  = "http"
+  generate = { path = "backend.tf", if_exists = "overwrite_terragrunt" }
+  config = {
+    address        = "${get_env("FIRSTLUME_STATE_URL")}/${path_relative_to_include()}"
+    lock_address   = "${get_env("FIRSTLUME_STATE_URL")}/${path_relative_to_include()}"
+    unlock_address = "${get_env("FIRSTLUME_STATE_URL")}/${path_relative_to_include()}"
+  }
+}
+```
+
+- **Lock por unit.** Num `run --all`, cada unit grava o seu state quando o apply dela termina: se uma unit falha, as outras ficam salvas.
+- **Plan não grava.** A credencial da fase de plan (e do drift) só lê e trava o state. Só o apply grava.
+- **Versões.** Cada gravação vira uma versão imutável, cifrada com uma chave própria. Gravações que perderiam state (serial menor, lineage de outra infraestrutura) são recusadas.
+- **As travas de um run** são soltas quando a fase termina, de qualquer jeito que termine.
+- **Código com outro backend** (por exemplo `s3`) continua funcionando: as variáveis do Firstlume são ignoradas. Código **sem backend** falha no Init, porque o state ficaria no disco do runner e se perderia.
+- **Um stack com recursos no state não pode ser excluído.** Rode um destroy ou exclua o state antes (`DELETE /api/v1/orgs/{org}/stacks/{id}/state`). O state excluído fica guardado por 30 dias.
+
+O tamanho máximo de uma versão é `FIRSTLUME_STATE_MAX_MIB` (64 por padrão). Por enquanto o state fica no Postgres; Garage/S3, a importação de states existentes, os tokens para uso fora dos runs e a aba State na UI vêm nos próximos marcos da spec.
 
 ## Rodando localmente
 
@@ -101,7 +135,7 @@ Testes:
 
 ```bash
 make test               # unitários
-make test-integration   # com Postgres (requer make dev-db)
+make test-integration   # com Postgres (requer make dev-db); usa Terraform e Terragrunt reais se achar
 ```
 
 ## Instalando com Helm
@@ -145,9 +179,8 @@ deploy/helm/          chart único (controlPlane + agent)
 deploy/docker/        Dockerfile
 ```
 
-## Limitações conhecidas (fase 1)
+## Limitações conhecidas
 
-- **Ainda não há state backend.** Os templates precisam declarar um backend remoto próprio, como S3 ou GCS. Com o backend local, o state se perde ao fim de cada pod, e o drift detection sempre reporta `drifted`.
 - **Autenticação só por token admin.** Usuários, grupos, SSO e aprovadores por pessoa ou grupo entram depois.
 - **Cancelar um run em execução não é suportado**, de propósito: interromper um apply pode corromper o state.
 - **As ferramentas são baixadas a cada run** (releases oficiais, com checksum SHA256 verificado). O executor precisa de acesso de saída à internet, ou de um mirror (ainda não configurável).
@@ -156,7 +189,7 @@ deploy/docker/        Dockerfile
 ## Roadmap
 
 1. ✅ Runs de plan/apply, logs, aprovação configurável, drift detection agendado (só reporta), UI web, agent com Kubernetes e chart Helm
-2. State backend HTTP próprio, por unit, com lock, versões, criptografia e importação de state existente. Modo "só state" para quem continua usando o CI atual
+2. State backend HTTP próprio, por unit, com lock, versões e criptografia (✅ marco S1); Garage/S3, importação de state existente, modo "só state" para quem continua usando o CI atual e aba State na UI
 3. Terragrunt nativo: descoberta de units, grafo de dependências, um run por unit e agents com labels por rede/zona
 4. Segredos vindos do Vault (JWT emitido pelo Firstlume por run, Kubernetes auth ou AppRole), sem o Firstlume virar um segundo cofre; variáveis do tipo arquivo
 5. Usuários, grupos e SSO; aprovadores por pessoa ou grupo; trilha de auditoria

@@ -1,6 +1,6 @@
 # Spec 0002: state backend do Firstlume (HTTP, por unit, guardado no Garage)
 
-- **Status:** proposta, aguardando aprovação
+- **Status:** aprovada; Marco S1 implementado em 2026-10-30
 - **Data:** 2026-10-30
 - **Depende de:** spec 0001 (organizações, pastas, stacks e conexão Gitea), já implementada até o Marco 2
 
@@ -102,7 +102,7 @@ Esse caminho continua aceito: o Firstlume não força o seu backend (R4.1).
 ### 4.2 Conferência do backend depois do `init`
 
 - **R2.1** Depois do `init`, o executor lê o tipo de backend que cada unit realmente usou (em `.terraform/terraform.tfstate`; no Terragrunt, em cada unit).
-- **R2.2** Se alguma unit ficou com backend **local** (não declarou nenhum), o plan **falha** no passo Init. A mensagem cita a unit e mostra o trecho de R1.1 ou R1.3. Motivo: o state local some com o runner.
+- **R2.2** Se alguma unit ficou com backend **local** (não declarou nenhum, ou declarou `local`), o plan **falha** no passo Init. No `run --all`, em que o Terragrunt inicializa as units durante o plan, falha ao fim do passo Plan. A mensagem cita a unit e mostra o trecho de R1.1 ou R1.3. Motivo: o state local some com o runner.
 - **R2.3** A run grava o backend de cada unit, e a tela da run mostra "state: Firstlume", "state: s3" e assim por diante.
 
 ### 4.3 O protocolo
@@ -244,19 +244,21 @@ O protocolo do Terraform fica em `/state/v1/stacks/{id}/…` (seção 4.3), fora
 
 ### Marco S1: backend HTTP, versões e runs (storage Postgres)
 
-- [ ] **CAS1.1** Um stack de **Terraform real** com `backend "http" {}`:
+Testes: `internal/server/state_test.go` (protocolo, e Terraform e Terragrunt reais) e `internal/executor` (conferência do backend). Também verificado ponta a ponta com o agent e o Gitea de dev.
+
+- [x] **CAS1.1** Um stack de **Terraform real** com `backend "http" {}`:
   - o plan e o apply funcionam;
   - o segundo plan mostra "No changes";
   - a unit raiz tem 1 versão por apply com mudança.
-- [ ] **CAS1.2** Um stack **Terragrunt real** com `run --all` e o `root.hcl` de R1.3:
+- [x] **CAS1.2** Um stack **Terragrunt real** com `run --all` e o `root.hcl` de R1.3:
   - cria uma unit por pasta, com chave igual ao caminho;
   - `dependency` com outputs entre units funciona.
-- [ ] **CAS1.3** Num `run --all` em que a unit B falha no apply, a unit A (já aplicada) tem a versão nova gravada. O run seguinte não dá "already exists" em A.
-- [ ] **CAS1.4** Um código **sem backend** falha no Init com a unit citada e o trecho de R1.3. Um código com `backend "s3"` não é afetado.
-- [ ] **CAS1.5** **Lock:** com a unit travada por um token, um apply do Firstlume falha com "travada por <token> desde <hora>". Depois de `UNLOCK`, roda. (Integração com o Terraform real.)
-- [ ] **CAS1.6** Um run de **plan** que tenta `POST` (teste direto com o token da fase) recebe 403.
-- [ ] **CAS1.7** Uma run que termina com as travas ainda presas (executor morto no meio) deixa as units livres ao fim da fase.
-- [ ] **CAS1.8** O protocolo recusa:
+- [x] **CAS1.3** Num `run --all` em que a unit B falha no apply, a unit A (já aplicada) tem a versão nova gravada. O run seguinte não dá "already exists" em A.
+- [x] **CAS1.4** Um código **sem backend** falha no Init com a unit citada e o trecho de R1.3. Um código com `backend "s3"` não é afetado.
+- [x] **CAS1.5** **Lock:** com a unit travada por um token, um apply do Firstlume falha com "travada por <token> desde <hora>". Depois de `UNLOCK`, roda. (Integração com o Terraform real. No S1 a trava vem de outro dono pelo protocolo; com os tokens do S3, vale também para eles.)
+- [x] **CAS1.6** Um run de **plan** que tenta `POST` (teste direto com o token da fase) recebe 403.
+- [x] **CAS1.7** Uma run que termina com as travas ainda presas (executor morto no meio) deixa as units livres ao fim da fase.
+- [x] **CAS1.8** O protocolo recusa:
   - serial menor (409);
   - lineage diferente (409);
   - mesmo serial com conteúdo diferente (409);
@@ -267,8 +269,8 @@ O protocolo do Terraform fica em `/state/v1/stacks/{id}/…` (seção 4.3), fora
   - token vencido (401).
 
   O mesmo serial com o mesmo conteúdo não cria versão.
-- [ ] **CAS1.9** O token do run não aparece em logs nem em `ps`. O state no Postgres não contém, em claro, um valor sensível conhecido do state de teste.
-- [ ] **CAS1.10** Excluir um stack com recursos no state dá 409. Depois de "excluir state", o stack é excluído.
+- [x] **CAS1.9** O token do run não aparece em logs nem em `ps`. O state no Postgres não contém, em claro, um valor sensível conhecido do state de teste.
+- [x] **CAS1.10** Excluir um stack com recursos no state dá 409. Depois de "excluir state", o stack é excluído.
 
 ### Marco S2: storage no Garage
 

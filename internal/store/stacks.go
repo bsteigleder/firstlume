@@ -150,7 +150,7 @@ func (s *Store) UpdateStack(ctx context.Context, orgID, id string, req api.Updat
 
 // DeleteStack refuses to delete while a run is in progress, so an apply is
 // never orphaned. It does not destroy infrastructure: run a destroy first.
-func (s *Store) DeleteStack(ctx context.Context, orgID, id string) error {
+func (s *Store) DeleteStack(ctx context.Context, orgID, id, actor string) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var active bool
 		err := tx.QueryRow(ctx, `
@@ -161,6 +161,17 @@ func (s *Store) DeleteStack(ctx context.Context, orgID, id string) error {
 		}
 		if active {
 			return ErrConflict
+		}
+		// Deleting the stack would orphan infrastructure its state still manages (R6.1).
+		managed, err := hasManagedState(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if managed {
+			return ErrStateNotEmpty
+		}
+		if err := retireState(ctx, tx, orgID, id, actor, "stack deleted"); err != nil {
+			return err
 		}
 		_, err = tx.Exec(ctx, `DELETE FROM stacks WHERE id = $1`, id)
 		return err

@@ -32,9 +32,16 @@ web-dev: web/node_modules
 test:
 	go test -race ./...
 
-## Needs `make dev-db`.
+# Real Terraform and Terragrunt for the state backend tests: PATH, or the
+# agent's tool cache (macOS or Linux) once a run has installed them.
+TOOLS_CACHE        := $(wildcard $(HOME)/Library/Caches/firstlume/tools $(HOME)/.cache/firstlume/tools)
+TEST_TERRAFORM     ?= $(or $(shell command -v terraform),$(lastword $(sort $(wildcard $(addsuffix /terraform/*/terraform,$(TOOLS_CACHE))))))
+TEST_TERRAGRUNT    ?= $(or $(shell command -v terragrunt),$(lastword $(sort $(wildcard $(addsuffix /terragrunt/*/terragrunt,$(TOOLS_CACHE))))))
+
+## Needs `make dev-db`. The state tests with real tools are skipped when they aren't found.
 test-integration:
-	FIRSTLUME_TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test -race -count=1 ./...
+	FIRSTLUME_TEST_DATABASE_URL=$(TEST_DATABASE_URL) FIRSTLUME_TEST_TERRAFORM=$(TEST_TERRAFORM) \
+	FIRSTLUME_TEST_TERRAGRUNT=$(TEST_TERRAGRUNT) go test -race -count=1 ./...
 
 vet:
 	go vet ./...

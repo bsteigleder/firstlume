@@ -24,6 +24,8 @@ type Config struct {
 	RunTokenTTL      time.Duration
 	HeartbeatTimeout time.Duration
 	LogPollInterval  time.Duration
+	// StateMaxBytes caps one state version (spec 0002, R3.6).
+	StateMaxBytes int64
 	// UI is the built web UI served at /. Nil serves only the APIs.
 	UI fs.FS
 }
@@ -44,6 +46,9 @@ func New(cfg Config, st *store.Store, keys *secrets.Keys, log *slog.Logger) *Ser
 	}
 	if cfg.LogPollInterval == 0 {
 		cfg.LogPollInterval = time.Second
+	}
+	if cfg.StateMaxBytes == 0 {
+		cfg.StateMaxBytes = defaultStateMaxBytes
 	}
 	return &Server{cfg: cfg, store: st, keys: keys, log: log}
 }
@@ -73,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 		r.Use(s.requireRunToken)
 		s.execRoutes(r)
 	})
+	r.Route("/state/v1", s.stateRoutes)
 	if s.cfg.UI != nil {
 		r.Handle("/*", uiHandler(s.cfg.UI))
 	}
@@ -88,6 +94,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	go s.sweepStaleRuns(ctx)
 	go s.scheduleDriftRuns(ctx)
+	go s.purgeState(ctx)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -179,6 +186,7 @@ const (
 	ctxAgent ctxKey = iota
 	ctxRunClaims
 	ctxOrg
+	ctxStateActor
 )
 
 func (s *Server) requireAdmin(next http.Handler) http.Handler {

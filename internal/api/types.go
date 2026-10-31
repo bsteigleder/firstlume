@@ -544,6 +544,9 @@ type ExecSpec struct {
 	CommitSHA  string  `json:"commit_sha,omitempty"`
 	Path       string  `json:"path"`
 	GitToken   string  `json:"git_token,omitempty"`
+	// StateToken authenticates this phase's Terraform to the stack's state
+	// backend (spec 0002); the plan phase may only read and lock.
+	StateToken string `json:"state_token,omitempty"`
 	// Variables are the stack's effective variables. The apply phase gets
 	// exactly the ones its plan ran with.
 	Variables []ExecVariable `json:"variables"`
@@ -575,4 +578,31 @@ type CompleteRequest struct {
 
 type ErrorResponse struct {
 	Error string `json:"error"`
+}
+
+// StateUnit is one Terraform state of a stack: the root, or a Terragrunt unit
+// keyed by its path (spec 0002).
+type StateUnit struct {
+	Key       string     `json:"key"`
+	Version   int        `json:"version"`
+	Serial    int64      `json:"serial"`
+	Resources int        `json:"resources"`
+	Size      int        `json:"size"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	WrittenBy string     `json:"written_by,omitempty"`
+	RunID     string     `json:"run_id,omitempty"`
+	Lock      *StateLock `json:"lock,omitempty"`
+}
+
+type StateLock struct {
+	ID        string    `json:"id"`
+	Holder    string    `json:"holder"`
+	Operation string    `json:"operation,omitempty"`
+	RunID     string    `json:"run_id,omitempty"`
+	Since     time.Time `json:"since"`
+}
+
+// DeleteStateRequest confirms deleting a stack's state by its name.
+type DeleteStateRequest struct {
+	Confirm string `json:"confirm"`
 }

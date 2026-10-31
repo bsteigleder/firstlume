@@ -61,6 +61,11 @@ func (s *Server) execSpec(w http.ResponseWriter, r *http.Request) {
 		s.execError(w, r, err)
 		return
 	}
+	// Only usable while the run executes this phase, whatever its expiry says.
+	if spec.StateToken, err = s.keys.IssueStateToken(runID, string(phase), s.cfg.RunTokenTTL); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, spec)
 }
 

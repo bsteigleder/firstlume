@@ -24,6 +24,8 @@ const (
 type Keys struct {
 	aead    cipher.AEAD
 	signKey []byte
+	// state encrypts Terraform states, apart from the variables' key (spec 0002, R4.2).
+	state *Keys
 }
 
 // ParseMasterKey decodes a base64 (standard or URL encoding) 32-byte master key.
@@ -49,16 +51,28 @@ func NewKeys(master []byte) (*Keys, error) {
 	if len(master) != masterLen {
 		return nil, fmt.Errorf("master key must be %d bytes", masterLen)
 	}
-	block, err := aes.NewCipher(derive(master, "firstlume/encryption/v1"))
+	aead, err := newAEAD(derive(master, "firstlume/encryption/v1"))
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
+	stateAEAD, err := newAEAD(derive(master, "firstlume/state/v1"))
 	if err != nil {
 		return nil, err
 	}
-	return &Keys{aead: aead, signKey: derive(master, "firstlume/signing/v1")}, nil
+	signKey := derive(master, "firstlume/signing/v1")
+	return &Keys{aead: aead, signKey: signKey, state: &Keys{aead: stateAEAD, signKey: signKey}}, nil
 }
+
+func newAEAD(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+// State returns the keys that encrypt Terraform states.
+func (k *Keys) State() *Keys { return k.state }
 
 func derive(master []byte, label string) []byte {
 	m := hmac.New(sha256.New, master)

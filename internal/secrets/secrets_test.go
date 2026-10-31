@@ -94,3 +94,32 @@ func TestRunToken(t *testing.T) {
 		t.Fatal("expired token accepted")
 	}
 }
+
+func TestStateKeysAreSeparate(t *testing.T) {
+	k := testKeys(t)
+	sealed, err := k.State().Encrypt([]byte("state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Decrypt(sealed); err == nil {
+		t.Fatal("the variables key opened a state")
+	}
+	if got, err := k.State().Decrypt(sealed); err != nil || string(got) != "state" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+func TestStateAndRunTokensAreNotInterchangeable(t *testing.T) {
+	k := testKeys(t)
+	run, _ := k.IssueRunToken("r", "plan", time.Minute)
+	state, _ := k.IssueStateToken("r", "plan", time.Minute)
+	if _, err := k.ParseStateToken(run); err == nil {
+		t.Error("a run token passed as a state token")
+	}
+	if _, err := k.ParseRunToken(state); err == nil {
+		t.Error("a state token passed as a run token")
+	}
+	if c, err := k.ParseStateToken(state); err != nil || c.RunID != "r" || c.Phase != "plan" {
+		t.Errorf("got %+v, %v", c, err)
+	}
+}

@@ -34,12 +34,13 @@ var (
 )
 
 type Store struct {
-	pool *pgxpool.Pool
-	keys *secrets.Keys
+	pool  *pgxpool.Pool
+	keys  *secrets.Keys
+	blobs Blobs
 }
 
 func New(pool *pgxpool.Pool, keys *secrets.Keys) *Store {
-	return &Store{pool: pool, keys: keys}
+	return &Store{pool: pool, keys: keys, blobs: pgBlobs{pool}}
 }
 
 // Connect opens a connection pool and verifies connectivity.

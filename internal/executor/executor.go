@@ -40,8 +40,10 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	var sensitive []string
-	if spec.GitToken != "" {
-		sensitive = append(sensitive, spec.GitToken)
+	for _, tok := range []string{spec.GitToken, spec.StateToken} {
+		if tok != "" {
+			sensitive = append(sensitive, tok)
+		}
 	}
 	for _, v := range spec.Variables {
 		if v.Sensitive {
@@ -175,18 +177,24 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 				}
 			}
 			env := append(baseEnv, toolEnv(engineBin, filepath.Join(e.cfg.WorkDir, "plugin-cache"))...)
+			env = append(env, stateEnv(e.cfg.APIURL, s)...)
 			env = append(env, userEnv(s.Variables)...)
 			r = &runner{dir: workDir, bin: bin, env: env, out: e.out}
 			if cfg.RunAll {
 				fmt.Fprintln(e.out, "==> terragrunt initializes each unit as part of run --all")
 				return nil
 			}
-			_, err = r.run(ctx, "init", "-input=false", "-no-color")
-			return err
+			if _, err = r.run(ctx, "init", "-input=false", "-no-color"); err != nil {
+				return err
+			}
+			return checkBackends(workDir, "", e.out)
 		}},
 		{last, func() (err error) {
 			if s.Phase == api.PhasePlan {
-				res, err = e.plan(ctx, r, planPath)
+				if res, err = e.plan(ctx, r, planPath); err == nil && e.stack.RunAll {
+					// Terragrunt initialized the units while planning: check them now.
+					err = checkBackends(workDir, e.plansJSONDir(), e.out)
+				}
 			} else {
 				res, err = e.apply(ctx, r, planPath)
 			}
@@ -331,11 +339,13 @@ func (e *executor) planOne(ctx context.Context, r *runner, planPath string) (boo
 
 func (e *executor) allPlansDir() string { return filepath.Join(e.cfg.WorkDir, "plans") }
 
+func (e *executor) plansJSONDir() string { return filepath.Join(e.cfg.WorkDir, "plans-json") }
+
 // planAll runs `terragrunt run --all` over every unit below the stack's
 // directory. Terragrunt saves each unit's plan (and its JSON) under a
 // directory tree mirroring the units, which travels to the apply phase whole.
 func (e *executor) planAll(ctx context.Context, r *runner) (bool, []api.ResourceChange, error) {
-	jsonDir := filepath.Join(e.cfg.WorkDir, "plans-json")
+	jsonDir := e.plansJSONDir()
 	args := append([]string{"run", "--all", "--non-interactive", "--out-dir", e.allPlansDir(), "--json-out-dir", jsonDir, "--"},
 		e.planArgs()...)
 	code, err := r.run(ctx, args...)

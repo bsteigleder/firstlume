@@ -68,6 +68,8 @@ spec:
               value: {{ .Values.controlPlane.organization | quote }}
             - name: FIRSTLUME_HEARTBEAT_TIMEOUT
               value: {{ .Values.controlPlane.heartbeatTimeout | quote }}
+            - name: FIRSTLUME_STATE_MAX_MIB
+              value: {{ .Values.controlPlane.state.maxMiB | quote }}
             - name: FIRSTLUME_DATABASE_URL
               valueFrom:
                 secretKeyRef:

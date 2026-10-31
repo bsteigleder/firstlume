@@ -30,6 +30,11 @@ controlPlane:
   # Runs whose executor stops sending heartbeats for this long are failed.
   heartbeatTimeout: 10m
 
+  # Firstlume's Terraform state backend (spec 0002).
+  state:
+    # Largest state version accepted, in MiB.
+    maxMiB: 64
+
   service:
     type: ClusterIP
     port: 8080
