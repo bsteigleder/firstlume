@@ -61,6 +61,11 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 automountServiceAccountToken: {{ .Values.agent.executor.automountServiceAccountToken }}
+{{- with .Values.imagePullSecrets }}
+# Run Jobs use this ServiceAccount, so they pull the (private) image with it.
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
 {{- end }}
 ---
 apiVersion: apps/v1

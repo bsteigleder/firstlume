@@ -181,6 +181,8 @@ helm install firstlume-agent deploy/helm/firstlume -n firstlume --create-namespa
   --set agent.token=fla_...
 ```
 
+A imagem é publicada pelo GitHub Actions em `ghcr.io/bsteigleder/firstlume` (`main`, `sha-<commit>` e, nas tags `vX.Y.Z`, `X.Y.Z`), para amd64 e arm64. Se o pacote for privado, crie um Secret de pull e passe `--set imagePullSecrets[0].name=<secret>`: o server, o agent e os Jobs dos runs (pela ServiceAccount do executor) passam a usá-lo. Num cluster com registry interno, prefira um proxy-cache dele apontando para o GHCR, com a credencial num lugar só.
+
 Para testar sem banco externo, use `--set postgresql.enabled=true`. É uma instância única e sem backup, só para desenvolvimento.
 
 Faça backup da chave `secret-key` do Secret `<release>-control-plane`. Sem ela não dá para recuperar os dados criptografados. O Secret é preservado no `helm uninstall`.

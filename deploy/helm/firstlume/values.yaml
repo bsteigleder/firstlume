@@ -8,6 +8,10 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
+# For a private image, e.g. [{name: ghcr-pull}]. Used by the server, the agent
+# and the run Jobs (through the executor ServiceAccount the chart creates). With
+# agent.executor.namespace set, the Secret must exist there too; with your own
+# executor ServiceAccount, add it to that ServiceAccount.
 imagePullSecrets: []
 
 controlPlane:
