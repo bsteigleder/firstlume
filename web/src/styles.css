@@ -133,10 +133,6 @@ p {
   white-space: nowrap;
 }
 
-.logo {
-  color: var(--accent);
-}
-
 /* ---------- controls ---------- */
 
 button {
@@ -2233,12 +2229,7 @@ button.change-head:disabled {
 }
 
 .login-logo {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
-  background: #1b1b18;
   display: flex;
-  align-items: center;
   justify-content: center;
 }
 

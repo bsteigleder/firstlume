@@ -150,7 +150,7 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
       <main className="login-main">
         <div className="login-brand">
           <span className="login-logo">
-            <Logo size={28} />
+            <Logo size={72} />
           </span>
           <h1>Sign in to Firstlume</h1>
           <p className="muted">{oidc ? "Use your Git account. You will come back here signed in." : "Use the admin token."}</p>
