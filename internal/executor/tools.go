@@ -50,7 +50,15 @@ type Installer struct {
 	Dir  string
 	HTTP *http.Client
 	Log  io.Writer
+	// Backoff is the wait before each retry of a download; nil uses
+	// downloadBackoff.
+	Backoff []time.Duration
 }
+
+// downloadBackoff spaces the retries of a download. Some clusters lose
+// connections to GitHub's release servers now and then (a reset mid-TLS), and
+// one lost connection must not fail the run.
+var downloadBackoff = []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second}
 
 // Install returns the path to the binary, downloading it if it is not cached.
 func (in *Installer) Install(ctx context.Context, name, version string) (string, error) {
@@ -113,24 +121,51 @@ func (in *Installer) Install(ctx context.Context, name, version string) (string,
 	return bin, nil
 }
 
+// get downloads url, retrying network errors and answers that may be
+// temporary (429 and 5xx).
 func (in *Installer) get(ctx context.Context, url string) ([]byte, error) {
+	backoff := in.Backoff
+	if backoff == nil {
+		backoff = downloadBackoff
+	}
+	for attempt := 0; ; attempt++ {
+		data, retry, err := in.getOnce(ctx, url)
+		if err == nil || !retry || attempt == len(backoff) || ctx.Err() != nil {
+			return data, err
+		}
+		fmt.Fprintf(in.Log, "==> %v; retrying in %s\n", err, backoff[attempt])
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff[attempt]):
+		}
+	}
+}
+
+// getOnce makes one attempt and says whether a failure is worth retrying.
+func (in *Installer) getOnce(ctx context.Context, url string) ([]byte, bool, error) {
 	client := in.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Minute}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+		retry := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+		return nil, retry, fmt.Errorf("GET %s: %s", url, resp.Status)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 512<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 512<<20))
+	if err != nil {
+		return nil, true, err
+	}
+	return data, false, nil
 }
 
 func findChecksum(sums []byte, asset string) (string, error) {

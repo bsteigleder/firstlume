@@ -355,7 +355,7 @@ dependencies { paths = ["../net"] }`,
 	work := t.TempDir()
 	plans := filepath.Join(work, "plans")
 	env := append(inheritedEnv(), "HOME="+t.TempDir())
-	env = append(env, toolEnv(engine, filepath.Join(work, "plugin-cache"))...)
+	env = append(env, toolEnv(engine, filepath.Join(work, "plugin-cache"), true)...)
 	var log lockedBuffer
 	r := &runner{dir: root, bin: tg, env: env, out: &log}
 	ctx := context.Background()

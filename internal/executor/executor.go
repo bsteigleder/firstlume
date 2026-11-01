@@ -198,7 +198,7 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 					return err
 				}
 			}
-			env := append(baseEnv, toolEnv(engineBin, filepath.Join(e.cfg.WorkDir, "plugin-cache"))...)
+			env := append(baseEnv, toolEnv(engineBin, filepath.Join(e.cfg.WorkDir, "plugin-cache"), cfg.RunAll)...)
 			env = append(env, stateEnv(e.cfg.APIURL, s)...)
 			env = append(env, userEnv(s.Variables)...)
 			if e.prepared != nil {
@@ -540,13 +540,12 @@ func inheritedEnv() []string {
 	return env
 }
 
-func toolEnv(engineBin, pluginCache string) []string {
+func toolEnv(engineBin, pluginCache string, runAll bool) []string {
 	_ = os.MkdirAll(pluginCache, 0o755)
-	return []string{
+	env := []string{
 		"TF_IN_AUTOMATION=1",
 		"TF_INPUT=0",
 		"CHECKPOINT_DISABLE=1",
-		"TF_PLUGIN_CACHE_DIR=" + pluginCache,
 		// Terragrunt: use the pinned engine binary, never prompt.
 		"TG_TF_PATH=" + engineBin,
 		"TERRAGRUNT_TFPATH=" + engineBin,
@@ -556,6 +555,14 @@ func toolEnv(engineBin, pluginCache string) []string {
 		"TG_NO_COLOR=true",
 		"NO_COLOR=1",
 	}
+	if runAll {
+		// run --all inits units in parallel, and TF_PLUGIN_CACHE_DIR is not safe
+		// for concurrent use: units read a provider another is still writing
+		// ("text file busy", "does not match any of the checksums"). Terragrunt's
+		// provider cache server downloads each provider once and serves the units.
+		return append(env, "TG_PROVIDER_CACHE=1", "TG_PROVIDER_CACHE_DIR="+pluginCache)
+	}
+	return append(env, "TF_PLUGIN_CACHE_DIR="+pluginCache)
 }
 
 func userEnv(vars []api.ExecVariable) []string {

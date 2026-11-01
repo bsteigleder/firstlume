@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bsteigleder/firstlume/internal/api"
 )
@@ -219,6 +221,66 @@ func TestToolURLs(t *testing.T) {
 	tg, _ := toolFor("terragrunt", "0.77.0", "linux", "amd64")
 	if tg.url != "https://github.com/gruntwork-io/terragrunt/releases/download/v0.77.0/terragrunt_linux_amd64" || tg.zipped {
 		t.Fatalf("terragrunt: %+v", tg)
+	}
+}
+
+func TestInstallerRetriesLostConnections(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch calls {
+		case 1: // the connection is reset before an answer, as GitHub's sometimes are
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close()
+		case 2:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			fmt.Fprint(w, "sums")
+		}
+	}))
+	defer srv.Close()
+	var log bytes.Buffer
+	in := &Installer{Log: &log, Backoff: []time.Duration{0, 0, 0}}
+	data, err := in.get(context.Background(), srv.URL)
+	if err != nil || string(data) != "sums" || calls != 3 {
+		t.Fatalf("got %q, %v after %d calls\n%s", data, err, calls, log.String())
+	}
+	if strings.Count(log.String(), "retrying") != 2 {
+		t.Fatalf("log: %s", log.String())
+	}
+}
+
+func TestInstallerGivesUp(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path == "/missing" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	in := &Installer{Log: io.Discard, Backoff: []time.Duration{0, 0}}
+	if _, err := in.get(context.Background(), srv.URL+"/missing"); err == nil || calls != 1 {
+		t.Fatalf("a 404 is not retried: %v after %d calls", err, calls)
+	}
+	calls = 0
+	if _, err := in.get(context.Background(), srv.URL+"/down"); err == nil || calls != 3 {
+		t.Fatalf("a 502 is retried as many times as there are waits: %v after %d calls", err, calls)
+	}
+}
+
+func TestToolEnvProviderCache(t *testing.T) {
+	cache := filepath.Join(t.TempDir(), "plugin-cache")
+	one := strings.Join(toolEnv("/bin/terraform", cache, false), "\n")
+	if !strings.Contains(one, "TF_PLUGIN_CACHE_DIR="+cache) || strings.Contains(one, "TG_PROVIDER_CACHE") {
+		t.Fatalf("one unit shares Terraform's plugin cache:\n%s", one)
+	}
+	all := strings.Join(toolEnv("/bin/terraform", cache, true), "\n")
+	if strings.Contains(all, "TF_PLUGIN_CACHE_DIR") || !strings.Contains(all, "TG_PROVIDER_CACHE=1") ||
+		!strings.Contains(all, "TG_PROVIDER_CACHE_DIR="+cache) {
+		t.Fatalf("run --all uses Terragrunt's provider cache instead:\n%s", all)
 	}
 }
 
