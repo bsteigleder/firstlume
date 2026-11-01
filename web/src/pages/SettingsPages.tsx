@@ -1,11 +1,12 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { api as rootAPI, settingsPath, type CreateAgentResponse, type GitConnection, type Organization } from "../api";
+import { api as rootAPI, settingsPath, type CreateAgentResponse, type GitConnection, type Organization, type VaultConnection } from "../api";
 import { Logo } from "../icons";
 import { PageTitle, rememberOrg, useCrumbs, useOrg } from "../org";
 import { useSession } from "../session";
 import { Empty, ErrorBanner, slugify, timeAgo, useAction, useData } from "../ui";
 import { SettingsEditor } from "./SettingsEditor";
+import { declaredVaultPaths, VaultAccessCheck } from "./VaultParts";
 
 export function FolderSettingsPage() {
   const { folderId = "" } = useParams();
@@ -25,7 +26,7 @@ export function FolderSettingsPage() {
 export function OrgSettingsPage() {
   const { org, link } = useOrg();
   useCrumbs([{ label: org.name, to: link() }, { label: "Settings" }]);
-  const sections = ["General", "Variables & settings", "Git connection", "Agents", "Members"];
+  const sections = ["General", "Variables & settings", "Git connection", "Vault", "Agents", "Members"];
   return (
     <div className="page settings-layout">
       <nav aria-label="Settings sections" className="settings-nav">
@@ -44,6 +45,7 @@ export function OrgSettingsPage() {
           <SettingsEditor level={{ kind: "organization", id: org.id, name: org.name }} path={settingsPath({ kind: "organization" })} />
         </section>
         <GitConnectionSection />
+        <VaultSection />
         <Agents />
         <section id="members" className="card">
           <h2 className="section-title">Members</h2>
@@ -195,6 +197,165 @@ function GitConnectionSection() {
         </button>
       </div>
     </form>
+  );
+}
+
+function VaultSection() {
+  const { api, tree } = useOrg();
+  // undefined while loading, null when there is none.
+  const [conn, setConn] = useState<VaultConnection | null | undefined>(undefined);
+  const [form, setForm] = useState({ address: "", namespace: "", auth_path: "jwt", audience: "vault", ca_cert: "" });
+  const [publicKey, setPublicKey] = useState("");
+  const [issuer, setIssuer] = useState("");
+  const [stackID, setStackID] = useState("");
+  const [copied, setCopied] = useState(false);
+  const save = useAction();
+  const remove = useAction();
+
+  useEffect(() => {
+    api.vaultConnection().then(
+      (c) => (setConn(c), setForm({ address: c.address, namespace: c.namespace ?? "", auth_path: c.auth_path, audience: c.audience, ca_cert: c.ca_cert ?? "" })),
+      () => setConn(null),
+    );
+    api.vaultPublicKey().then(setPublicKey, () => setPublicKey(""));
+    fetch("/.well-known/openid-configuration")
+      .then((r) => r.json())
+      .then((d) => setIssuer(d.issuer ?? ""), () => setIssuer(""));
+  }, [api]);
+  const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const stacks = (tree?.stacks ?? []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const selected = stacks.find((s) => s.id === stackID);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    await save.run(async () => setConn(await api.putVaultConnection(form)));
+  }
+
+  return (
+    <section id="vault" className="settings-group">
+      <form className="card form-card" onSubmit={submit}>
+        <div className="section-head">
+          <h2 className="section-title">Vault</h2>
+          {conn && <span className="badge ok">Connected</span>}
+        </div>
+        <p className="muted">
+          Runs read secrets straight from Vault, inside their own pod: values never pass through Firstlume. Each phase logs in with a short-lived token
+          Firstlume signs for its stack, and the stack’s Vault role (a setting, inherited like the others) decides what it may read.
+        </p>
+        {conn !== undefined && (
+          <div className="grid-2">
+            <label className="field">
+              Address
+              <input type="url" value={form.address} onChange={set("address")} placeholder="https://vault.example.com:8200" required />
+            </label>
+            <label className="field">
+              Namespace <span className="optional">Vault Enterprise, optional</span>
+              <input value={form.namespace} onChange={set("namespace")} />
+            </label>
+            <label className="field">
+              Auth method path
+              <input className="mono" value={form.auth_path} onChange={set("auth_path")} placeholder="jwt" />
+            </label>
+            <label className="field">
+              Audience
+              <input className="mono" value={form.audience} onChange={set("audience")} placeholder="vault" />
+            </label>
+            <label className="field span-2">
+              CA certificate <span className="optional">optional, PEM, when Vault’s certificate isn’t publicly trusted</span>
+              <textarea className="mono" rows={3} value={form.ca_cert} onChange={set("ca_cert")} placeholder="-----BEGIN CERTIFICATE-----" spellCheck={false} />
+            </label>
+          </div>
+        )}
+        {save.error && <div className="form-error">{save.error}</div>}
+        {remove.error && <div className="form-error">{remove.error}</div>}
+        <div className="form-actions">
+          {conn && (
+            <button
+              type="button"
+              disabled={remove.busy}
+              onClick={() => {
+                if (!confirm("Remove the Vault connection? Runs that read from Vault fail until there is one again.")) return;
+                void remove.run(async () => {
+                  await api.deleteVaultConnection();
+                  setConn(null);
+                });
+              }}
+            >
+              Remove connection
+            </button>
+          )}
+          <button className="primary" disabled={save.busy || !form.address}>
+            {save.busy ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </form>
+
+      <div className="card form-card">
+        <h3>Make Vault trust Firstlume</h3>
+        <p className="muted">
+          Once, in Vault: enable the <span className="mono">jwt</span> auth method with Firstlume as the issuer and its public key, or its discovery URL
+          when Vault can reach Firstlume.
+        </p>
+        <div className="grid-2">
+          <div className="field">
+            Issuer <span className="optional">bound_issuer, oidc_discovery_url</span>
+            <code className="mono code-block">{issuer || "…"}</code>
+          </div>
+          <div className="field">
+            JWKS
+            <code className="mono code-block">{issuer ? `${issuer}/.well-known/jwks.json` : "…"}</code>
+          </div>
+        </div>
+        <div className="field">
+          <div className="section-head">
+            <span>Public key <span className="optional">jwt_validation_pubkeys</span></span>
+            <button type="button" className="small-btn" disabled={!publicKey}
+              onClick={() => void navigator.clipboard.writeText(publicKey).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1500)))}>
+              {copied ? "Copied" : "Copy"}
+            </button>
+            {publicKey && (
+              <a className="small-btn" download="firstlume-run-jwt.pem" href={`data:application/x-pem-file,${encodeURIComponent(publicKey)}`}>
+                Download .pem
+              </a>
+            )}
+          </div>
+          <pre className="mono code-block key-box">{publicKey || "…"}</pre>
+        </div>
+        <details>
+          <summary>Example: a role for the stacks under a folder infra/dev</summary>
+          <pre className="mono code-block">{`vault auth enable jwt
+vault write auth/jwt/config bound_issuer=${issuer || "<issuer>"} jwt_validation_pubkeys=@firstlume-run-jwt.pem
+vault write auth/jwt/role/infra-dev role_type=jwt user_claim=sub \\
+  bound_audiences=${form.audience || "vault"} bound_claims_type=glob \\
+  bound_claims='{"stack_path": "infra/dev/*"}' \\
+  token_policies=infra-dev token_ttl=15m`}</pre>
+          <p className="hint">
+            A run’s token carries <span className="mono">stack_path</span> (folders and stack name), <span className="mono">folder_ids</span>,{" "}
+            <span className="mono">stack_id</span>, <span className="mono">org</span> and <span className="mono">phase</span> (plan, apply or drift).
+            Prefer <span className="mono">folder_ids</span> if renaming a folder must not change what it can read.
+          </p>
+        </details>
+      </div>
+
+      {conn && (
+        <div className="card form-card">
+          <h3>Test a stack’s access</h3>
+          <p className="muted">Logs in as the stack would, with its Vault role, and asks Vault what it may read. Nothing is read.</p>
+          <label className="field">
+            Stack
+            <select value={stackID} onChange={(e) => setStackID(e.target.value)}>
+              <option value="">Choose a stack</option>
+              {stacks.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} · {s.path || "/"}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selected && <VaultAccessCheck stackID={selected.id} initialPaths={declaredVaultPaths(selected.config?.declaration).fixed} />}
+        </div>
+      )}
+    </section>
   );
 }
 

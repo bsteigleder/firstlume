@@ -45,6 +45,51 @@ export interface StackConfig {
   engine_version: string;
   terragrunt_version?: string;
   run_all?: boolean;
+  declaration?: Declaration;
+}
+
+/** What .firstlume/config.yaml declares a run needs (spec 0003), without values.
+ * A ref is "var:NAME" or "vault:path#field"; a literal has none. */
+export interface Declaration {
+  files?: { path: string; format: string; block?: string; sensitive: boolean; refs?: string[] }[];
+  env?: { name: string; ref?: string }[];
+  terraform?: { name: string; ref?: string }[];
+  registries?: { host: string; kind: string; refs?: string[] }[];
+}
+
+export interface VaultRef {
+  path: string;
+  field: string;
+}
+
+export interface RegistryCredential {
+  host: string;
+  kind?: "oci" | "terraform";
+  username?: string;
+  password?: string;
+  password_vault?: VaultRef;
+  has_password?: boolean;
+}
+
+export interface EffectiveRegistry extends RegistryCredential {
+  origin: Level;
+  overrides?: Level;
+}
+
+export interface VaultConnection {
+  address: string;
+  ca_cert?: string;
+  namespace?: string;
+  auth_path: string;
+  audience: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VaultCheckResult {
+  role: string;
+  paths?: { path: string; can_read: boolean; error?: string }[];
+  error?: string;
 }
 
 export interface Drift {
@@ -148,6 +193,8 @@ export interface LevelSettings {
   confirm_destructive: boolean | null;
   vault_role?: string | null;
   variables: Variable[];
+  /** Left out, the level's credentials stay as they are. */
+  registries?: RegistryCredential[];
 }
 
 export interface EffectiveVariable extends Variable {
@@ -159,7 +206,9 @@ export interface EffectiveSettings {
   require_approval: { value: boolean; origin: Level };
   drift_interval_minutes: { value: number; origin: Level };
   confirm_destructive: { value: boolean; origin: Level };
+  vault_role: { value: string; origin: Level };
   variables: EffectiveVariable[];
+  registries: EffectiveRegistry[];
 }
 
 export interface SettingsResponse {
@@ -349,7 +398,7 @@ async function request<T>(method: string, path: string, body?: unknown, token = 
     throw new ApiError(res.status, msg);
   }
   if (res.status === 204) return undefined as T;
-  return res.json();
+  return (res.headers.get("Content-Type") ?? "").includes("json") ? res.json() : ((await res.text()) as T);
 }
 
 /** Settings live at three kinds of level; this builds the right path for each. */
@@ -402,6 +451,14 @@ export const api = {
       putGitConnection: (req: { provider: string; url: string; account: string; token: string }) =>
         request<GitConnection>("PUT", `${p}/git/connection`, req),
       deleteGitConnection: () => request<void>("DELETE", `${p}/git/connection`),
+      vaultConnection: () => request<VaultConnection>("GET", `${p}/vault`),
+      putVaultConnection: (req: { address: string; ca_cert?: string; namespace?: string; auth_path?: string; audience?: string }) =>
+        request<VaultConnection>("PUT", `${p}/vault`, req),
+      deleteVaultConnection: () => request<void>("DELETE", `${p}/vault`),
+      vaultPublicKey: () => request<string>("GET", `${p}/vault/public-key`),
+      vaultCheck: (stackID: string, phase: "plan" | "apply", paths: string[]) =>
+        request<VaultCheckResult>("POST", `${p}/stacks/${stackID}/vault/check`, { phase, paths }),
+      declaration: (stackID: string) => request<Declaration>("GET", `${p}/stacks/${stackID}/declaration`),
       gitRepos: () => request<GitRepo[]>("GET", `${p}/git/repos`),
       gitBranches: (fullName: string) => request<string[]>("GET", `${p}/git/repos/${fullName}/branches`),
       discover: (fullName: string, ref: string) =>

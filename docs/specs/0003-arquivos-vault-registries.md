@@ -1,6 +1,6 @@
 # Spec 0003: arquivos, segredos do Vault e credenciais de registry
 
-- **Status:** aprovada em 2026-10-31; Marcos F1 a F3 implementados em 2026-10-31
+- **Status:** aprovada em 2026-10-31; Marcos F1 a F4 implementados em 2026-10-31 (falta, do F4, mostrar as pastas em que cada padrão caiu)
 - **Data:** 2026-10-31
 - **Depende de:** spec 0001 (configurações herdadas e `.firstlume/config.yaml`) e spec 0002 (state), já implementadas
 
@@ -287,10 +287,12 @@ Testes: `internal/executor/registries_test.go` (arquivos e variáveis, precedên
 
 ### Marco F4: telas (depois do desenho aprovado)
 
-- [ ] **CAF4.1** O stack mostra a declaração do último commit: os arquivos que serão gerados, em que pastas, com o formato e as referências ao Vault de cada valor, sem valores.
-- [ ] **CAF4.2** O editor de variáveis tem a categoria arquivo (caminho, conteúdo em várias linhas, sensível).
-- [ ] **CAF4.3** Tela da conexão Vault, com a chave pública, o papel efetivo do stack e o teste de leitura (`vault/check`) a partir das referências da declaração.
-- [ ] **CAF4.4** Lista de registries herdada, com a origem de cada credencial, como nas variáveis.
+Desenho: telas 17 a 20 do canvas de telas. Verificado no navegador contra o servidor de dev, com o Vault do `make dev-vault`.
+
+- [ ] **CAF4.1** O stack mostra a declaração do último commit: os arquivos que serão gerados, em que pastas, com o formato e as referências ao Vault de cada valor, sem valores. (Pronto, menos as pastas: o executor ainda não informa em quais pastas cada padrão caiu.)
+- [x] **CAF4.2** O editor de variáveis tem a categoria arquivo (caminho, conteúdo em várias linhas, sensível).
+- [x] **CAF4.3** Tela da conexão Vault, com a chave pública, o papel efetivo do stack e o teste de leitura (`vault/check`) a partir das referências da declaração.
+- [x] **CAF4.4** Lista de registries herdada, com a origem de cada credencial, como nas variáveis.
 
 ### Critérios gerais
 

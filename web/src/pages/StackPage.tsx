@@ -19,6 +19,7 @@ import {
 } from "../ui";
 import { RunDialog } from "./RunDialog";
 import { SettingsEditor } from "./SettingsEditor";
+import { StackDeclaration } from "./StackDeclaration";
 
 export function StackPage({ tab }: { tab: "runs" | "settings" | "source" }) {
   const { stackId = "" } = useParams();
@@ -269,6 +270,8 @@ function Source({ stack, onSaved }: { stack: Stack; onSaved: () => Promise<void>
         )}
         <p className="hint">To change the engine or its version, change this file in Git: the next run picks it up.</p>
       </section>
+
+      <StackDeclaration stack={stack} />
 
       <section className="card danger-card">
         <div>
