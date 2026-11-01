@@ -78,13 +78,17 @@ func (s *Store) GetChanges(ctx context.Context, orgID, runID string) ([]api.Reso
 	var data []byte
 	var status api.RunStatus
 	var tracked bool
-	if err := s.pool.QueryRow(ctx, `SELECT changes, status, apply_tracked FROM runs WHERE organization_id = $1 AND id = $2`,
-		orgID, runID).Scan(&data, &status, &tracked); err != nil {
+	var stackID string
+	if err := s.pool.QueryRow(ctx, `SELECT changes, status, apply_tracked, stack_id FROM runs WHERE organization_id = $1 AND id = $2`,
+		orgID, runID).Scan(&data, &status, &tracked, &stackID); err != nil {
 		return nil, notFound(err)
 	}
 	out := []api.ResourceChange{}
 	if data != nil {
 		if err := json.Unmarshal(data, &out); err != nil {
+			return nil, err
+		}
+		if err := s.labelOldChanges(ctx, runID, stackID, out, data); err != nil {
 			return nil, err
 		}
 	}
