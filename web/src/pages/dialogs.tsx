@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import { ApiError, settingsPath, type Folder, type GitConnection, type Stack } from "../api";
-import { useOrg } from "../org";
+import { folderContents, useOrg } from "../org";
 import { Modal, useAction, useData } from "../ui";
 import { NewStackWizard } from "./NewStackWizard";
 
@@ -125,20 +125,18 @@ export function RenameStackDialog({ stack, onClose, onSaved }: { stack: Stack; o
 export function DeleteFolderDialog({ folder, onClose }: { folder: Folder; onClose: () => void }) {
   const { api, tree, reloadTree, link } = useOrg();
   const navigate = useNavigate();
+  const location = useLocation();
   const { busy, error, run } = useAction();
-  const subfolders = tree?.folders.filter((f) => f.parent_id === folder.id).length ?? 0;
-  const stacks = tree?.stacks.filter((s) => s.folder_id === folder.id).length ?? 0;
-  const empty = subfolders === 0 && stacks === 0;
+  const { empty, summary } = folderContents(tree, folder.id);
 
   return (
     <Modal title={`Delete “${folder.name}”?`} onClose={onClose}>
       <div className="modal-body">
         {empty ? (
-          <p>Deleting an empty folder also deletes the settings and secrets defined on it.</p>
+          <p>It has no folders or stacks. The settings and secrets defined on it are deleted too.</p>
         ) : (
           <p className="notice notice-attention">
-            Only empty folders can be deleted. <strong>{folder.name}</strong> still has {subfolders} folder{subfolders === 1 ? "" : "s"} and {stacks} stack
-            {stacks === 1 ? "" : "s"}: move or delete them first.
+            Only empty folders can be deleted. <strong>{folder.name}</strong> still has {summary}: move or delete them first.
           </p>
         )}
         {error && <div className="form-error">{error}</div>}
@@ -149,11 +147,15 @@ export function DeleteFolderDialog({ folder, onClose }: { folder: Folder; onClos
           <button
             className="danger"
             disabled={!empty || busy}
+            autoFocus={empty}
             onClick={() =>
               run(async () => {
                 await api.deleteFolder(folder.id);
                 await reloadTree();
-                navigate(folder.parent_id ? link(`f/${folder.parent_id}`) : link());
+                // Leave the folder's own pages; deleting from the tree elsewhere stays put.
+                if (location.pathname.startsWith(link(`f/${folder.id}`))) {
+                  navigate(folder.parent_id ? link(`f/${folder.parent_id}`) : link());
+                }
                 onClose();
               })
             }
