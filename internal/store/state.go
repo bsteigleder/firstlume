@@ -174,21 +174,63 @@ func (s *Store) ReadState(ctx context.Context, a *StateActor, key string) ([]byt
 
 func (s *Store) stateBytes(ctx context.Context, stackID, key string) ([]byte, error) {
 	var objectKey string
+	var storageID *string
+	var encrypted bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT v.object_key FROM state_units u
+		SELECT v.object_key, v.storage_id, v.encrypted FROM state_units u
 		JOIN state_versions v ON v.unit_id = u.id AND v.number = u.current_version
-		WHERE u.stack_id = $1 AND u.key = $2 AND u.deleted_at IS NULL`, stackID, key).Scan(&objectKey)
+		WHERE u.stack_id = $1 AND u.key = $2 AND u.deleted_at IS NULL`, stackID, key).Scan(&objectKey, &storageID, &encrypted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	sealed, err := s.blobs.Get(ctx, objectKey)
+	return s.readVersion(ctx, storageID, objectKey, encrypted)
+}
+
+// readVersion reads a version from the storage it was written to, decrypting
+// it if it was encrypted (spec 0005, R4.1 and R5.2).
+func (s *Store) readVersion(ctx context.Context, storageID *string, objectKey string, encrypted bool) ([]byte, error) {
+	blobs, err := s.blobsAt(ctx, storageID)
 	if err != nil {
+		return nil, err
+	}
+	stored, err := blobs.Get(ctx, objectKey)
+	if err != nil {
+		var se *StateStorageError
+		if errors.As(err, &se) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("reading state object: %w", err)
 	}
-	return s.keys.State().Decrypt(sealed)
+	if !encrypted {
+		return stored, nil
+	}
+	return s.keys.State().Decrypt(stored)
+}
+
+// storedObject is a version's object and where it is.
+type storedObject struct {
+	key       string
+	storageID *string
+}
+
+func collectObjects(rows pgx.Rows) ([]storedObject, error) {
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (storedObject, error) {
+		var o storedObject
+		err := row.Scan(&o.key, &o.storageID)
+		return o, err
+	})
+}
+
+// deleteObject removes a version's object from its storage.
+func (s *Store) deleteObject(ctx context.Context, o storedObject) error {
+	blobs, err := s.blobsAt(ctx, o.storageID)
+	if err != nil {
+		return err
+	}
+	return blobs.Delete(ctx, o.key)
 }
 
 // WriteState stores a new version of the unit's state. lockID is the ID
@@ -250,16 +292,16 @@ func (s *Store) pruneVersions(ctx context.Context, unitID string) {
 	rows, err := s.pool.Query(ctx, `
 		DELETE FROM state_versions v USING state_units u
 		WHERE v.unit_id = u.id AND u.id = $1 AND v.number <= u.current_version - $2
-		RETURNING v.object_key`, unitID, s.keepVersions)
+		RETURNING v.object_key, v.storage_id`, unitID, s.keepVersions)
 	if err != nil {
 		return
 	}
-	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	objects, err := collectObjects(rows)
 	if err != nil {
 		return
 	}
-	for _, k := range keys {
-		_ = s.blobs.Delete(ctx, k)
+	for _, o := range objects {
+		_ = s.deleteObject(ctx, o)
 	}
 }
 
@@ -441,22 +483,30 @@ const stateRetention = 30 * 24 * time.Hour
 const OrphanAge = 24 * time.Hour
 
 // PurgeState removes deleted states past their retention and objects older
-// than orphanAge that never got a version. It returns how many objects it deleted.
+// than orphanAge that never got a version, in every storage that holds
+// versions or is an organization's current one. It returns how many objects
+// it deleted. An organization storage that fails is skipped, so one bucket
+// that is down doesn't stop the cleanup of the others.
 func (s *Store) PurgeState(ctx context.Context, orphanAge time.Duration) (int, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT v.object_key FROM state_units u JOIN state_versions v ON v.unit_id = u.id
+		SELECT v.object_key, v.storage_id FROM state_units u JOIN state_versions v ON v.unit_id = u.id
 		WHERE u.deleted_at < now() - make_interval(secs => $1)`, stateRetention.Seconds())
 	if err != nil {
 		return 0, err
 	}
-	expired, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	expired, err := collectObjects(rows)
 	if err != nil {
 		return 0, err
 	}
 	n := 0
-	for _, key := range expired {
-		if err := s.blobs.Delete(ctx, key); err != nil {
-			return n, err
+	var failed error
+	for _, o := range expired {
+		if err := s.deleteObject(ctx, o); err != nil {
+			if o.storageID == nil {
+				return n, err
+			}
+			failed = err // the version's metadata goes anyway; its object becomes an orphan to retry
+			continue
 		}
 		n++
 	}
@@ -465,24 +515,59 @@ func (s *Store) PurgeState(ctx context.Context, orphanAge time.Duration) (int, e
 		return n, err
 	}
 
-	old, err := s.blobs.List(ctx, time.Now().Add(-orphanAge))
-	if err != nil {
-		return n, err
-	}
-	if len(old) == 0 {
-		return n, nil
-	}
 	rows, err = s.pool.Query(ctx, `
-		SELECT k FROM unnest($1::text[]) k WHERE NOT EXISTS (SELECT 1 FROM state_versions WHERE object_key = k)`, old)
+		SELECT id FROM state_storages st
+		WHERE EXISTS (SELECT 1 FROM organizations o WHERE o.state_storage_id = st.id)
+		   OR EXISTS (SELECT 1 FROM state_versions v WHERE v.storage_id = st.id)`)
 	if err != nil {
 		return n, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return n, err
+	}
+	storages := []*string{nil}
+	for i := range ids {
+		storages = append(storages, &ids[i])
+	}
+	for _, id := range storages {
+		deleted, err := s.purgeOrphans(ctx, id, orphanAge)
+		n += deleted
+		switch {
+		case err == nil:
+		case id == nil:
+			return n, err
+		default:
+			failed = err
+		}
+	}
+	return n, failed
+}
+
+// purgeOrphans deletes the storage's objects older than orphanAge that no
+// version of that storage points to.
+func (s *Store) purgeOrphans(ctx context.Context, storageID *string, orphanAge time.Duration) (int, error) {
+	blobs, err := s.blobsAt(ctx, storageID)
+	if err != nil {
+		return 0, err
+	}
+	old, err := blobs.List(ctx, time.Now().Add(-orphanAge))
+	if err != nil || len(old) == 0 {
+		return 0, err
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT k FROM unnest($1::text[]) k
+		WHERE NOT EXISTS (SELECT 1 FROM state_versions WHERE object_key = k AND storage_id IS NOT DISTINCT FROM $2)`, old, storageID)
+	if err != nil {
+		return 0, err
 	}
 	orphans, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return n, err
+		return 0, err
 	}
+	n := 0
 	for _, key := range orphans {
-		if err := s.blobs.Delete(ctx, key); err != nil {
+		if err := blobs.Delete(ctx, key); err != nil {
 			return n, err
 		}
 		n++

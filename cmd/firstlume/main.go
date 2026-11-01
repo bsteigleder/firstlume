@@ -156,7 +156,9 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 		AdminToken:       adminToken,
 		HeartbeatTimeout: heartbeat,
 		StateMaxBytes:    int64(stateMaxMiB) << 20,
-		UI:               web.FS(),
+		// Organizations' own state storages (spec 0005, R5.3).
+		StateStorageAllowHTTP: boolEnv("FIRSTLUME_STATE_STORAGE_ALLOW_HTTP", false),
+		UI:                    web.FS(),
 		// One public URL: run JWT issuer (spec 0003) and sign-in callback.
 		PublicURL: auth.PublicURL,
 		Auth:      auth,

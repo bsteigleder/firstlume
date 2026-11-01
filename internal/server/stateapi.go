@@ -129,8 +129,7 @@ func stateKey(raw string) (string, error) {
 
 func (s *Server) readState(w http.ResponseWriter, r *http.Request, actor *store.StateActor, key string) {
 	data, err := s.store.ReadState(r.Context(), actor, key)
-	if err != nil {
-		s.internalError(w, r, err)
+	if s.stateError(w, r, err, http.StatusLocked) {
 		return
 	}
 	if data == nil {
@@ -195,6 +194,7 @@ func (s *Server) lockState(w http.ResponseWriter, r *http.Request, actor *store.
 func (s *Server) stateError(w http.ResponseWriter, r *http.Request, err error, lockedStatus int) bool {
 	var locked *store.StateLockedError
 	var conflict *store.StateConflictError
+	var unavailable *store.StateStorageError
 	switch {
 	case err == nil:
 		return false
@@ -204,6 +204,10 @@ func (s *Server) stateError(w http.ResponseWriter, r *http.Request, err error, l
 		_, _ = w.Write(locked.Info)
 	case errors.As(err, &conflict):
 		writeError(w, http.StatusConflict, conflict.Reason)
+	case errors.As(err, &unavailable):
+		// The organization's own bucket failed; nothing was recorded (spec 0005, R3.3).
+		s.log.Warn("state storage unavailable", "path", r.URL.Path, "error", err)
+		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, store.ErrInvalidState), errors.Is(err, store.ErrInvalid):
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 	default:

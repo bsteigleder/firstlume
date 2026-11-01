@@ -754,6 +754,57 @@ type PutVaultConnectionRequest struct {
 	Audience string `json:"audience,omitempty"`
 }
 
+// State storage kinds (spec 0005).
+const (
+	StateStorageInstallation = "installation"
+	StateStorageS3           = "s3"
+)
+
+// StateStorage is where an organization's state versions are kept: the
+// installation's storage, or an S3 bucket of its own (spec 0005).
+type StateStorage struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id,omitempty"`
+	// For s3. The secret access key is never returned.
+	Endpoint           string `json:"endpoint,omitempty"`
+	Bucket             string `json:"bucket,omitempty"`
+	Region             string `json:"region,omitempty"`
+	Folder             string `json:"folder,omitempty"`
+	PathStyle          bool   `json:"path_style,omitempty"`
+	CACert             string `json:"ca_cert,omitempty"`
+	AccessKeyID        string `json:"access_key_id,omitempty"`
+	HasSecretAccessKey bool   `json:"has_secret_access_key,omitempty"`
+	// Encrypt says how new versions are written; the installation's storage always encrypts.
+	Encrypt bool `json:"encrypt"`
+	// Versions kept here, and how many of them are in the clear.
+	Versions          int `json:"versions"`
+	PlaintextVersions int `json:"plaintext_versions,omitempty"`
+}
+
+// StateStorageSettings is the organization's current storage and the earlier
+// ones that still hold versions (R4.3).
+type StateStorageSettings struct {
+	Current  StateStorage   `json:"current"`
+	Previous []StateStorage `json:"previous"`
+}
+
+type PutStateStorageRequest struct {
+	Kind     string `json:"kind"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Bucket   string `json:"bucket,omitempty"`
+	// Region defaults to us-east-1, Folder to firstlume and PathStyle to true.
+	Region      string `json:"region,omitempty"`
+	Folder      string `json:"folder,omitempty"`
+	PathStyle   *bool  `json:"path_style,omitempty"`
+	CACert      string `json:"ca_cert,omitempty"`
+	AccessKeyID string `json:"access_key_id,omitempty"`
+	// SecretAccessKey sent empty keeps the stored one.
+	SecretAccessKey string `json:"secret_access_key,omitempty"`
+	// Encrypt defaults to true; false needs PlaintextAcknowledged (R5.2).
+	Encrypt               *bool `json:"encrypt,omitempty"`
+	PlaintextAcknowledged bool  `json:"plaintext_acknowledged,omitempty"`
+}
+
 // VaultCheckRequest asks whether a stack's role can read paths, without reading them.
 type VaultCheckRequest struct {
 	Phase Phase    `json:"phase"`

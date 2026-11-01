@@ -44,6 +44,10 @@ controlPlane:
     # postgres (the database) or s3 (any S3-compatible service, e.g. Garage).
     # Changing it does not move the versions already stored.
     storage: postgres
+    # Organizations may keep their state in a bucket of their own (spec 0005).
+    # Their endpoints must be https://, unless this allows http://, for a
+    # storage inside the cluster.
+    allowHTTPOrgStorage: false
     s3:
       endpoint: ""        # e.g. http://garage.garage.svc:3900
       bucket: ""
