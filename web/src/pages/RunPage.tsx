@@ -28,6 +28,7 @@ import {
   useAction,
   useData,
 } from "../ui";
+import { ResourceIcon } from "../resourceIcons";
 import { RunDialog } from "./RunDialog";
 
 export function RunPage() {
@@ -474,6 +475,7 @@ function ChangeCard({ change: c, drift, ack, open, onToggle }: {
         <span className={`change-chev${open ? " open" : ""}`} aria-hidden>
           {nattrs > 0 && <ChevronRightIcon />}
         </span>
+        <ResourceIcon type={c.type} size={28} />
         <span className={`badge ${info.tone}`}>{info.label}</span>
         <strong>{c.name}</strong>
         <span className="muted small">{humanType(c.type)}</span>
