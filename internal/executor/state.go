@@ -19,10 +19,10 @@ import (
 // unit; Terragrunt builds each unit's address from FIRSTLUME_STATE_URL. Code
 // with another backend ignores all of it.
 func stateEnv(apiURL string, s *api.ExecSpec) []string {
-	if s.StateToken == "" {
+	base := stateURL(apiURL, s)
+	if base == "" {
 		return nil
 	}
-	base := strings.TrimRight(apiURL, "/") + "/state/v1/stacks/" + s.StackID
 	return []string{
 		"TF_HTTP_ADDRESS=" + base,
 		"TF_HTTP_LOCK_ADDRESS=" + base,
@@ -31,6 +31,15 @@ func stateEnv(apiURL string, s *api.ExecSpec) []string {
 		"TF_HTTP_PASSWORD=" + s.StateToken,
 		"FIRSTLUME_STATE_URL=" + base,
 	}
+}
+
+// stateURL is the stack's state address in Firstlume, or "" when the run
+// has no state token.
+func stateURL(apiURL string, s *api.ExecSpec) string {
+	if s.StateToken == "" {
+		return ""
+	}
+	return strings.TrimRight(apiURL, "/") + "/state/v1/stacks/" + s.StackID
 }
 
 const backendHelp = `Declare where the state lives. For Firstlume's state backend:
@@ -46,30 +55,39 @@ const backendHelp = `Declare where the state lives. For Firstlume's state backen
       }
     }`
 
-// checkBackends fails when a unit keeps its state locally, since the runner's
-// disk is gone when the run ends (R2.2). With run --all (plansJSON set), the
-// units are the ones Terragrunt planned: they have a JSON plan there.
-func checkBackends(workDir, plansJSON string, out io.Writer) error {
+// checkBackends returns where each unit keeps its state (R2.3), and fails
+// when a unit keeps it locally, since the runner's disk is gone when the run
+// ends (R2.2). With run --all (plansJSON set), the units are the ones
+// Terragrunt planned: they have a JSON plan there. stateURL is the stack's
+// state address in Firstlume, or "" when the run has no state token.
+func checkBackends(workDir, plansJSON, stateURL string, out io.Writer) ([]api.UnitBackend, error) {
 	runAll := plansJSON != ""
 	units := []string{"."}
 	if runAll {
 		var err error
 		if units, err = plannedUnits(plansJSON); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	var local []string
+	found := []api.UnitBackend{}
 	types := map[string][]string{}
 	for _, u := range units {
-		typ, err := unitBackend(filepath.Join(workDir, filepath.FromSlash(u)))
+		typ, address, err := unitBackend(filepath.Join(workDir, filepath.FromSlash(u)))
 		if err != nil {
-			return fmt.Errorf("reading the backend of %s: %w", u, err)
+			return nil, fmt.Errorf("reading the backend of %s: %w", u, err)
 		}
-		if typ == "" || typ == "local" {
+		key := u
+		if !runAll {
+			key = "" // as ResourceChange.Unit of a single-unit stack
+		}
+		backend := classifyBackend(typ, address, stateURL)
+		found = append(found, api.UnitBackend{Unit: key, Backend: backend})
+		if backend == "local" {
 			local = append(local, u)
 			continue
 		}
-		types[typ] = append(types[typ], u)
+		types[backend] = append(types[backend], u)
 	}
 	if len(local) > 0 {
 		what := "This stack keeps its state"
@@ -80,7 +98,7 @@ func checkBackends(workDir, plansJSON string, out io.Writer) error {
 			what += " (" + strings.Join(local, ", ") + ")"
 		}
 		fmt.Fprintf(out, "==> %s on the runner's disk, which is gone when the run ends.\n%s\n", what, backendHelp)
-		return errors.New("no remote state backend: the state would be lost")
+		return found, errors.New("no remote state backend: the state would be lost")
 	}
 	names := make([]string, 0, len(types))
 	for t := range types {
@@ -89,8 +107,11 @@ func checkBackends(workDir, plansJSON string, out io.Writer) error {
 	sort.Strings(names)
 	for _, t := range names {
 		label := t
-		if t == "http" {
-			label = "http (Firstlume, unless the code points elsewhere)"
+		switch t {
+		case api.BackendFirstlume:
+			label = "http (Firstlume)"
+		case "http":
+			label = "http (another server)"
 		}
 		if runAll {
 			fmt.Fprintf(out, "==> State backend %s: %d unit(s)\n", label, len(types[t]))
@@ -98,7 +119,22 @@ func checkBackends(workDir, plansJSON string, out io.Writer) error {
 			fmt.Fprintf(out, "==> State backend: %s\n", label)
 		}
 	}
-	return nil
+	return found, nil
+}
+
+// classifyBackend names a unit's backend as the run page shows it. An http
+// backend with no address got it from TF_HTTP_ADDRESS, which points at
+// Firstlume when the run has a state token.
+func classifyBackend(typ, address, stateURL string) string {
+	switch {
+	case typ == "" || typ == "local":
+		return "local"
+	case typ != "http" || stateURL == "":
+		return typ
+	case address == "" || address == stateURL || strings.HasPrefix(address, stateURL+"/"):
+		return api.BackendFirstlume
+	}
+	return "http"
 }
 
 // plannedUnits lists the units with a JSON plan under dir, as slash paths.
@@ -122,10 +158,10 @@ func plannedUnits(dir string) ([]string, error) {
 	return units, err
 }
 
-// unitBackend returns the backend type `init` configured for a unit, or ""
-// when it has none (local state). Terragrunt units with a `source` are
-// initialized inside their .terragrunt-cache.
-func unitBackend(dir string) (string, error) {
+// unitBackend returns the backend type `init` configured for a unit and its
+// address, if any; the type is "" when it has none (local state). Terragrunt
+// units with a `source` are initialized inside their .terragrunt-cache.
+func unitBackend(dir string) (typ, address string, err error) {
 	candidates := []string{filepath.Join(dir, ".terraform", "terraform.tfstate")}
 	cache := filepath.Join(dir, ".terragrunt-cache")
 	_ = filepath.WalkDir(cache, func(path string, d fs.DirEntry, err error) error {
@@ -140,19 +176,25 @@ func unitBackend(dir string) (string, error) {
 			continue
 		}
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		var st struct {
 			Backend *struct {
-				Type string `json:"type"`
+				Type   string `json:"type"`
+				Config struct {
+					Address *string `json:"address"`
+				} `json:"config"`
 			} `json:"backend"`
 		}
 		if err := json.Unmarshal(raw, &st); err != nil {
-			return "", err
+			return "", "", err
 		}
 		if st.Backend != nil {
-			return st.Backend.Type, nil
+			if a := st.Backend.Config.Address; a != nil {
+				address = *a
+			}
+			return st.Backend.Type, address, nil
 		}
 	}
-	return "", nil
+	return "", "", nil
 }

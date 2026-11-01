@@ -26,6 +26,9 @@ const (
 	maxErrorText = 16 << 10
 )
 
+// backendRe is a Terraform backend type, as the executor reports it.
+var backendRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,39}$`)
+
 var commitRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 
 // artifactNames lists what executors may store, so the table can't be used as a blob dump.
@@ -40,6 +43,7 @@ func (s *Server) execRoutes(r chi.Router) {
 	r.Get("/artifacts/{name}", s.execGetArtifact)
 	r.Post("/complete", s.execComplete)
 	r.Put("/changes", s.execChanges)
+	r.Put("/backends", s.execBackends)
 	r.Post("/steps", s.execStep)
 	r.Post("/apply-progress", s.execApplyProgress)
 }
@@ -182,6 +186,30 @@ func (s *Server) execChanges(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.store.SetChanges(r.Context(), runID, changes); err != nil {
+		s.execError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// execBackends records where each unit keeps its state (spec 0002 R2.3).
+func (s *Server) execBackends(w http.ResponseWriter, r *http.Request) {
+	runID, phase := phaseOf(r)
+	var backends []api.UnitBackend
+	if !decodeJSON(w, r, &backends) {
+		return
+	}
+	if phase != api.PhasePlan {
+		writeError(w, http.StatusUnprocessableEntity, "backends can only be set during plan")
+		return
+	}
+	for _, b := range backends {
+		if !backendRe.MatchString(b.Backend) || len(b.Unit) > 1024 {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("invalid backend %q for unit %q", b.Backend, b.Unit))
+			return
+		}
+	}
+	if err := s.store.SetUnitBackends(r.Context(), runID, backends); err != nil {
 		s.execError(w, r, err)
 		return
 	}

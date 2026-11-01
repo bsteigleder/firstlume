@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -310,6 +311,20 @@ resource "terraform_data" "a" {
 	exec, spec := h.applyPhase(st.ID)
 	tf := &cli{t: t, bin: bin, dir: dir, env: toolEnv(h, st.ID, spec.StateToken, "TF_VAR_secret=s3cr3t-value", "TF_VAR_label=one")}
 	tf.must("init", "-input=false")
+	// The executor reads `backend "http" {}` with no address as Firstlume's
+	// (R2.3): the address comes from TF_HTTP_ADDRESS and isn't saved.
+	var backend struct {
+		Backend struct {
+			Type   string         `json:"type"`
+			Config map[string]any `json:"config"`
+		} `json:"backend"`
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, ".terraform", "terraform.tfstate"))
+	must(t, err)
+	must(t, json.Unmarshal(raw, &backend))
+	if backend.Backend.Type != "http" || backend.Backend.Config["address"] != nil {
+		t.Fatalf("init saved %s", raw)
+	}
 	tf.must("apply", "-input=false", "-auto-approve")
 	tf.must("apply", "-input=false", "-auto-approve") // no changes: no new version
 	if u := h.units(st.ID)[""]; u.Version != 1 || u.Resources != 1 {

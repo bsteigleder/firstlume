@@ -187,6 +187,12 @@ func (c *Client) PutChanges(ctx context.Context, changes []api.ResourceChange) e
 	return err
 }
 
+// PutBackends records where each unit keeps its state (spec 0002 R2.3).
+func (c *Client) PutBackends(ctx context.Context, backends []api.UnitBackend) error {
+	_, err := c.doJSON(ctx, http.MethodPut, "/exec/v1/backends", backends, nil)
+	return err
+}
+
 // ApplyProgress reports what the apply did to resources since the last report.
 func (c *Client) ApplyProgress(ctx context.Context, req api.ApplyProgressRequest) error {
 	_, err := c.doJSON(ctx, http.MethodPost, "/exec/v1/apply-progress", req, nil)

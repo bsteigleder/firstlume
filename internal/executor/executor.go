@@ -212,13 +212,13 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			if _, err = r.run(ctx, "init", "-input=false", "-no-color"); err != nil {
 				return err
 			}
-			return checkBackends(workDir, "", e.out)
+			return e.checkBackends(ctx, workDir, "")
 		}},
 		{name: last, run: func() (err error) {
 			if s.Phase == api.PhasePlan {
 				if res, err = e.plan(ctx, r, planPath); err == nil && e.stack.RunAll {
 					// Terragrunt initialized the units while planning: check them now.
-					err = checkBackends(workDir, e.plansJSONDir(), e.out)
+					err = e.checkBackends(ctx, workDir, e.plansJSONDir())
 				}
 			} else {
 				res, err = e.apply(ctx, r, planPath)
@@ -318,6 +318,23 @@ func (e *executor) runSteps(ctx context.Context, steps []step) error {
 		}
 	}
 	return nil
+}
+
+// checkBackends checks where each unit keeps its state and, in the plan
+// phase, records it on the run (spec 0002 R2.2, R2.3). The units are recorded
+// even when one keeps its state locally, so the run page names it.
+func (e *executor) checkBackends(ctx context.Context, workDir, plansJSON string) error {
+	found, err := checkBackends(workDir, plansJSON, stateURL(e.cfg.APIURL, e.spec), e.out)
+	if found != nil && e.spec.Phase == api.PhasePlan {
+		rerr := e.client.PutBackends(ctx, found)
+		if errors.Is(rerr, apiclient.ErrNoLongerOwner) {
+			return rerr
+		}
+		if rerr != nil {
+			fmt.Fprintf(e.out, "==> Warning: could not record the state backends: %v\n", rerr)
+		}
+	}
+	return err
 }
 
 // reportStep flushes the log first, so output lands on the step that produced
