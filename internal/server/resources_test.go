@@ -115,3 +115,70 @@ func TestStackResources(t *testing.T) {
 		t.Fatalf("state outside: %+v", got)
 	}
 }
+
+// TestUnitBackends records where each unit keeps its state during the plan
+// (spec 0002 R2.3) and lists the units outside Firstlume on the Resources tab.
+func TestUnitBackends(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	st := h.stack("", "backends", "")
+	h.settings("/stacks/"+st.ID, api.LevelSettings{RequireApproval: ptr(false)})
+
+	// An apply whose plan finds one unit in Firstlume and one in s3.
+	run := h.run(st.ID, api.RunApply)
+	exec, spec := h.spec(run.ID)
+	if err := exec.PutBackends(ctx, []api.UnitBackend{{Unit: "app", Backend: "Not A Backend"}}); err == nil {
+		t.Error("an invalid backend name was accepted")
+	}
+	found := []api.UnitBackend{{Unit: "app", Backend: api.BackendFirstlume}, {Unit: "legacy/dns", Backend: "s3"}}
+	must(t, exec.PutBackends(ctx, found))
+	_, err := exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
+	must(t, err)
+
+	exec, spec = h.spec(run.ID)
+	if err := exec.PutBackends(ctx, found); err == nil {
+		t.Error("backends were accepted during apply")
+	}
+	h.wantState("POST", h.stateURL(st.ID, "app"), spec.StateToken, []byte(resourcesState), http.StatusOK)
+	_, err = exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true})
+	must(t, err)
+
+	var got api.Run
+	h.call("GET", "/runs/"+run.ID, nil, http.StatusOK, &got)
+	if len(got.UnitBackends) != 2 || got.UnitBackends[1] != found[1] {
+		t.Fatalf("run backends: %+v", got.UnitBackends)
+	}
+	var res api.StackResources
+	h.call("GET", "/stacks/"+st.ID+"/resources", nil, http.StatusOK, &res)
+	if len(res.Units) != 1 || res.Units[0].Key != "app" || res.StateOutside {
+		t.Fatalf("units: %+v", res)
+	}
+	if o := res.Outside; o == nil || o.RunID != run.ID || o.RunType != api.RunApply || len(o.Units) != 1 || o.Units[0] != found[1] {
+		t.Fatalf("outside: %+v", res.Outside)
+	}
+
+	// A later plan moved the unit to Firstlume: nothing is outside anymore.
+	plan := h.run(st.ID, api.RunPlan)
+	exec, _ = h.spec(plan.ID)
+	must(t, exec.PutBackends(ctx, []api.UnitBackend{{Unit: "app", Backend: api.BackendFirstlume}, {Unit: "legacy/dns", Backend: api.BackendFirstlume}}))
+	_, err = exec.Complete(ctx, api.CompleteRequest{Success: true})
+	must(t, err)
+	res = api.StackResources{}
+	h.call("GET", "/stacks/"+st.ID+"/resources", nil, http.StatusOK, &res)
+	if res.Outside != nil || res.StateOutside {
+		t.Fatalf("all in Firstlume now: %+v", res)
+	}
+
+	// A stack whose only unit keeps its state in s3: no guessing, the run says so.
+	other := h.stack("", "all-outside", "")
+	plan = h.run(other.ID, api.RunPlan)
+	exec, _ = h.spec(plan.ID)
+	must(t, exec.PutBackends(ctx, []api.UnitBackend{{Unit: "", Backend: "s3"}}))
+	_, err = exec.Complete(ctx, api.CompleteRequest{Success: true})
+	must(t, err)
+	res = api.StackResources{}
+	h.call("GET", "/stacks/"+other.ID+"/resources", nil, http.StatusOK, &res)
+	if len(res.Units) != 0 || res.StateOutside || res.Outside == nil || len(res.Outside.Units) != 1 || res.Outside.Units[0].Backend != "s3" {
+		t.Fatalf("all outside: %+v", res)
+	}
+}

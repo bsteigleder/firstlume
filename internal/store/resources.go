@@ -131,7 +131,17 @@ func (s *Store) StackResources(ctx context.Context, orgID, stackID string) (*api
 		}
 		out.Units = append(out.Units, ru)
 	}
-	if len(out.Units) == 0 {
+	recorded, err := s.outsideUnits(ctx, stackID)
+	if err != nil {
+		return nil, err
+	}
+	if recorded != nil {
+		if len(recorded.Units) > 0 {
+			out.Outside = recorded
+		}
+	} else if len(out.Units) == 0 {
+		// No run recorded its backends (they all predate it): guess from an
+		// apply that wrote no state here.
 		err := s.pool.QueryRow(ctx, `
 			SELECT EXISTS (SELECT 1 FROM runs WHERE stack_id = $1 AND type IN ('apply', 'destroy') AND status = 'applied')`,
 			stackID).Scan(&out.StateOutside)
@@ -140,6 +150,34 @@ func (s *Store) StackResources(ctx context.Context, orgID, stackID string) (*api
 		}
 	}
 	return out, nil
+}
+
+// outsideUnits reads the latest run that recorded where each unit keeps its
+// state, with only the units outside Firstlume. Nil when no run recorded it.
+func (s *Store) outsideUnits(ctx context.Context, stackID string) (*api.OutsideUnits, error) {
+	var o api.OutsideUnits
+	var data []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, type, created_at, unit_backends FROM runs
+		WHERE stack_id = $1 AND unit_backends IS NOT NULL
+		ORDER BY created_at DESC LIMIT 1`, stackID).Scan(&o.RunID, &o.RunType, &o.At, &data)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var all []api.UnitBackend
+	if err := json.Unmarshal(data, &all); err != nil {
+		return nil, err
+	}
+	o.Units = []api.UnitBackend{}
+	for _, u := range all {
+		if u.Backend != api.BackendFirstlume {
+			o.Units = append(o.Units, u)
+		}
+	}
+	return &o, nil
 }
 
 func (s *Store) unitResources(ctx context.Context, stackID, key string) ([]api.StateResource, error) {

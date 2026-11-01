@@ -19,7 +19,7 @@ const activeStatuses = `('queued', 'planning', 'awaiting_approval', 'apply_queue
 func runColumnsAs(alias string) string {
 	cols := []string{"id", "stack_id", "type", "status", "ref", "commit_sha", "commit_author_name", "commit_author_email",
 		"commit_message", "has_changes", "plan_summary", "error", "agent_id", "created_by", "approved_by", "approved_at",
-		"started_at", "finished_at", "created_at", "updated_at", "acknowledged", "config", "settings_used"}
+		"started_at", "finished_at", "created_at", "updated_at", "acknowledged", "config", "settings_used", "unit_backends"}
 	for i, c := range cols {
 		cols[i] = alias + "." + c
 	}
@@ -35,7 +35,7 @@ type runScan struct {
 	summary                                                                 []byte
 	errMsg, agentID, createdBy, approvedBy                                  *string
 	approvedAt, startedAt, finishedAt, createdAt, updatedAt                 *time.Time
-	acknowledged, config, settingsUsed                                      []byte
+	acknowledged, config, settingsUsed, unitBackends                        []byte
 }
 
 func newRunScan() *runScan { return &runScan{} }
@@ -43,7 +43,7 @@ func newRunScan() *runScan { return &runScan{} }
 func (s *runScan) dest() []any {
 	return []any{&s.id, &s.stackID, &s.typ, &s.status, &s.ref, &s.commit, &s.authorName, &s.authorEmail, &s.message,
 		&s.hasChanges, &s.summary, &s.errMsg, &s.agentID, &s.createdBy, &s.approvedBy, &s.approvedAt,
-		&s.startedAt, &s.finishedAt, &s.createdAt, &s.updatedAt, &s.acknowledged, &s.config, &s.settingsUsed}
+		&s.startedAt, &s.finishedAt, &s.createdAt, &s.updatedAt, &s.acknowledged, &s.config, &s.settingsUsed, &s.unitBackends}
 }
 
 func (s *runScan) result() (*api.Run, error) {
@@ -80,6 +80,11 @@ func (s *runScan) result() (*api.Run, error) {
 	if s.settingsUsed != nil {
 		r.SettingsUsed = &api.RunSettings{}
 		if err := json.Unmarshal(s.settingsUsed, r.SettingsUsed); err != nil {
+			return nil, err
+		}
+	}
+	if s.unitBackends != nil {
+		if err := json.Unmarshal(s.unitBackends, &r.UnitBackends); err != nil {
 			return nil, err
 		}
 	}
@@ -320,6 +325,24 @@ func (s *Store) SetChanges(ctx context.Context, runID string, changes []api.Reso
 		return err
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE runs SET changes = $2, heartbeat_at = now() WHERE id = $1 AND status = 'planning'`,
+		runID, data)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// SetUnitBackends records where each unit keeps its state. Only the executor
+// of the plan phase can set it.
+func (s *Store) SetUnitBackends(ctx context.Context, runID string, backends []api.UnitBackend) error {
+	data, err := json.Marshal(backends)
+	if err != nil {
+		return err
+	}
+	tag, err := s.pool.Exec(ctx, `UPDATE runs SET unit_backends = $2, heartbeat_at = now() WHERE id = $1 AND status = 'planning'`,
 		runID, data)
 	if err != nil {
 		return err

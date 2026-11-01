@@ -103,7 +103,7 @@ Esse caminho continua aceito: o Firstlume não força o seu backend (R4.1).
 
 - **R2.1** Depois do `init`, o executor lê o tipo de backend que cada unit realmente usou (em `.terraform/terraform.tfstate`; no Terragrunt, em cada unit).
 - **R2.2** Se alguma unit ficou com backend **local** (não declarou nenhum, ou declarou `local`), o plan **falha** no passo Init. No `run --all`, em que o Terragrunt inicializa as units durante o plan, falha ao fim do passo Plan. A mensagem cita a unit e mostra o trecho de R1.1 ou R1.3. Motivo: o state local some com o runner.
-- **R2.3** A run grava o backend de cada unit, e a tela da run mostra "state: Firstlume", "state: s3" e assim por diante.
+- **R2.3** A run grava o backend de cada unit, e a tela da run mostra "state: Firstlume", "state: s3" e assim por diante (card State, quadro 28 do canvas). Um backend `http` sem endereço (vem de `TF_HTTP_ADDRESS`) ou com endereço sob a URL de state do stack conta como Firstlume; outro endereço aparece como "http · another server". Só o plan grava; o apply mostra o que o seu plan encontrou.
 
 ### 4.3 O protocolo
 
@@ -200,7 +200,7 @@ O desenho das telas vem antes da implementação, como na spec 0001. A aba tem o
   - mostra a última mudança de cada recurso e as últimas cinco, vindas das runs de apply (um apply que falhou conta só o que terminou);
   - mostra o que a última checagem de drift encontrou, até um apply terminar depois dela;
   - cada recurso tem um ícone: o logo do serviço (EKS, RDS, Cloudflare, PostgreSQL…) quando o tipo é conhecido, senão um desenho da categoria na cor do provider; data sources aparecem tracejados;
-  - uma unit cujo state não pode ser lido aparece com o motivo, sem esconder as outras; sem state no Firstlume depois de um apply, a aba explica que o código guarda o state em outro backend.
+  - uma unit cujo state não pode ser lido aparece com o motivo, sem esconder as outras; as units que a última run encontrou com o state em outro backend (R2.3) aparecem no fim, com o backend e essa run (quadro 29 do canvas); se nenhuma run gravou os backends (runs antigas), a aba deduz como antes: sem state no Firstlume depois de um apply, o código guarda o state em outro backend.
 
 ### 4.9 Importação
 
@@ -307,7 +307,7 @@ Testes: `internal/server/stateimport_test.go` (bundles montados no teste, tokens
 - [ ] **CAS4.2** A diferença entre as versões 1 e 3 de uma unit lista por endereço o que entrou, saiu e mudou, **sem valores**. Nenhum valor sensível aparece em resposta da API da aba, exceto no download.
 - [ ] **CAS4.3** O rollback para a versão 1 cria a versão 4 com o conteúdo da 1. O plan seguinte mostra o que voltou. Com a unit travada, o rollback é recusado.
 - [ ] **CAS4.4** Destravar à força, baixar, importar, fazer rollback, criar ou revogar token e excluir o state aparecem nos eventos, com quem e quando.
-- [ ] **CAS4.5** A tela da run mostra o backend usado por unit (R2.3).
+- [x] **CAS4.5** A tela da run mostra o backend usado por unit (R2.3).
 - [x] **CAS4.6** A aba Resources lista os recursos de cada unit com endereço, tipo e provider; nenhum valor de atributo aparece na resposta da API (R8.8).
 - [x] **CAS4.7** Um recurso criado por uma run mostra essa run como última mudança; um drift aberto marca os recursos afetados até o próximo apply.
 - [x] **CAS4.8** Um stack que já fez apply sem gravar state no Firstlume mostra o aviso de state em outro backend.

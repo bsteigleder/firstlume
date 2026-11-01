@@ -1995,6 +1995,43 @@ button.change-head:disabled {
   flex-direction: column;
 }
 
+.state-card.failed {
+  border-color: var(--danger-strong);
+}
+
+.state-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.state-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+}
+
+.state-group summary {
+  cursor: pointer;
+  color: var(--link);
+}
+
+.state-units {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
 .config-card details {
   border-top: 1px solid var(--border);
   padding: 8px 0 0;
@@ -2974,6 +3011,42 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.res-outside-units {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.res-outside-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 20px;
+}
+
+.res-outside-head p {
+  max-width: 760px;
+}
+
+.res-outside-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.6fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 13.5px;
+}
+
+a.res-stat {
+  color: var(--text);
+  text-decoration: none;
+}
+
+a.res-stat .link-text {
+  color: var(--link);
 }
 
 /* ---------- moving a stack (canvas boards 23 and 24) ---------- */

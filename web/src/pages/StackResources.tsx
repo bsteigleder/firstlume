@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import type { ChangeAction, ResourceLabel, ResourceUnit, Stack, StateResource } from "../api";
+import type { ChangeAction, ResourceLabel, ResourceUnit, Stack, StackResources as Resources, StateResource } from "../api";
 import { useOrg } from "../org";
 import { providerColor, providerName, ResourceIcon, resourceKind } from "../resourceIcons";
 import { LabelLine } from "../resourceLabel";
@@ -29,9 +29,12 @@ export function StackResources({ stack }: { stack: Stack }) {
 
   if (res.error && !res.data) return <ErrorBanner error={res.error} />;
   if (!res.data) return null;
-  const { units, drift, state_outside } = res.data;
+  const { units, drift, state_outside, outside } = res.data;
 
-  if (units.length === 0) return state_outside ? <StateOutside /> : <NoResources />;
+  if (units.length === 0) {
+    if (outside) return <OutsideUnits outside={outside} />;
+    return state_outside ? <StateOutside /> : <NoResources />;
+  }
 
   const all = units.flatMap((u) => u.resources);
   const managed = all.filter((r) => r.mode === "managed");
@@ -59,7 +62,7 @@ export function StackResources({ stack }: { stack: Stack }) {
       ),
     }))
     .filter((g) => g.rows.length > 0 || (!filtering && (g.unit.error || g.unit.resources.length === 0)));
-  const single = units.length === 1;
+  const single = units.length === 1 && !outside;
 
   const clear = () => {
     setQ("");
@@ -84,6 +87,17 @@ export function StackResources({ stack }: { stack: Stack }) {
             <strong>{units.length}</strong>
             <span>units with state</span>
           </div>
+        )}
+        {outside && (
+          <a className="res-stat" href="#res-outside" onClick={(e) => {
+            e.preventDefault();
+            document.getElementById("res-outside")?.scrollIntoView({ behavior: "smooth" });
+          }}>
+            <strong>{outside.units.length}</strong>
+            <span className="link-text">
+              unit{outside.units.length === 1 ? "" : "s"} with state elsewhere
+            </span>
+          </a>
         )}
         <div className="res-providers" role="group" aria-label="Filter by provider">
           {providers.map(([p, n]) => (
@@ -201,6 +215,7 @@ export function StackResources({ stack }: { stack: Stack }) {
           </section>
         );
       })}
+      {outside && <OutsideUnits outside={outside} />}
     </>
   );
 }
@@ -430,6 +445,66 @@ function NoResources() {
       <h2>No resources yet</h2>
       <p>Resources show up here after the first apply writes the state. A plan alone doesn’t create them.</p>
     </section>
+  );
+}
+
+// OutsideUnits names the units whose state the latest run found in another
+// backend (spec 0002 R2.3): Firstlume can't list what they manage.
+function OutsideUnits({ outside }: { outside: NonNullable<Resources["outside"]> }) {
+  const single = outside.units.length === 1 && outside.units[0].unit === "";
+  const byBackend = new Map<string, number>();
+  for (const u of outside.units) byBackend.set(u.backend, (byBackend.get(u.backend) ?? 0) + 1);
+  const found = [...byBackend.entries()].sort((a, b) => b[1] - a[1]);
+  const run = <RunLink id={outside.run_id} label={outside.run_type} />;
+  return (
+    <section id="res-outside" className="card res-outside res-outside-units">
+      <div className="res-outside-head">
+        <h2>Firstlume can’t list these resources</h2>
+        <p>
+          {single ? <>The last run ({run}) found</> : <>{run} found</>}{" "}
+          {found.map(([b, n], i) => (
+            <span key={b}>
+              {i > 0 && (i === found.length - 1 ? " and " : ", ")}
+              <BackendName backend={b} />
+              {!single && ` in ${n} unit${n === 1 ? "" : "s"}`}
+            </span>
+          ))}
+          , so {single ? "the" : "their"} state lives there and Firstlume never reads it. Switch the code to{" "}
+          <span className="mono">backend "http" {"{}"}</span> and import the current state to see{" "}
+          {single ? "the resources" : "them"} here.
+        </p>
+      </div>
+      {!single && (
+        <div className="res-table">
+          <div className="res-outside-row res-row-head">
+            <span>Unit</span>
+            <span>Backend</span>
+            <span>Seen in</span>
+          </div>
+          {outside.units.map((u) => (
+            <div key={u.unit} className="res-outside-row">
+              <strong className="mono">{u.unit || "(root)"}</strong>
+              <span>
+                <span className={u.backend === "local" ? "badge bad" : "badge idle"}>{u.backend}</span>
+              </span>
+              <span className="muted small">
+                {run} · {timeAgo(outside.at)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function BackendName({ backend }: { backend: string }) {
+  if (backend === "local") return <>no remote backend (local state, gone when the run ends)</>;
+  return (
+    <>
+      <span className="mono">backend "{backend}"</span>
+      {backend === "http" && " on another server"}
+    </>
   );
 }
 

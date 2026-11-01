@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -336,14 +337,18 @@ func TestStateEnv(t *testing.T) {
 	}
 }
 
-func writeBackend(t *testing.T, dir, typ string) {
+func writeBackend(t *testing.T, dir, typ string, address ...string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, ".terraform"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	body := `{"version":3,"terraform_version":"1.15.6"}`
 	if typ != "" {
-		body = fmt.Sprintf(`{"version":3,"backend":{"type":%q,"config":{}}}`, typ)
+		cfg := `{}`
+		if len(address) > 0 {
+			cfg = fmt.Sprintf(`{"address":%q,"username":null}`, address[0])
+		}
+		body = fmt.Sprintf(`{"version":3,"backend":{"type":%q,"config":%s}}`, typ, cfg)
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".terraform", "terraform.tfstate"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -351,18 +356,38 @@ func writeBackend(t *testing.T, dir, typ string) {
 }
 
 func TestCheckBackends(t *testing.T) {
+	const stateURL = "http://firstlume:8080/state/v1/stacks/s1"
 	var out bytes.Buffer
 	dir := t.TempDir()
-	if err := checkBackends(dir, "", &out); err == nil || !strings.Contains(out.String(), `backend "http" {}`) {
+	found, err := checkBackends(dir, "", stateURL, &out)
+	if err == nil || !strings.Contains(out.String(), `backend "http" {}`) {
 		t.Fatalf("no backend at all must fail with help: %v\n%s", err, out.String())
 	}
-	writeBackend(t, dir, "http")
-	if err := checkBackends(dir, "", &out); err != nil {
-		t.Fatalf("http backend: %v", err)
+	if want := []api.UnitBackend{{Unit: "", Backend: "local"}}; !reflect.DeepEqual(found, want) {
+		t.Errorf("a local unit is still reported, so the run page names it: %+v", found)
 	}
-	writeBackend(t, dir, "s3")
-	if err := checkBackends(dir, "", &out); err != nil {
-		t.Fatalf("the code's own backend must be accepted: %v", err)
+	for _, c := range []struct {
+		typ, address, stateURL, want string
+	}{
+		{"http", "", stateURL, api.BackendFirstlume}, // address from TF_HTTP_ADDRESS
+		{"http", stateURL, stateURL, api.BackendFirstlume},
+		{"http", "http://elsewhere.example/state", stateURL, "http"},
+		{"http", stateURL + "x/key", stateURL, "http"}, // another stack's prefix, not this one
+		{"http", "", "", "http"},                       // no state token: not Firstlume's
+		{"s3", "", stateURL, "s3"},
+	} {
+		if c.address == "" {
+			writeBackend(t, dir, c.typ)
+		} else {
+			writeBackend(t, dir, c.typ, c.address)
+		}
+		found, err := checkBackends(dir, "", c.stateURL, &out)
+		if err != nil {
+			t.Fatalf("%s %q: %v", c.typ, c.address, err)
+		}
+		if want := []api.UnitBackend{{Unit: "", Backend: c.want}}; !reflect.DeepEqual(found, want) {
+			t.Errorf("%s %q: got %+v, want %s", c.typ, c.address, found, c.want)
+		}
 	}
 
 	// run --all: units are the planned ones; one with a source initializes in its cache.
@@ -375,17 +400,22 @@ func TestCheckBackends(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeBackend(t, filepath.Join(work, "net"), "http")
-	writeBackend(t, filepath.Join(work, "app", ".terragrunt-cache", "abc", "def", "modules", "app"), "http")
+	writeBackend(t, filepath.Join(work, "net"), "http", stateURL+"/net")
+	writeBackend(t, filepath.Join(work, "app", ".terragrunt-cache", "abc", "def", "modules", "app"), "http", stateURL+"/app")
 	out.Reset()
-	err := checkBackends(work, plans, &out)
+	found, err = checkBackends(work, plans, stateURL, &out)
 	if err == nil || !strings.Contains(out.String(), "(edge/dns)") {
 		t.Fatalf("edge/dns has no backend: %v\n%s", err, out.String())
 	}
-	writeBackend(t, filepath.Join(work, "edge", "dns"), "http")
+	want := []api.UnitBackend{{Unit: "app", Backend: api.BackendFirstlume}, {Unit: "edge/dns", Backend: "local"}, {Unit: "net", Backend: api.BackendFirstlume}}
+	if !reflect.DeepEqual(found, want) {
+		t.Errorf("got %+v, want %+v", found, want)
+	}
+	writeBackend(t, filepath.Join(work, "edge", "dns"), "s3")
 	out.Reset()
-	if err := checkBackends(work, plans, &out); err != nil || !strings.Contains(out.String(), "3 unit(s)") {
-		t.Fatalf("all units on http: %v\n%s", err, out.String())
+	if _, err := checkBackends(work, plans, stateURL, &out); err != nil ||
+		!strings.Contains(out.String(), "http (Firstlume): 2 unit(s)") || !strings.Contains(out.String(), "s3: 1 unit(s)") {
+		t.Fatalf("two units in Firstlume, one in s3: %v\n%s", err, out.String())
 	}
 }
 

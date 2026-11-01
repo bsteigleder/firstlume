@@ -567,6 +567,19 @@ type ApplyProgress struct {
 	Errors []ApplyError `json:"errors,omitempty"`
 }
 
+// BackendFirstlume is the backend of a unit whose state is in this
+// Firstlume: backend "http" with no address or one under the stack's state URL.
+const BackendFirstlume = "firstlume"
+
+// UnitBackend is the state backend a unit's init configured (spec 0002
+// R2.3): BackendFirstlume, "http" for another server, "local", "s3" and so on.
+type UnitBackend struct {
+	// Unit is the unit's directory as in ResourceChange.Unit: empty when the
+	// stack is a single unit.
+	Unit    string `json:"unit"`
+	Backend string `json:"backend"`
+}
+
 // ApplyProgressRequest carries the resources that changed since the last
 // report. An empty one says the apply reports progress at all.
 type ApplyProgressRequest struct {
@@ -669,6 +682,9 @@ type Run struct {
 	Config *StackConfig `json:"config,omitempty"`
 	// SettingsUsed is what the plan ran with: effective settings and variables (no secret values).
 	SettingsUsed *RunSettings `json:"settings_used,omitempty"`
+	// UnitBackends is where each unit keeps its state, as the plan found
+	// after init (spec 0002 R2.3). Nil for runs from before it was recorded.
+	UnitBackends []UnitBackend `json:"unit_backends,omitempty"`
 	// ApplyTotals is set on a single run read, once an apply that reported
 	// progress resource by resource has finished.
 	ApplyTotals *ApplyTotals `json:"apply_totals,omitempty"`
@@ -926,8 +942,21 @@ type StackResources struct {
 	// apply has fixed since.
 	Drift *ResourceDrift `json:"drift,omitempty"`
 	// StateOutside says an apply ran but Firstlume has no state for the
-	// stack: its code keeps the state in another backend.
+	// stack: its code keeps the state in another backend. Set only for stacks
+	// whose runs never recorded their backends (Outside says it then).
 	StateOutside bool `json:"state_outside,omitempty"`
+	// Outside lists the units whose state is in another backend, from the
+	// latest run that recorded the backends (spec 0002 R2.3).
+	Outside *OutsideUnits `json:"outside,omitempty"`
+}
+
+// OutsideUnits are the units the latest run found keeping their state
+// outside Firstlume, and that run.
+type OutsideUnits struct {
+	RunID   string        `json:"run_id"`
+	RunType RunType       `json:"run_type"`
+	At      time.Time     `json:"at"`
+	Units   []UnitBackend `json:"units"`
 }
 
 // ResourceUnit is one unit's current state and the resources in it.

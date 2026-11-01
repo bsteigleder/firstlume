@@ -12,6 +12,7 @@ import {
   type Run,
   type RunStep,
   type Stack,
+  type UnitBackend,
 } from "../api";
 import { ChevronRightIcon, ExternalIcon } from "../icons";
 import { useCrumbs, useOrg } from "../org";
@@ -177,10 +178,12 @@ export function RunPage() {
             drift={isDrift}
             ack={awaiting && confirmRequired ? { acked, toggle: (k) => setAcked((a) => ({ ...a, [k]: !a[k] })), origin: settings.data?.effective.confirm_destructive.origin } : null}
             planning={r.status === "queued" || r.status === "planning"}
+            backends={r.unit_backends}
           />
         </section>
         <aside className="run-aside">
           <CommitCard run={r} stack={s} />
+          <StateCard run={r} />
           {s && <ConfigCard run={r} stack={s} />}
         </aside>
       </div>
@@ -418,13 +421,16 @@ function ActionCounts({ changes }: { changes: ResourceChange[] }) {
   );
 }
 
-function ChangeList({ changes, drift, ack, planning }: {
+function ChangeList({ changes, drift, ack, planning, backends }: {
   changes: ResourceChange[] | null;
   drift: boolean;
   ack: { acked: Record<string, boolean>; toggle: (k: string) => void; origin?: Level } | null;
   planning: boolean;
+  backends?: UnitBackend[];
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  // Units outside Firstlume get a chip on their cards; the normal case gets none.
+  const elsewhere = new Map((backends ?? []).filter((b) => b.backend !== "firstlume").map((b) => [b.unit, b.backend]));
   if (!changes) return null;
   if (changes.length === 0) {
     return <div className="empty">{planning ? "The plan is still running. Changes show up here when it finishes." : "Nothing changes."}</div>;
@@ -451,6 +457,7 @@ function ChangeList({ changes, drift, ack, planning }: {
                 change={c}
                 drift={drift}
                 ack={ack}
+                backend={elsewhere.get(c.unit ?? "")}
                 open={!!open[changeKey(c)]}
                 onToggle={() => setOpen((o) => ({ ...o, [changeKey(c)]: !o[changeKey(c)] }))}
               />
@@ -464,10 +471,12 @@ function ChangeList({ changes, drift, ack, planning }: {
 
 // Collapsed by default: a long plan reads as a list of names, and the
 // attribute diff opens per resource. Warnings and acks always show.
-function ChangeCard({ change: c, drift, ack, open, onToggle }: {
+function ChangeCard({ change: c, drift, ack, backend, open, onToggle }: {
   change: ResourceChange;
   drift: boolean;
   ack: { acked: Record<string, boolean>; toggle: (k: string) => void; origin?: Level } | null;
+  // backend is where the card's unit keeps its state, when not in Firstlume.
+  backend?: string;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -493,6 +502,11 @@ function ChangeCard({ change: c, drift, ack, open, onToggle }: {
           </span>
         )}
         <span className="grow" />
+        {backend && (
+          <span className={backend === "local" ? "badge bad" : "badge idle"} title={`This unit keeps its state in backend ${backend}`}>
+            state: {backend}
+          </span>
+        )}
         <span className="mono muted small">{c.unit ? `${c.unit} · ${c.address}` : c.address}</span>
       </button>
       {c.action === "delete" && !drift && <p className="change-warning bad">This resource and anything stored in it will be deleted.</p>}
@@ -590,6 +604,107 @@ function CommitCard({ run, stack }: { run: Run; stack: Stack | null }) {
       )}
     </section>
   );
+}
+
+// StateCard shows where each unit keeps its state, as the plan found after
+// init (spec 0002 R2.3): Firstlume first, then each other backend with its units.
+function StateCard({ run }: { run: Run }) {
+  const { link } = useOrg();
+  const found = run.unit_backends;
+  const groups = new Map<string, string[]>();
+  for (const b of found ?? []) groups.set(b.backend, [...(groups.get(b.backend) ?? []), b.unit]);
+  const order = [...groups.keys()].sort((a, b) => (a === "firstlume" ? -1 : b === "firstlume" ? 1 : a.localeCompare(b)));
+  const single = found?.length === 1 && found[0].unit === "";
+  const resources = (
+    <Link className="small" to={link(`s/${run.stack_id}/resources`)}>
+      See resources
+    </Link>
+  );
+  let empty = "";
+  if (!found) {
+    const planned = run.status !== "queued" && run.status !== "planning";
+    empty = !planned
+      ? `Read after Init.${run.config?.run_all ? " With run --all, when the plan finishes." : ""}`
+      : run.status === "failed" || run.status === "canceled"
+        ? "Not recorded: the plan stopped before reading the backends, or the run is older than this record."
+        : "Not recorded: this run is older than the per-unit record. Its Init log still lists the backends.";
+  }
+  return (
+    <section className={found?.some((b) => b.backend === "local") ? "card side-card state-card failed" : "card side-card state-card"} aria-label="State">
+      <h2 className="card-label">State</h2>
+      {empty && <p className="muted small">{empty}</p>}
+      {single && (
+        <>
+          <div className="state-group-head">
+            <BackendBadge backend={found[0].backend} />
+            <span className="grow" />
+            {found[0].backend === "firstlume" && resources}
+          </div>
+          <p className="muted small">{backendNote(found[0].backend, true)}</p>
+        </>
+      )}
+      {!single && found && (
+        <>
+          <p className="muted small">Where each unit keeps its state, read after Terragrunt initialized it.</p>
+          {order.map((b) => {
+            const units = groups.get(b)!;
+            const list = (
+              <ul className="state-units">
+                {units.map((u) => (
+                  <li key={u} className="mono">
+                    {u || "(root)"}
+                  </li>
+                ))}
+              </ul>
+            );
+            return (
+              <div key={b} className="state-group">
+                <div className="state-group-head">
+                  <BackendBadge backend={b} />
+                  <strong>
+                    {units.length} unit{units.length === 1 ? "" : "s"}
+                  </strong>
+                  <span className="grow" />
+                  {b === "firstlume" && resources}
+                </div>
+                {b === "firstlume" ? (
+                  <details>
+                    <summary className="small">Show units</summary>
+                    {list}
+                  </details>
+                ) : (
+                  <>
+                    {list}
+                    <p className={b === "local" ? "danger-text small" : "muted small"}>{backendNote(b, false)}</p>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
+    </section>
+  );
+}
+
+function BackendBadge({ backend }: { backend: string }) {
+  if (backend === "firstlume") return <span className="badge ok">Firstlume</span>;
+  if (backend === "local") return <span className="badge bad">local</span>;
+  return <span className="badge idle">{backend === "http" ? "http · another server" : backend}</span>;
+}
+
+function backendNote(backend: string, single: boolean): string {
+  switch (backend) {
+    case "firstlume":
+      return "backend “http”, read after Init.";
+    case "local":
+      return "On the runner’s disk, which is gone when the run ends. The plan stops here (see the Plan log).";
+    case "http":
+      return single
+        ? "backend “http” with an address that isn’t this Firstlume. Firstlume doesn’t read this state."
+        : "backend “http” on another server. Firstlume doesn’t read, lock or version this state.";
+  }
+  return "Firstlume doesn’t read, lock or version this state.";
 }
 
 function ConfigCard({ run, stack }: { run: Run; stack: Stack }) {

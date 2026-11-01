@@ -355,6 +355,14 @@ export interface StackResources {
   drift?: { run_id: string; at: string; resources: number };
   /** An apply ran but the stack has no state in Firstlume: the code keeps it elsewhere. */
   state_outside?: boolean;
+  // Units the latest run found keeping their state outside Firstlume (R2.3).
+  outside?: { run_id: string; run_type: RunType; at: string; units: UnitBackend[] };
+}
+
+// Where a unit keeps its state: "firstlume", "http" (another server), "local", "s3"...
+export interface UnitBackend {
+  unit: string;
+  backend: string;
 }
 
 export interface RunSettings {
@@ -383,6 +391,7 @@ export interface Run {
   acknowledged?: string[];
   config?: StackConfig;
   settings_used?: RunSettings;
+  unit_backends?: UnitBackend[];
   approved_at?: string;
   started_at?: string;
   finished_at?: string;
