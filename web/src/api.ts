@@ -211,6 +211,11 @@ export interface EffectiveSettings {
   registries: EffectiveRegistry[];
 }
 
+/** Where an organization's state versions are written; "installation" is the installation's own storage. */
+export interface StateStorageSettings {
+  current: { kind: "installation" | "s3"; bucket?: string; folder?: string };
+}
+
 export interface SettingsResponse {
   level: LevelSettings;
   effective: EffectiveSettings;
@@ -498,6 +503,7 @@ export const api = {
       getStack: (id: string) => request<Stack>("GET", `${p}/stacks/${id}`),
       updateStack: (id: string, req: UpdateStackRequest) => request<Stack>("PATCH", `${p}/stacks/${id}`, req),
       deleteStack: (id: string) => request<void>("DELETE", `${p}/stacks/${id}`),
+      getStateStorage: () => request<StateStorageSettings>("GET", `${p}/state-storage`),
       listRuns: (stackID: string, limit = 50) => request<Run[]>("GET", `${p}/stacks/${stackID}/runs?limit=${limit}`),
       createRun: (stackID: string, type: RunType, ref = "") => request<Run>("POST", `${p}/stacks/${stackID}/runs`, { type, ref }),
       stateUnits: (stackID: string) => request<StateUnit[]>("GET", `${p}/stacks/${stackID}/state`),

@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
-import type { Folder, GitConnection } from "../api";
+import { ApiError, settingsPath, type Folder, type GitConnection, type Stack } from "../api";
 import { useOrg } from "../org";
-import { Modal, useAction } from "../ui";
+import { Modal, useAction, useData } from "../ui";
 import { NewStackWizard } from "./NewStackWizard";
 
 /** Creates a folder (parentID) or renames one (folder). */
@@ -54,6 +54,67 @@ export function FolderNameDialog({ parentID, folder, onClose }: { parentID?: str
           </button>
           <button className="primary" disabled={busy || !name.trim()}>
             {folder ? "Rename" : "Create folder"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/** Renames a stack; everything else about it stays as it is. */
+export function RenameStackDialog({ stack, onClose, onSaved }: { stack: Stack; onClose: () => void; onSaved: () => Promise<void> }) {
+  const { api, reloadTree, folderChain, folderLabel } = useOrg();
+  const [name, setName] = useState(stack.name);
+  const { busy, error, run } = useAction();
+  const storage = useData(() => api.getStateStorage(), [api]);
+  const settings = useData(() => api.getSettings(settingsPath({ kind: "stack", id: stack.id })), [api, stack.id]);
+  const parent = folderChain(stack.folder_id).at(-1)?.name;
+  const where = stack.folder_id ? folderLabel(stack.folder_id) : "the top level";
+  const unchanged = name.trim() === stack.name;
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (unchanged) return onClose();
+    const ok = await run(async () => {
+      try {
+        await api.updateStack(stack.id, { name });
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409)
+          throw new Error(`“${name.trim()}” already exists in ${where}. Names are unique per folder, ignoring case.`);
+        throw err;
+      }
+      await Promise.all([reloadTree(), onSaved()]);
+    });
+    if (ok) onClose();
+  }
+
+  return (
+    <Modal title="Rename stack" onClose={onClose}>
+      <form className="modal-body" onSubmit={submit}>
+        <label className="field">
+          Name
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus required aria-invalid={!!error} />
+        </label>
+        {error && <div className="form-error">{error}</div>}
+        <p className="muted">Runs, state, settings, variables and tokens stay with the stack, and its link doesn’t change.</p>
+        {storage.data && storage.data.current.kind !== "installation" && (
+          <p className="notice">
+            New state versions are saved under <span className="mono">…/{parent ? `${parent}/` : ""}{name.trim() || "…"}/</span> in the organization’s
+            storage. Earlier versions stay where they are and remain readable.
+          </p>
+        )}
+        {settings.data?.effective.vault_role.value && (
+          <p className="notice notice-attention">
+            Runs’ Vault tokens carry the new name in <span className="mono">stack_name</span>. A Vault role bound to{" "}
+            <span className="mono">stack_id</span> keeps working; one bound to the name needs updating.
+          </p>
+        )}
+        <div className="form-actions">
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="primary" disabled={busy || !name.trim()}>
+            Rename
           </button>
         </div>
       </form>
