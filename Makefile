@@ -104,6 +104,11 @@ helm-lint:
 	helm template test $(CHART) --set controlPlane.database.url=postgres://x --set controlPlane.publicURL=https://fl.example.com \
 	  --set controlPlane.auth.oidc.enabled=true --set controlPlane.auth.oidc.issuer=https://gitea.example.com \
 	  --set controlPlane.auth.oidc.clientId=firstlume --set controlPlane.auth.oidc.existingSecret=firstlume-oidc > /dev/null
+	@# Runs in their own namespace: the agent's Role and RoleBinding, the executor
+	@# ServiceAccount and the ClusterRoleBinding subject all move there.
+	test "$$(helm template test $(CHART) -n fl --set controlPlane.database.url=postgres://x \
+	  --set agent.executor.namespace=fl-runs --set 'agent.executor.serviceAccount.clusterRoles={view}' \
+	  | grep -cE '^ *namespace: fl-runs$$|^ *value: "fl-runs"$$')" = 5
 
 docker-build:
 	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE) .

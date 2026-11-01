@@ -144,7 +144,11 @@ agent:
   affinity: {}
 
   executor:
-    # Namespace where run Jobs are created. Empty = release namespace.
+    # Namespace where run Jobs are created. Empty = release namespace. It must
+    # already exist. A namespace of their own lets you guard run pods (no exec
+    # or port-forward, only the executor ServiceAccount, e.g. with a
+    # ValidatingAdmissionPolicy) without blocking access to the server and the
+    # database in the release namespace.
     namespace: ""
     image:
       # Empty = same image as above.
