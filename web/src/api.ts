@@ -231,6 +231,7 @@ export interface Run {
   updated_at: string;
 }
 
+/** An active run, or one that failed within the last hour. */
 export interface ActiveRun extends Run {
   stack_name: string;
   folder_path: string[];
@@ -388,7 +389,7 @@ export const api = {
       listRuns: (stackID: string, limit = 50) => request<Run[]>("GET", `${p}/stacks/${stackID}/runs?limit=${limit}`),
       createRun: (stackID: string, type: RunType, ref = "") => request<Run>("POST", `${p}/stacks/${stackID}/runs`, { type, ref }),
 
-      activeRuns: () => request<ActiveRun[]>("GET", `${p}/runs?active=true`),
+      activeRuns: () => request<ActiveRun[]>("GET", `${p}/runs?active=true&failed_within=1h`),
       getRun: (id: string) => request<Run>("GET", `${p}/runs/${id}`),
       changes: (id: string) => request<ResourceChange[]>("GET", `${p}/runs/${id}/changes`),
       steps: (id: string) => request<RunStep[]>("GET", `${p}/runs/${id}/steps`),

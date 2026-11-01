@@ -147,8 +147,9 @@ export function OrgShell() {
 
 function Header({ crumbs, onOpenRuns }: { crumbs: Crumb[]; onOpenRuns: () => void }) {
   const { active } = useOrg();
-  const running = active.filter((r) => r.status !== "awaiting_approval").length;
-  const waiting = active.length - running;
+  const waiting = active.filter((r) => r.status === "awaiting_approval").length;
+  const failed = active.filter((r) => r.status === "failed").length;
+  const running = active.length - waiting - failed;
   return (
     <header className="topbar">
       <nav aria-label="Breadcrumb" className="crumbs">
@@ -159,12 +160,13 @@ function Header({ crumbs, onOpenRuns }: { crumbs: Crumb[]; onOpenRuns: () => voi
           </span>
         ))}
       </nav>
-      <button className="runs-pill" onClick={onOpenRuns} aria-label={`Active runs: ${running} running, ${waiting} need approval`}>
+      <button className="runs-pill" onClick={onOpenRuns} aria-label={`Active runs: ${running} running, ${waiting} need approval${failed ? `, ${failed} failed in the last hour` : ""}`}>
         <span className={`badge ${running ? "run" : "idle"}`}>
           {running > 0 && <span className="dot pulse" aria-hidden />}
           {running} running
         </span>
         <span className={`badge ${waiting ? "warn" : "idle"}`}>{waiting} need approval</span>
+        {failed > 0 && <span className="badge bad">{failed} failed</span>}
       </button>
       <AccountMenu />
     </header>
@@ -446,10 +448,12 @@ function ActiveRunsDrawer({ onClose }: { onClose: () => void }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+  const failed = active.filter((r) => r.status === "failed");
   const groups: { title: string; runs: ActiveRun[] }[] = [
     { title: "Needs approval", runs: active.filter((r) => r.status === "awaiting_approval") },
     { title: "Running", runs: active.filter((r) => r.status === "planning" || r.status === "applying") },
     { title: "Queued", runs: active.filter((r) => r.status === "queued" || r.status === "apply_queued") },
+    { title: "Failed in the last hour", runs: failed },
   ].filter((g) => g.runs.length > 0);
 
   return (
@@ -457,7 +461,7 @@ function ActiveRunsDrawer({ onClose }: { onClose: () => void }) {
       <aside className="drawer" aria-label="Active runs">
         <header className="drawer-header">
           <h2>
-            Active runs <span className="muted">· {active.length}</span>
+            Active runs <span className="muted">· {active.length - failed.length}</span>
           </h2>
           <button className="icon-btn" aria-label="Close" onClick={onClose}>
             <CloseIcon />
@@ -483,7 +487,7 @@ function ActiveRunsDrawer({ onClose }: { onClose: () => void }) {
                   </span>
                   <span className="queue-side">
                     <StatusBadge status={r.status} />
-                    <span className="muted small">{timeAgo(r.created_at)}</span>
+                    <span className="muted small">{timeAgo(r.status === "failed" && r.finished_at ? r.finished_at : r.created_at)}</span>
                   </span>
                 </Link>
               ))}

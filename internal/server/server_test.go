@@ -764,6 +764,28 @@ func TestActiveRuns(t *testing.T) {
 		}
 	}
 	h.call("GET", "/runs", nil, http.StatusBadRequest, nil)
+
+	// Runs that failed recently show up only when asked for, after the active ones.
+	fail := func(stack, ago string) api.Run {
+		t.Helper()
+		run := h.run(h.stack("", stack, "").ID, api.RunPlan)
+		_, err := h.pool.Exec(ctx, `UPDATE runs SET status = 'failed', finished_at = now() - $2::interval WHERE id = $1`, run.ID, ago)
+		must(t, err)
+		return run
+	}
+	rd := fail("vpn", "10 minutes")
+	fail("old", "2 hours")
+
+	h.call("GET", "/runs?active=true", nil, http.StatusOK, &active)
+	if len(active) != 3 {
+		t.Fatalf("failed runs listed without failed_within: %+v", active)
+	}
+	h.call("GET", "/runs?active=true&failed_within=1h", nil, http.StatusOK, &active)
+	if len(active) != 4 || active[3].ID != rd.ID || active[3].Status != api.StatusFailed || active[3].StackName != "vpn" {
+		t.Fatalf("the run that failed within the hour should come last, and the older one not at all: %+v", active)
+	}
+	h.call("GET", "/runs?active=true&failed_within=soon", nil, http.StatusBadRequest, nil)
+	h.call("GET", "/runs?active=true&failed_within=-1h", nil, http.StatusBadRequest, nil)
 }
 
 // CA1b.1–CA1b.3, CA1b.6, CA1b.7: changes, confirmation of destructive changes,

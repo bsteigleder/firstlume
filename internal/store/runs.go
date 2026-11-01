@@ -170,8 +170,9 @@ func (s *Store) ScheduleDriftRuns(ctx context.Context) (int64, error) {
 }
 
 // ListActiveRuns returns an organization's active runs: those awaiting
-// approval first, then the most recent.
-func (s *Store) ListActiveRuns(ctx context.Context, orgID string) ([]api.ActiveRun, error) {
+// approval first, then the most recent. With failedWithin > 0 it also returns
+// the runs that failed within that window, after the active ones.
+func (s *Store) ListActiveRuns(ctx context.Context, orgID string, failedWithin time.Duration) ([]api.ActiveRun, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+runColumns+`, st.name,
 		       coalesce((SELECT array_agg(f.name ORDER BY array_position(pf.path, f.id)) FROM folders f
@@ -179,8 +180,11 @@ func (s *Store) ListActiveRuns(ctx context.Context, orgID string) ([]api.ActiveR
 		FROM runs r
 		JOIN stacks st ON st.id = r.stack_id
 		LEFT JOIN folders pf ON pf.id = st.folder_id
-		WHERE r.organization_id = $1 AND r.status IN `+activeStatuses+`
-		ORDER BY r.status = 'awaiting_approval' DESC, r.created_at DESC`, orgID)
+		WHERE r.organization_id = $1
+		  AND (r.status IN `+activeStatuses+`
+		       OR ($2 > 0 AND r.status = 'failed' AND r.finished_at > now() - make_interval(secs => $2)))
+		ORDER BY r.status = 'awaiting_approval' DESC, r.status = 'failed', coalesce(r.finished_at, r.created_at) DESC`,
+		orgID, failedWithin.Seconds())
 	if err != nil {
 		return nil, err
 	}

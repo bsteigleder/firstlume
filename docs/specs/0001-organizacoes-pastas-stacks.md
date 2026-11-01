@@ -399,6 +399,7 @@ GET    /api/v1/orgs/{org}/stacks/{id}                PATCH, DELETE
 GET    /api/v1/orgs/{org}/stacks/{id}/runs           POST
 GET    /api/v1/orgs/{org}/runs/{id}                  + approve, discard, cancel, logs (como hoje)
 GET    /api/v1/orgs/{org}/runs?active=true           → runs ativas da organização, com stack e caminho de pastas
+                                                     (&failed_within=1h inclui as que falharam nesse intervalo)
 GET    /api/v1/orgs/{org}/runs/{id}/changes          → mudanças do plano, por recurso (R11)
 POST   /api/v1/orgs/{org}/runs/{id}/approve          {acknowledged: ["aws_db_instance.legacy", ...]} quando R11.5 está ligado
 

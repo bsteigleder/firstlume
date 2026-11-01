@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -405,7 +406,17 @@ func (s *Server) listActiveRuns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "only ?active=true is supported; list a stack's runs under /stacks/{id}/runs")
 		return
 	}
-	out, err := s.store.ListActiveRuns(r.Context(), orgID(r))
+	// failed_within (e.g. "1h") also lists the runs that failed that recently.
+	var failedWithin time.Duration
+	if v := r.URL.Query().Get("failed_within"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 || d > 7*24*time.Hour {
+			writeError(w, http.StatusBadRequest, "failed_within must be a duration between 1s and 168h, such as 1h")
+			return
+		}
+		failedWithin = d
+	}
+	out, err := s.store.ListActiveRuns(r.Context(), orgID(r), failedWithin)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
