@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -141,6 +142,11 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 		log.Info("bootstrap agent registered", "name", name)
 	}
 
+	auth, err := authConfig()
+	if err != nil {
+		return err
+	}
+
 	srv := server.New(server.Config{
 		Addr:             env("FIRSTLUME_LISTEN_ADDR", ":8080"),
 		AdminToken:       adminToken,
@@ -148,8 +154,51 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 		StateMaxBytes:    int64(stateMaxMiB) << 20,
 		UI:               web.FS(),
 		PublicURL:        os.Getenv("FIRSTLUME_PUBLIC_URL"),
+		Auth:             auth,
 	}, st, keys, log)
 	return srv.Run(ctx)
+}
+
+// authConfig reads how people sign in (spec 0001, R7.12). Setting
+// FIRSTLUME_OIDC_ISSUER turns OIDC sign-in on.
+func authConfig() (server.AuthConfig, error) {
+	cfg := server.AuthConfig{
+		PublicURL:       strings.TrimSuffix(os.Getenv("FIRSTLUME_PUBLIC_URL"), "/"),
+		AdminTokenLogin: boolEnv("FIRSTLUME_ADMIN_TOKEN_LOGIN", true),
+	}
+	if cfg.PublicURL != "" {
+		u, err := url.Parse(cfg.PublicURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return cfg, fmt.Errorf("FIRSTLUME_PUBLIC_URL must be an http(s) URL like https://firstlume.example.com, got %q", cfg.PublicURL)
+		}
+	}
+	issuer := os.Getenv("FIRSTLUME_OIDC_ISSUER")
+	if issuer == "" {
+		return cfg, nil
+	}
+	if cfg.PublicURL == "" {
+		return cfg, errors.New("FIRSTLUME_PUBLIC_URL is required with FIRSTLUME_OIDC_ISSUER: the provider sends users back to <public URL>/auth/callback")
+	}
+	for _, k := range []string{"FIRSTLUME_OIDC_CLIENT_ID", "FIRSTLUME_OIDC_CLIENT_SECRET"} {
+		if os.Getenv(k) == "" {
+			return cfg, fmt.Errorf("%s is required with FIRSTLUME_OIDC_ISSUER", k)
+		}
+	}
+	cfg.OIDC = &server.OIDCConfig{
+		ProviderName:  env("FIRSTLUME_OIDC_PROVIDER_NAME", "Gitea"),
+		Issuer:        issuer,
+		ClientID:      os.Getenv("FIRSTLUME_OIDC_CLIENT_ID"),
+		ClientSecret:  os.Getenv("FIRSTLUME_OIDC_CLIENT_SECRET"),
+		Scopes:        listEnv("FIRSTLUME_OIDC_SCOPES", "openid profile email groups"),
+		GroupsClaim:   env("FIRSTLUME_OIDC_GROUPS_CLAIM", "groups"),
+		AllowedGroups: listEnv("FIRSTLUME_OIDC_ALLOWED_GROUPS", ""),
+	}
+	return cfg, nil
+}
+
+// listEnv splits a list separated by commas or spaces.
+func listEnv(key, def string) []string {
+	return strings.FieldsFunc(env(key, def), func(r rune) bool { return r == ',' || r == ' ' })
 }
 
 // configureStateStorage picks where state versions are stored (spec 0002,

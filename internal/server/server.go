@@ -3,11 +3,11 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -31,6 +31,8 @@ type Config struct {
 	// PublicURL is how others reach this server; it is the issuer of run
 	// JWTs (spec 0003). Defaults to http:// and Addr.
 	PublicURL string
+	// Auth is how people sign in. The admin token always works.
+	Auth AuthConfig
 }
 
 type Server struct {
@@ -38,6 +40,8 @@ type Server struct {
 	store *store.Store
 	keys  *secrets.Keys
 	log   *slog.Logger
+	// oidc is nil without a sign-in provider.
+	oidc *oidcClient
 }
 
 func New(cfg Config, st *store.Store, keys *secrets.Keys, log *slog.Logger) *Server {
@@ -61,7 +65,17 @@ func New(cfg Config, st *store.Store, keys *secrets.Keys, log *slog.Logger) *Ser
 	if cfg.StateMaxBytes == 0 {
 		cfg.StateMaxBytes = defaultStateMaxBytes
 	}
-	return &Server{cfg: cfg, store: st, keys: keys, log: log}
+	if cfg.Auth.SessionTTL == 0 {
+		cfg.Auth.SessionTTL = 12 * time.Hour
+	}
+	if cfg.Auth.DiscoveryRetry == 0 {
+		cfg.Auth.DiscoveryRetry = time.Minute
+	}
+	s := &Server{cfg: cfg, store: st, keys: keys, log: log}
+	if cfg.Auth.OIDC != nil {
+		s.oidc = &oidcClient{cfg: *cfg.Auth.OIDC, retry: cfg.Auth.DiscoveryRetry}
+	}
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -77,8 +91,10 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 
+	r.Route("/auth", s.authRoutes)
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(s.requireAdmin)
+		r.Use(s.requireUser)
+		r.Get("/me", s.me)
 		s.userRoutes(r)
 	})
 	r.Route("/agent/v1", func(r chi.Router) {
@@ -94,7 +110,13 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/.well-known/openid-configuration", s.openIDConfiguration)
 	r.Get("/.well-known/jwks.json", s.jwks)
 	if s.cfg.UI != nil {
-		r.Handle("/*", uiHandler(s.cfg.UI))
+		var avatars []string
+		if s.oidc != nil {
+			if u, err := url.Parse(s.oidc.cfg.Issuer); err == nil && u.Host != "" {
+				avatars = append(avatars, u.Scheme+"://"+u.Host)
+			}
+		}
+		r.Handle("/*", uiHandler(s.cfg.UI, avatars...))
 	}
 	return r
 }
@@ -109,6 +131,8 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.sweepStaleRuns(ctx)
 	go s.scheduleDriftRuns(ctx)
 	go s.purgeState(ctx)
+	go s.purgeAuth(ctx)
+	go s.warmOIDC(ctx)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -202,17 +226,6 @@ const (
 	ctxOrg
 	ctxStateActor
 )
-
-func (s *Server) requireAdmin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tok := bearer(r)
-		if tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.AdminToken)) != 1 {
-			writeError(w, http.StatusUnauthorized, "invalid or missing token")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
 
 func (s *Server) requireAgent(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

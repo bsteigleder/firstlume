@@ -259,7 +259,33 @@ export interface CreateAgentResponse {
   token: string;
 }
 
+/** Someone signed in through the OIDC provider (spec 0001, R7.2). */
+export interface User {
+  id: string;
+  login: string;
+  name: string;
+  email: string;
+  avatar_url: string;
+  groups: string[];
+  last_login_at: string;
+}
+
+/** Who is calling: a signed-in user, or the admin token. */
+export interface Me {
+  kind: "user" | "admin-token";
+  user?: User;
+  /** The user's organizations; empty for the admin token. */
+  organizations: Organization[];
+}
+
+/** What the login screen offers (R7.14). */
+export interface AuthConfig {
+  oidc?: { name: string; available: boolean };
+  admin_token_login: boolean;
+}
+
 // The admin token lives in sessionStorage: it survives reloads but not closing the tab.
+// A signed-in user has an HttpOnly session cookie instead, which the browser sends itself.
 const tokenKey = "firstlume.token";
 
 export function getToken(): string | null {
@@ -294,11 +320,16 @@ export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }
 
+/** The admin token's header, or nothing for a session (the cookie goes by itself). */
+function authHeaders(token = getToken()): Record<string, string> {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(method: string, path: string, body?: unknown, token = getToken()): Promise<T> {
   const res = await fetch(`/api/v1${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${token ?? ""}`,
+      ...authHeaders(token),
       ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -329,6 +360,7 @@ export function settingsPath(level: { kind: "organization" } | { kind: "folder" 
 export const api = {
   // Used by the login screen to check a token before storing it.
   checkToken: (token: string) => request<Organization[]>("GET", "/orgs", undefined, token),
+  me: () => request<Me>("GET", "/me"),
 
   listOrgs: () => request<Organization[]>("GET", "/orgs"),
   createOrg: (slug: string, name: string) => request<Organization>("POST", "/orgs", { slug, name }),
@@ -402,7 +434,7 @@ export interface LogStreamHandlers {
 export async function streamLogs(url: string, cursor: string, h: LogStreamHandlers, signal: AbortSignal): Promise<string> {
   const res = await fetch(`${url}?follow=true`, {
     headers: {
-      Authorization: `Bearer ${getToken() ?? ""}`,
+      ...authHeaders(),
       Accept: "text/event-stream",
       ...(cursor ? { "Last-Event-ID": cursor } : {}),
     },
@@ -444,4 +476,22 @@ export async function streamLogs(url: string, cursor: string, h: LogStreamHandle
       else if (event === "end") h.onEnd(payload.status);
     }
   }
+}
+
+/** What the login screen offers. Public: works before signing in. */
+export async function authConfig(): Promise<AuthConfig> {
+  const res = await fetch("/auth/config");
+  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  return res.json();
+}
+
+/** Ends the session on the server (R7.3) and forgets the admin token. */
+export async function signOut(): Promise<void> {
+  setToken(null);
+  await fetch("/auth/logout", { method: "POST" }).catch(() => undefined);
+}
+
+/** Where "Continue with <provider>" goes; the user comes back to returnTo. */
+export function loginURL(returnTo: string): string {
+  return `/auth/login?return_to=${encodeURIComponent(returnTo)}`;
 }

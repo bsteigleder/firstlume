@@ -124,6 +124,34 @@ spec:
                 secretKeyRef:
                   name: {{ include "firstlume.controlPlaneSecret" . }}
                   key: admin-token
+            {{- with .Values.controlPlane.publicUrl }}
+            - name: FIRSTLUME_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: FIRSTLUME_ADMIN_TOKEN_LOGIN
+              value: {{ .Values.controlPlane.auth.adminTokenLogin | quote }}
+            {{- with .Values.controlPlane.auth.oidc }}
+            {{- if .enabled }}
+            {{- $_ := required "controlPlane.publicUrl is required with controlPlane.auth.oidc.enabled" $.Values.controlPlane.publicUrl }}
+            - name: FIRSTLUME_OIDC_PROVIDER_NAME
+              value: {{ .providerName | quote }}
+            - name: FIRSTLUME_OIDC_ISSUER
+              value: {{ required "controlPlane.auth.oidc.issuer is required with OIDC" .issuer | quote }}
+            - name: FIRSTLUME_OIDC_CLIENT_ID
+              value: {{ required "controlPlane.auth.oidc.clientId is required with OIDC" .clientId | quote }}
+            - name: FIRSTLUME_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "controlPlane.auth.oidc.existingSecret is required with OIDC" .existingSecret }}
+                  key: {{ .clientSecretKey }}
+            - name: FIRSTLUME_OIDC_SCOPES
+              value: {{ join " " .scopes | quote }}
+            - name: FIRSTLUME_OIDC_GROUPS_CLAIM
+              value: {{ .groupsClaim | quote }}
+            - name: FIRSTLUME_OIDC_ALLOWED_GROUPS
+              value: {{ join "," .allowedGroups | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.agent.enabled }}
             # Registers the agent that ships in this release.
             - name: FIRSTLUME_BOOTSTRAP_AGENT_NAME

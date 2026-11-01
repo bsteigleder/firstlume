@@ -9,9 +9,12 @@ import (
 )
 
 // uiHandler serves the single-page UI. Paths that are not a file fall back to
-// index.html so client-side routes survive a reload.
-func uiHandler(ui fs.FS) http.Handler {
+// index.html so client-side routes survive a reload. imgOrigins may also
+// serve images, e.g. the sign-in provider with the users' avatars.
+func uiHandler(ui fs.FS, imgOrigins ...string) http.Handler {
 	files := http.FileServerFS(ui)
+	csp := "default-src 'self'; img-src " + strings.Join(append([]string{"'self'", "data:"}, imgOrigins...), " ") +
+		"; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -25,8 +28,7 @@ func uiHandler(ui fs.FS) http.Handler {
 		}
 
 		h := w.Header()
-		h.Set("Content-Security-Policy",
-			"default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		h.Set("Content-Security-Policy", csp)
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 

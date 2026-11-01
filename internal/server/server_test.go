@@ -101,9 +101,15 @@ func newHarnessWith(t *testing.T, cfg Config) *harness {
 	logs := &syncBuffer{}
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg.AdminToken = testAdminToken
-	srv := New(cfg, st, keys, log)
-	ts := httptest.NewServer(srv.Handler())
+	// With OIDC the public URL is the test server's, known once it listens.
+	ts := httptest.NewUnstartedServer(nil)
+	ts.Start()
 	t.Cleanup(ts.Close)
+	if cfg.Auth.OIDC != nil && cfg.Auth.PublicURL == "" {
+		cfg.Auth.PublicURL = ts.URL
+	}
+	srv := New(cfg, st, keys, log)
+	ts.Config.Handler = srv.Handler()
 	return &harness{t: t, url: ts.URL, org: slug, store: st, pool: pool, blobs: store.PostgresBlobs(pool), agent: apiclient.New(ts.URL, agentToken), logs: logs}
 }
 

@@ -1,6 +1,6 @@
 # Spec 0001: organizações, pastas, stacks, herança e Gitea
 
-- **Status:** aprovada em 2026-10-30, com o desenho das telas em https://claude.ai/artifact/Gvhm5NtcncxEjh7a9ug1CK
+- **Status:** aprovada em 2026-10-30, com o desenho das telas em https://claude.ai/artifact/Gvhm5NtcncxEjh7a9ug1CK. **Emenda do login (R7.11 a R7.14, Marco 3a/3b, D6 a D8) aprovada em 2026-10-31.**
 - **Data:** 2026-10-30
 - **Substitui:** o modelo atual de *templates* e *environments*
 
@@ -224,7 +224,7 @@ Esta é a regra central da spec.
   - validade de 12 horas;
   - guardada no servidor (hash), o que permite revogar;
   - "Sair" encerra a sessão no servidor.
-- **R7.4** **Proteção contra CSRF:** toda requisição que altera dados com cookie de sessão exige `Content-Type: application/json` e `Origin` igual à URL pública do Firstlume.
+- **R7.4** **Proteção contra CSRF:** toda requisição que altera dados com cookie de sessão exige `Origin` igual à URL pública do Firstlume e `Content-Type: application/json`. A exceção é `multipart/form-data`, usado pelo import de state; o `Origin` já barra um formulário de outro site. Sem `Origin`, a requisição é recusada.
 - **R7.5** O **token admin da instalação** continua existindo, para automação, bootstrap e emergência. Ele tem acesso a todas as organizações. A tela de login mantém a opção "usar token admin", que pode ser desligada por configuração.
 - **R7.5a** **Configuração na instalação:** o login pelo Gitea é configurado nos values do Helm: URL do Gitea, client ID, e client secret num Secret. É isso que permite o primeiro login, antes de existir qualquer organização.
 - **R7.6** **Acesso (decidido):** as organizações do Firstlume são **criadas do zero** e **não** espelham as organizações do Gitea.
@@ -242,6 +242,43 @@ Esta é a regra central da spec.
   Os perfis do IdP não chegam ao Firstlume pelo login via Gitea, porque o Gitea não repassa os papéis do IdP. Por isso essa spec deve avaliar o login **direto no IdP** por OIDC, o que a R7.2a já permite, e mapear os grupos ou papéis do IdP para papéis do Firstlume. Os papéis entram por nível e são herdados conforme a seção 4.6.
 
 - **R7.9** Runs, aprovações e alterações de configuração registram **quem** fez, pelo login do Gitea ou como `admin-token`. Isso substitui o `admin` fixo de hoje.
+
+#### Emenda de 2026-10-31: quem pode entrar e como instalar
+
+Vem da primeira instalação real: lá o CI já faz login pelo Gitea e só aceita quem é membro de uma organização do Gitea. O Firstlume deve funcionar do mesmo jeito, para que a empresa tenha uma regra só.
+
+- **R7.11** **Quem pode entrar (lista de grupos):** a instalação pode exigir que o usuário pertença a pelo menos um grupo de uma lista (`allowedGroups`).
+  - Os grupos vêm do claim `groups` do token OIDC. No Gitea, com o scope `groups`, esse claim traz as organizações (`acme`) e os times (`acme:infra`), e a lista aceita os dois formatos.
+  - O nome do claim é configurável (`groupsClaim`), para servir a outro provedor (R7.2a).
+  - **Lista vazia:** entra qualquer pessoa que o provedor autenticar, como na R7.1.
+  - **Fora da lista:** o login é recusado, e a tela explica que é preciso ser membro de um dos grupos, sem listar quais. Nenhum usuário é criado.
+  - **Lista configurada, mas o token não traz o claim:** o login é recusado como "fora da lista" (falha fechada). O Gitea omite o claim de quem não pertence a nenhuma organização, então esse é o caso comum. O servidor registra no log que o claim não veio e lembra do scope `groups`, para o caso de ninguém conseguir entrar.
+  - **Quando é verificada:** a cada login. Quem sai do grupo no Gitea perde a entrada no próximo login, e a sessão aberta vale até expirar (12 h, R7.3). Revogar na hora é por "remover membro" (R7.6).
+  - A lista decide só **quem entra**. Ela não dá acesso a nenhuma organização do Firstlume: isso continua sendo convite (R7.6) ou criar a própria (R7.7).
+- **R7.12** **Provedor OIDC na instalação:** valores do Helm e variáveis de ambiente.
+
+  | Valor do Helm (em `controlPlane.`) | Variável | Exemplo / padrão |
+  |---|---|---|
+  | `publicUrl` | `FIRSTLUME_PUBLIC_URL` | `https://firstlume.example.com`; obrigatório com OIDC |
+  | `auth.oidc.enabled` | (liga as abaixo) | `false` |
+  | `auth.oidc.providerName` | `FIRSTLUME_OIDC_PROVIDER_NAME` | `Gitea`, texto do botão "Entrar com …" |
+  | `auth.oidc.issuer` | `FIRSTLUME_OIDC_ISSUER` | `https://gitea.example.com`, o `issuer` do discovery. O Gitea responde sem a barra final; o servidor aceita a barra diferente |
+  | `auth.oidc.clientId` | `FIRSTLUME_OIDC_CLIENT_ID` | |
+  | `auth.oidc.existingSecret` + `clientSecretKey` | `FIRSTLUME_OIDC_CLIENT_SECRET` | Secret existente, key `client-secret` |
+  | `auth.oidc.scopes` | `FIRSTLUME_OIDC_SCOPES` | `openid profile email groups` |
+  | `auth.oidc.groupsClaim` | `FIRSTLUME_OIDC_GROUPS_CLAIM` | `groups` |
+  | `auth.oidc.allowedGroups` | `FIRSTLUME_OIDC_ALLOWED_GROUPS` | lista separada por vírgula; vazia = todos |
+  | `auth.adminTokenLogin` | `FIRSTLUME_ADMIN_TOKEN_LOGIN` | `true` (R7.5) |
+
+  - O endereço de retorno é sempre `<publicUrl>/auth/callback`. É o que se cadastra no app OAuth do provedor, e o servidor recusa subir com OIDC ligado e sem `publicUrl`.
+  - O client secret só entra por Secret existente, nunca em texto nos values. Assim ele pode vir de um cofre (Vault, via operador) e o ArgoCD não guarda segredo.
+  - Na subida, o servidor lê o `/.well-known/openid-configuration` do emissor. Se falhar, ele **sobe mesmo assim**, com o botão do provedor desligado e o token admin funcionando, e tenta de novo a cada minuto. Um provedor fora do ar não pode derrubar o Firstlume.
+- **R7.13** **App OAuth no Gitea:** é um app confidencial, criado por um admin do Gitea (ou por organização). O guia de instalação documenta o passo a passo e o retorno a cadastrar. O `make dev-gitea` cria esse app sozinho (seção 8).
+- **R7.14** **Tela de login:**
+  - mostra "Entrar com <providerName>" quando o OIDC está ligado e o emissor respondeu;
+  - mostra "Usar token admin" quando `adminTokenLogin` está ligado;
+  - sem nenhum dos dois, explica que o login não está configurado e como configurar;
+  - um erro do provedor (login recusado pela R7.11, `state` inválido, provedor fora) volta para a tela de login com uma mensagem clara, nunca uma página em branco ou um JSON.
 
 ### 4.8 Agents
 
@@ -406,7 +443,8 @@ Somem as rotas `/api/v1/templates` e `/api/v1/environments`. As APIs do agent (`
   - publica um repositório de exemplo `acme/infra` com `environments/prod`, `environments/edge` e `environments/dev`, cada um com `.firstlume/config.yaml` e um `terraform_data`;
   - acrescenta ao `.env` as variáveis necessárias.
 - **`deploy/dev/demo.sh`** é atualizado para o fluxo novo: criar pasta, conectar o Gitea, descobrir, criar stack e rodar.
-- **Helm:** novos valores para a URL pública do Firstlume e para o Gitea (URL, client ID, e o client secret num Secret). O login pelo Gitea é opcional: sem ele, só o token admin.
+- **Helm:** novos valores para a URL pública do Firstlume e para o provedor OIDC, listados na R7.12. O login pelo Gitea é opcional: sem ele, só o token admin.
+- **`make dev-gitea`** também cria um time `acme:infra` e um usuário de fora da `acme`, para testar a R7.11 à mão.
 
 ## 9. Entregas e critérios de aceite
 
@@ -464,6 +502,11 @@ Neste marco a autenticação ainda é só o token admin. Os stacks usam uma cone
 
 ### Marco 3: login pelo Gitea, sessões e membros
 
+**Emenda de 2026-10-31:** o marco é entregue em duas partes, para que a primeira instalação possa trocar o token admin por login de pessoas o quanto antes.
+
+- **Marco 3a, login:** CA3.1, CA3.2, CA3.3, CA3.4, CA3.6, CA3.8, CA3.9, CA3.11, CA3.12 e CA3.13, mais a tela de primeiro acesso (primeiro item da CA3.5). Até o 3b, todo usuário logado vê todas as organizações, como o token admin, e a tela avisa isso.
+- **Marco 3b, membros:** o resto da CA3.5 (convite, usuário de fora, remover membro), a CA3.7 e a CA3.10.
+
 - [ ] **CA3.1** "Entrar com Gitea" leva ao Gitea e volta ao Firstlume logado, mostrando nome e avatar.
 - [ ] **CA3.2** Um `state` inválido ou reutilizado no callback é recusado. O fluxo usa PKCE.
 - [ ] **CA3.3** O cookie de sessão é `HttpOnly` e `SameSite=Lax`, e é `Secure` atrás de HTTPS. "Sair" invalida a sessão no servidor: reutilizar o cookie antigo dá 401.
@@ -478,6 +521,13 @@ Neste marco a autenticação ainda é só o token admin. Os stacks usam uma cone
 - [ ] **CA3.8** O token admin continua funcionando para a API. A opção "usar token admin" na tela de login some quando desabilitada por configuração.
 - [ ] **CA3.10** Na fila de runs ativas, as runs do usuário logado (disparadas por ele ou com commit do e-mail dele) aparecem antes das dos outros (R10.5).
 - [ ] **CA3.9** O Helm instala com o login pelo Gitea configurado: URL pública, client ID e secret vindo de um Secret existente. `helm lint` e `helm template` passam com e sem Gitea.
+- [ ] **CA3.11** Lista de grupos (R7.11), com o provedor OIDC falso:
+  - com `allowedGroups: [acme]`, um membro de `acme` entra e um usuário só de `outra` é recusado com a mensagem da R7.11, sem criar usuário;
+  - com `allowedGroups: [acme:infra]`, entra só quem está nesse time;
+  - com a lista configurada e um token sem o claim `groups` (o Gitea omite o claim de quem não é de nenhuma organização), o login é recusado como "fora da lista" e o log diz que o claim faltou;
+  - com a lista vazia, qualquer usuário autenticado entra.
+- [ ] **CA3.12** Com o emissor fora do ar na subida, o servidor sobe, o `/readyz` responde 200, o token admin funciona e o botão do provedor fica desligado. Quando o emissor volta, o botão aparece sem reiniciar (R7.12).
+- [ ] **CA3.13** O servidor não sobe com OIDC ligado e sem `publicUrl`, com uma mensagem que diz qual valor falta. O client secret não aparece em log nem em `helm template` (só a referência ao Secret).
 
 ### Critérios gerais, para todos os marcos
 
@@ -496,6 +546,9 @@ Neste marco a autenticação ainda é só o token admin. Os stacks usam uma cone
 | D5 | Login pelo Gitea ou direto no IdP? | Gitea agora, como pedido. Na spec de papéis, avaliar o IdP direto, porque é lá que os perfis estão (R7.10). |
 | D3 | Nome do item | **Stack**. O nome de cada um, e de cada pasta, é livre. |
 | D4 | Uma pasta pode **remover** uma variável herdada? | Não nesta spec, só sobrescrever (R6.8). |
+| D6 | Quem pode entrar quando há uma lista de grupos? | **Decidido (emenda):** só quem pertence a um grupo da lista, verificado a cada login (R7.11), como o CI da primeira instalação faz. |
+| D7 | Alguém vira administrador da instalação pelo login, como o "admin" do CI? | **Decidido (emenda):** não nesta spec. O token admin já cobre emergência e automação, e todos são administradores das próprias organizações (R7.8). Fica para a spec de papéis. |
+| D8 | Até o Marco 3b, o que um usuário logado vê? | **Decidido (emenda):** todas as organizações, como o token admin, com um aviso na tela. Com a R7.11 limitando quem entra, o risco fica no mesmo grupo de pessoas que hoje recebe o token admin. |
 
 ## 11. Próximas specs (ordem sugerida)
 

@@ -57,6 +57,34 @@ controlPlane:
       accessKeyIdKey: access-key-id
       secretAccessKeyKey: secret-access-key
 
+  # Where browsers reach Firstlume, e.g. https://firstlume.example.com.
+  # Required with OIDC sign-in: the provider sends users back to
+  # <publicUrl>/auth/callback, which is what you register in its OAuth app.
+  publicUrl: ""
+
+  # How people sign in (spec 0001, R7.11 to R7.14). The admin token always
+  # works for the API.
+  auth:
+    # Offer "Use admin token" on the login screen.
+    adminTokenLogin: true
+    oidc:
+      enabled: false
+      # Labels the button: "Sign in with <providerName>".
+      providerName: Gitea
+      # The "issuer" in <issuer>/.well-known/openid-configuration, e.g.
+      # https://gitea.example.com (Gitea has no trailing slash).
+      issuer: ""
+      clientId: ""
+      # Secret holding the OAuth client secret (never put it in values).
+      existingSecret: ""
+      clientSecretKey: client-secret
+      scopes: [openid, profile, email, groups]
+      # Claim with the user's groups. Gitea sends orgs ("acme") and teams
+      # ("acme:infra") with the groups scope.
+      groupsClaim: groups
+      # When not empty, only members of one of these groups can sign in.
+      allowedGroups: []
+
   service:
     type: ClusterIP
     port: 8080
