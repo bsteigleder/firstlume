@@ -18,6 +18,7 @@ import {
   useData,
 } from "../ui";
 import { RenameStackDialog } from "./dialogs";
+import { MoveButton } from "./MoveStack";
 import { RunDialog } from "./RunDialog";
 import { SettingsEditor } from "./SettingsEditor";
 import { StackDeclaration } from "./StackDeclaration";
@@ -70,6 +71,7 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
         actions={
           <>
             <button onClick={() => setRenaming(true)}>Rename</button>
+            <MoveButton stack={s} />
             <button className="primary" onClick={() => setRunning(true)}>
               <PlayIcon /> Run…
             </button>

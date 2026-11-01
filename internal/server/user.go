@@ -39,6 +39,8 @@ func (s *Server) userRoutes(r chi.Router) {
 		r.With(s.requireID).Get("/stacks/{id}", s.getStack)
 		r.With(s.requireID).Patch("/stacks/{id}", s.updateStack)
 		r.With(s.requireID).Delete("/stacks/{id}", s.deleteStack)
+		r.With(s.requireID).Get("/stacks/{id}/move", s.previewMoveStack)
+		r.With(s.requireID).Post("/stacks/{id}/move", s.moveStack)
 		r.With(s.requireID).Get("/stacks/{id}/settings", s.getSettings(api.LevelStack))
 		r.With(s.requireID).Put("/stacks/{id}/settings", s.putSettings(api.LevelStack))
 		r.With(s.requireID).Get("/stacks/{id}/runs", s.listRuns)
@@ -350,6 +352,50 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+// previewMoveStack says what moving the stack to ?folder_id= (empty for the
+// top level) would change in what it inherits, and whether it can move now.
+func (s *Server) previewMoveStack(w http.ResponseWriter, r *http.Request) {
+	folderID := r.URL.Query().Get("folder_id")
+	if folderID != "" && !validUUID(folderID) {
+		writeError(w, http.StatusUnprocessableEntity, "folder_id is not a folder of this organization")
+		return
+	}
+	out, err := s.store.PreviewMoveStack(r.Context(), orgID(r), id(r), folderID)
+	if errors.Is(err, store.ErrInvalid) {
+		writeError(w, http.StatusUnprocessableEntity, "folder_id is not a folder of this organization")
+		return
+	}
+	if err != nil {
+		s.storeError(w, r, err, "stack")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) moveStack(w http.ResponseWriter, r *http.Request) {
+	var req api.MoveStackRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.FolderID != "" && !validUUID(req.FolderID) {
+		writeError(w, http.StatusUnprocessableEntity, "folder_id is not a folder of this organization")
+		return
+	}
+	st, err := s.store.MoveStack(r.Context(), orgID(r), id(r), req.FolderID)
+	switch {
+	case errors.Is(err, store.ErrRunInProgress):
+		writeError(w, http.StatusConflict, "the stack has a run in progress: wait for it to finish, or approve or discard it, then move the stack")
+	case errors.Is(err, store.ErrDuplicate):
+		writeError(w, http.StatusConflict, "that folder already has a stack with this name: rename one of them first")
+	case errors.Is(err, store.ErrInvalid):
+		writeError(w, http.StatusUnprocessableEntity, "folder_id is not a folder of this organization")
+	case err != nil:
+		s.storeError(w, r, err, "stack")
+	default:
+		writeJSON(w, http.StatusOK, st)
+	}
 }
 
 func (s *Server) deleteStack(w http.ResponseWriter, r *http.Request) {

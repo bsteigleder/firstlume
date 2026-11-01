@@ -57,7 +57,7 @@ Isso não serve para como a infraestrutura é organizada de verdade:
 - state backend próprio;
 - Terragrunt nativo (units);
 - Vault como fonte de segredos;
-- mover pastas e stacks de lugar;
+- mover pastas de lugar (mover stacks entrou depois, R3.8);
 - OpenTelemetry;
 - custos.
 
@@ -91,6 +91,7 @@ Isso não serve para como a infraestrutura é organizada de verdade:
 - **R3.5** O lock e a fila de runs são por stack, exatamente como hoje são por environment.
 - **R3.6** Um stack só pode ser excluído sem run ativo, como hoje. Excluir não destrói infraestrutura.
 - **R3.7** Repositório, branch e caminho de um stack podem ser editados. A UI avisa que mudar o caminho muda qual infraestrutura o stack gerencia.
+- **R3.8** (emenda de 2026-10-31, quadros 23 e 24 do canvas) Um stack pode **mudar de pasta**, ou ir para a raiz: arrastando a alça dele na árvore ou na tabela da pasta, ou pela lista de pastas (clique na alça ou "Move…" na página do stack). Antes de mover, a UI mostra o que muda no que ele herda (aprovação, drift, confirmação de delete/replace, papel do Vault, variáveis e credenciais de registry, sem valores de segredo) e avisa o que deixa de existir. É recusado com run na fila, planejando, aguardando aprovação ou aplicando, e quando a pasta de destino já tem um stack com o mesmo nome (R3.1). Runs, state e versões ficam com o stack; as versões novas seguem os nomes da pasta nova (R1.7 da spec 0005). API: `GET /stacks/{id}/move?folder_id=` (prévia) e `POST /stacks/{id}/move`.
 
 ### 4.4 A pasta `.firstlume` e o `config.yaml`
 

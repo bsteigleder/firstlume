@@ -1,9 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
-import { api, signOut, type ActiveRun, type Folder, type Me, type OrgAPI, type Organization, type StackSummary, type Tree, type User } from "./api";
+import { api, signOut, type ActiveRun, type Folder, type Me, type OrgAPI, type Organization, type Stack, type StackSummary, type Tree, type User } from "./api";
 import { ChevronDownIcon, ChevronRightIcon, CloseIcon, FolderIcon, FolderPlusIcon, GearIcon, PlusIcon, SearchIcon } from "./icons";
 import { DeleteFolderDialog, FolderNameDialog, NewStackDialog } from "./pages/dialogs";
-import { ErrorBanner, Initials, StatusBadge, timeAgo, useData } from "./ui";
+import { MoveStackDialog, StackGrip, useStackDrop } from "./pages/MoveStack";
+import { errorMessage, ErrorBanner, Initials, StatusBadge, timeAgo, useData } from "./ui";
 import { useSession } from "./session";
 import { ThemeSwitch } from "./theme";
 
@@ -16,7 +17,13 @@ type Dialog =
   | { kind: "new-folder"; parentID: string }
   | { kind: "rename-folder"; folder: Folder }
   | { kind: "delete-folder"; folder: Folder }
-  | { kind: "new-stack"; folderID: string };
+  | { kind: "new-stack"; folderID: string }
+  | { kind: "move-stack"; stack: Stack; folderID: string };
+
+interface Toast {
+  text: ReactNode;
+  undo?: () => Promise<void>;
+}
 
 interface OrgContextValue {
   org: Organization;
@@ -29,6 +36,12 @@ interface OrgContextValue {
   folderChain: (folderID?: string) => Folder[];
   folderLabel: (folderID?: string) => string;
   open: (d: Dialog) => void;
+  /** The stack being dragged by its grip, if any. */
+  drag: Stack | null;
+  startDrag: (s: Stack) => void;
+  endDrag: () => void;
+  /** Shows a short message at the bottom, with Undo when undo is given. */
+  notify: (text: ReactNode, undo?: () => Promise<void>) => void;
   setCrumbs: (c: Crumb[]) => void;
   link: (path?: string) => string;
 }
@@ -78,6 +91,9 @@ export function OrgShell() {
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [drawer, setDrawer] = useState(false);
+  const [drag, setDrag] = useState<Stack | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const closeToast = useCallback(() => setToast(null), []);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -120,6 +136,10 @@ export function OrgShell() {
     folderChain,
     folderLabel: (id) => folderChain(id).map((f) => f.name).join(" / ") || org.data!.name,
     open: setDialog,
+    drag,
+    startDrag: setDrag,
+    endDrag: () => setDrag(null),
+    notify: (text, undo) => setToast({ text, undo }),
     setCrumbs,
     link: (path = "") => `/o/${slug}${path ? `/${path}` : ""}`,
   };
@@ -141,7 +161,44 @@ export function OrgShell() {
       {dialog?.kind === "rename-folder" && <FolderNameDialog folder={dialog.folder} onClose={() => setDialog(null)} />}
       {dialog?.kind === "delete-folder" && <DeleteFolderDialog folder={dialog.folder} onClose={() => setDialog(null)} />}
       {dialog?.kind === "new-stack" && <NewStackDialog folderID={dialog.folderID} onClose={() => setDialog(null)} />}
+      {dialog?.kind === "move-stack" && <MoveStackDialog stack={dialog.stack} folderID={dialog.folderID} onClose={() => setDialog(null)} />}
+      {toast && <ToastBar toast={toast} onDone={closeToast} onReplace={setToast} />}
     </OrgContext.Provider>
+  );
+}
+
+/** A message at the bottom for 8 seconds; Undo runs the toast's undo once. */
+function ToastBar({ toast, onDone, onReplace }: { toast: Toast; onDone: () => void; onReplace: (t: Toast) => void }) {
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(onDone, 8000);
+    return () => window.clearTimeout(t);
+  }, [toast, onDone]);
+  const undo = toast.undo;
+  return (
+    <div role="status" className="toast">
+      <span className="grow">{toast.text}</span>
+      {undo && (
+        <button
+          type="button"
+          className="toast-undo"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await undo();
+              onDone();
+            } catch (e) {
+              onReplace({ text: `Undo failed: ${errorMessage(e)}` });
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Undo
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -281,7 +338,7 @@ function Sidebar() {
       </label>
 
       <nav aria-label="Folders and stacks" className="tree">
-        <div className="tree-root">
+        <TreeRoot>
           <Link to={link()} className="tree-root-name">
             {org.name}
           </Link>
@@ -298,7 +355,7 @@ function Sidebar() {
               <GearIcon />
             </Link>
           </span>
-        </div>
+        </TreeRoot>
         {tree ? <TreeLevel parentID="" depth={0} query={query.trim().toLowerCase()} path={location.pathname} /> : null}
         {tree && tree.folders.length === 0 && tree.stacks.length === 0 && (
           <p className="muted small tree-empty">Nothing here yet. Use + to add a stack or a folder.</p>
@@ -313,6 +370,17 @@ function Sidebar() {
         <SidebarSignOut />
       </div>
     </aside>
+  );
+}
+
+/** The organization's row, which takes stacks dropped to the top level. */
+function TreeRoot({ children }: { children: ReactNode }) {
+  const drop = useStackDrop("");
+  return (
+    <div className={`tree-root ${drop.state}`} {...drop.handlers}>
+      {children}
+      {drop.state === "drop-ok" && <span className="drop-hint">Move to the top level</span>}
+    </div>
   );
 }
 
@@ -341,7 +409,7 @@ function stackDot(s: StackSummary): string {
 }
 
 function TreeLevel({ parentID, depth, query, path }: { parentID: string; depth: number; query: string; path: string }) {
-  const { tree, link, open, folderChain } = useOrg();
+  const { tree, link, folderChain, drag } = useOrg();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   if (!tree) return null;
 
@@ -352,45 +420,18 @@ function TreeLevel({ parentID, depth, query, path }: { parentID: string; depth: 
   return (
     <>
       {folders.map((f) => {
-        const selected = path === link(`f/${f.id}`) || path === link(`f/${f.id}/settings`);
         const onPath = path.includes(f.id) || tree.stacks.some((s) => s.folder_id && path.includes(s.id) && folderChain(s.folder_id).some((x) => x.id === f.id));
         const isOpen = query ? true : (expanded[f.id] ?? (onPath || depth === 0));
         return (
-          <div key={f.id}>
-            <div className={`tree-row${selected ? " selected" : ""}`} style={pad}>
-              <button className="chev" aria-label={isOpen ? `Collapse ${f.name}` : `Expand ${f.name}`} aria-expanded={isOpen}
-                onClick={() => setExpanded((e) => ({ ...e, [f.id]: !isOpen }))}>
-                {isOpen ? <ChevronDownIcon size={12} /> : <ChevronRightIcon />}
-              </button>
-              <Link to={link(`f/${f.id}`)} className="tree-link">
-                <FolderIcon />
-                <span className="ellipsis">{f.name}</span>
-              </Link>
-              <span className="row-actions">
-                <button className="icon-btn tip" data-tip={`New stack in ${f.name}`} aria-label={`New stack in ${f.name}`}
-                  onClick={() => open({ kind: "new-stack", folderID: f.id })}>
-                  <PlusIcon />
-                </button>
-                {f.path.length < 10 && (
-                  <button className="icon-btn tip" data-tip={`New folder inside ${f.name}`} aria-label={`New folder in ${f.name}`}
-                    onClick={() => open({ kind: "new-folder", parentID: f.id })}>
-                    <FolderPlusIcon />
-                  </button>
-                )}
-                <Link className="icon-btn tip" data-tip="Settings" aria-label={`Settings of ${f.name}`} to={link(`f/${f.id}/settings`)}>
-                  <GearIcon />
-                </Link>
-              </span>
-            </div>
-            {isOpen && <TreeLevel parentID={f.id} depth={depth + 1} query={query} path={path} />}
-          </div>
+          <FolderRow key={f.id} folder={f} depth={depth} query={query} path={path} isOpen={isOpen}
+            setOpen={(o) => setExpanded((e) => ({ ...e, [f.id]: o }))} />
         );
       })}
       {stacks.map((s) => {
         const selected = path.startsWith(link(`s/${s.id}`));
         return (
-          <div key={s.id} className={`tree-row${selected ? " selected" : ""}`} style={pad}>
-            <span className="chev" aria-hidden />
+          <div key={s.id} className={`tree-row${selected ? " selected" : ""}${drag?.id === s.id ? " dragging" : ""}`} style={pad}>
+            <StackGrip stack={s} rowSelector=".tree-row" />
             <Link to={link(`s/${s.id}`)} className="tree-link">
               <span className="stack-dot" style={{ background: stackDot(s) }} aria-hidden />
               <span className="ellipsis">{s.name}</span>
@@ -399,6 +440,56 @@ function TreeLevel({ parentID, depth, query, path }: { parentID: string; depth: 
         );
       })}
     </>
+  );
+}
+
+/** A folder in the tree: its row, a drop target for stacks, and its contents when open. */
+function FolderRow({ folder: f, depth, query, path, isOpen, setOpen }: {
+  folder: Folder; depth: number; query: string; path: string; isOpen: boolean; setOpen: (open: boolean) => void;
+}) {
+  const { link, open, drag } = useOrg();
+  const drop = useStackDrop(f.id, () => setOpen(true));
+  const selected = path === link(`f/${f.id}`) || path === link(`f/${f.id}/settings`);
+  return (
+    <div>
+      <div className={`tree-row${selected ? " selected" : ""} ${drop.state}`} style={{ paddingLeft: 6 + depth * 16 }} {...drop.handlers}>
+        <button className="chev" aria-label={isOpen ? `Collapse ${f.name}` : `Expand ${f.name}`} aria-expanded={isOpen}
+          onClick={() => setOpen(!isOpen)}>
+          {isOpen ? <ChevronDownIcon size={12} /> : <ChevronRightIcon />}
+        </button>
+        <Link to={link(`f/${f.id}`)} className="tree-link">
+          <FolderIcon />
+          <span className="ellipsis">{f.name}</span>
+        </Link>
+        {drop.state === "drop-ok" && <span className="drop-hint">Move here</span>}
+        {drop.state === "drop-no" && (
+          <>
+            <span className="drop-hint">Can’t move</span>
+            <span role="tooltip" className="drop-tip">
+              {f.name} already has a stack named “{drag?.name}”. Rename one of them first.
+            </span>
+          </>
+        )}
+        {!drop.state && (
+          <span className="row-actions">
+            <button className="icon-btn tip" data-tip={`New stack in ${f.name}`} aria-label={`New stack in ${f.name}`}
+              onClick={() => open({ kind: "new-stack", folderID: f.id })}>
+              <PlusIcon />
+            </button>
+            {f.path.length < 10 && (
+              <button className="icon-btn tip" data-tip={`New folder inside ${f.name}`} aria-label={`New folder in ${f.name}`}
+                onClick={() => open({ kind: "new-folder", parentID: f.id })}>
+                <FolderPlusIcon />
+              </button>
+            )}
+            <Link className="icon-btn tip" data-tip="Settings" aria-label={`Settings of ${f.name}`} to={link(`f/${f.id}/settings`)}>
+              <GearIcon />
+            </Link>
+          </span>
+        )}
+      </div>
+      {isOpen && <TreeLevel parentID={f.id} depth={depth + 1} query={query} path={path} />}
+    </div>
   );
 }
 

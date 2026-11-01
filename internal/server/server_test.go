@@ -1235,3 +1235,98 @@ func TestApplyProgress(t *testing.T) {
 		t.Fatalf("report after the apply ended: %v", err)
 	}
 }
+
+// Moving a stack: the preview lists what it would inherit differently, a run
+// in progress or a stack with the same name blocks the move, and runs after
+// the move use the new folder's settings.
+func TestMoveStack(t *testing.T) {
+	h := newHarness(t)
+	h.settings("", api.LevelSettings{RequireApproval: ptr(true), Variables: []api.Variable{
+		{Key: "region", Category: api.CategoryTerraform, Value: "us-east-1"},
+		{Key: "SHARED", Category: api.CategoryEnv, Sensitive: true, Value: "same"},
+	}})
+	prod := h.folder("", "prod")
+	edge := h.folder("", "edge")
+	h.settings("/folders/"+prod.ID, api.LevelSettings{DriftIntervalMinutes: ptr(360), VaultRole: ptr("role-prod"), Variables: []api.Variable{
+		{Key: "DB_PASSWORD", Category: api.CategoryEnv, Sensitive: true, Value: "secret"},
+		{Key: "SHARED", Category: api.CategoryEnv, Sensitive: true, Value: "same"},
+	}})
+	h.settings("/folders/"+edge.ID, api.LevelSettings{RequireApproval: ptr(false), Variables: []api.Variable{
+		{Key: "region", Category: api.CategoryTerraform, Value: "sa-east-1"},
+	}})
+	buckets := h.stack(prod.ID, "buckets", "")
+	h.settings("/stacks/"+buckets.ID, api.LevelSettings{ConfirmDestructive: ptr(true), Variables: []api.Variable{
+		{Key: "prefix", Category: api.CategoryTerraform, Value: "acme"},
+	}})
+
+	var p api.MovePreview
+	h.call("GET", "/stacks/"+buckets.ID+"/move?folder_id="+edge.ID, nil, http.StatusOK, &p)
+	got := map[string]api.MoveChange{}
+	for _, c := range p.Changes {
+		got[c.Setting+"/"+c.Key] = c
+	}
+	if c := got["require_approval/"]; c.Before.Value != "true" || c.After.Value != "false" || c.After.Origin.ID != edge.ID {
+		t.Fatalf("approval change %+v", c)
+	}
+	if c := got["drift_interval_minutes/"]; c.Before.Value != "360" || c.After.Value != "0" {
+		t.Fatalf("drift change %+v", c)
+	}
+	if c := got["vault_role/"]; c.Before.Value != "role-prod" || c.After != nil {
+		t.Fatalf("vault role change %+v", c)
+	}
+	if c := got["variable/region"]; c.Before.Value != "us-east-1" || c.After.Value != "sa-east-1" {
+		t.Fatalf("region change %+v", c)
+	}
+	if c := got["variable/DB_PASSWORD"]; !c.Sensitive || c.Before.Value != "" || c.Before.Origin.ID != prod.ID || c.After != nil {
+		t.Fatalf("secret change %+v", c)
+	}
+	// Same secret value on prod and on the organization: no change.
+	if _, ok := got["variable/SHARED"]; ok || len(p.Changes) != 5 {
+		t.Fatalf("changes %+v", p.Changes)
+	}
+	if len(p.OwnSettings) != 1 || p.OwnSettings[0] != "confirm_destructive" || len(p.OwnVariables) != 1 || p.OwnVariables[0].Key != "prefix" {
+		t.Fatalf("own %v %+v", p.OwnSettings, p.OwnVariables)
+	}
+	if p.ActiveRun != nil || p.NameTaken {
+		t.Fatalf("blocked %+v", p)
+	}
+
+	// A folder with a stack of the same name (any case) refuses it.
+	h.stack(edge.ID, "Buckets", "")
+	h.call("GET", "/stacks/"+buckets.ID+"/move?folder_id="+edge.ID, nil, http.StatusOK, &p)
+	if !p.NameTaken {
+		t.Fatal("name taken not reported")
+	}
+	h.call("POST", "/stacks/"+buckets.ID+"/move", api.MoveStackRequest{FolderID: edge.ID}, http.StatusConflict, nil)
+
+	// A run in progress blocks the move.
+	dns := h.stack("", "dns", "")
+	run := h.run(dns.ID, api.RunPlan)
+	h.call("GET", "/stacks/"+dns.ID+"/move?folder_id="+edge.ID, nil, http.StatusOK, &p)
+	if p.ActiveRun == nil || p.ActiveRun.ID != run.ID {
+		t.Fatalf("active run %+v", p.ActiveRun)
+	}
+	h.call("POST", "/stacks/"+dns.ID+"/move", api.MoveStackRequest{FolderID: edge.ID}, http.StatusConflict, nil)
+	h.call("POST", "/runs/"+run.ID+"/cancel", nil, http.StatusOK, nil)
+
+	// Unknown folder, and the move itself, then back to the top level.
+	h.call("POST", "/stacks/"+dns.ID+"/move", api.MoveStackRequest{FolderID: "00000000-0000-0000-0000-000000000001"}, http.StatusUnprocessableEntity, nil)
+	var moved api.Stack
+	h.call("POST", "/stacks/"+dns.ID+"/move", api.MoveStackRequest{FolderID: edge.ID}, http.StatusOK, &moved)
+	if moved.FolderID != edge.ID {
+		t.Fatalf("folder %q", moved.FolderID)
+	}
+	r := h.run(dns.ID, api.RunPlan)
+	exec, spec := h.spec(r.ID)
+	if v := vars(spec); v["terraform/region"] != "sa-east-1" {
+		t.Fatalf("variables after the move %v", v)
+	}
+	if _, err := exec.Complete(context.Background(), api.CompleteRequest{Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	moved = api.Stack{} // folder_id is left out at the top level
+	h.call("POST", "/stacks/"+dns.ID+"/move", api.MoveStackRequest{}, http.StatusOK, &moved)
+	if moved.FolderID != "" {
+		t.Fatalf("folder %q after moving to the top level", moved.FolderID)
+	}
+}

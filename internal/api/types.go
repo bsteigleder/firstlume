@@ -159,6 +159,47 @@ type CreateStackRequest struct {
 	GitToken     string `json:"git_token"`
 }
 
+// MoveStackRequest moves a stack to another folder; an empty FolderID is the
+// organization's top level.
+type MoveStackRequest struct {
+	FolderID string `json:"folder_id"`
+}
+
+// MovePreview says what moving a stack to a folder would change in what it
+// inherits, and whether the move is possible now.
+type MovePreview struct {
+	FolderID string `json:"folder_id,omitempty"`
+	// ActiveRun is set when a run is queued, planning, awaiting approval or
+	// applying: the stack can't move until it ends.
+	ActiveRun *Run `json:"active_run,omitempty"`
+	// NameTaken is true when the folder already has a stack with this name.
+	NameTaken bool         `json:"name_taken,omitempty"`
+	Changes   []MoveChange `json:"changes"`
+	// OwnSettings and OwnVariables are what the stack sets itself: they go
+	// with it and still win. Settings use their JSON names.
+	OwnSettings  []string   `json:"own_settings"`
+	OwnVariables []Variable `json:"own_variables"`
+}
+
+// MoveChange is one inherited setting, variable or registry credential whose
+// value would change. Before or After is nil when it is not defined there.
+// Sensitive values are never included.
+type MoveChange struct {
+	// Setting is require_approval, drift_interval_minutes, confirm_destructive,
+	// vault_role, variable or registry.
+	Setting   string           `json:"setting"`
+	Category  VariableCategory `json:"category,omitempty"`
+	Key       string           `json:"key,omitempty"`
+	Sensitive bool             `json:"sensitive,omitempty"`
+	Before    *MoveValue       `json:"before,omitempty"`
+	After     *MoveValue       `json:"after,omitempty"`
+}
+
+type MoveValue struct {
+	Value  string `json:"value,omitempty"`
+	Origin Level  `json:"origin"`
+}
+
 // UpdateStackRequest changes only the fields that are set. An empty GitToken removes it.
 type UpdateStackRequest struct {
 	Name       *string `json:"name,omitempty"`

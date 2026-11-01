@@ -56,3 +56,14 @@ export function Logo({ size = 22 }: P) {
     </svg>
   );
 }
+
+export const GripIcon = ({ size = 14 }: P) => (
+  <svg width={(size * 10) / 14} height={size} viewBox="0 0 10 14" fill="currentColor" aria-hidden>
+    <circle cx="3" cy="3" r="1.2" />
+    <circle cx="7" cy="3" r="1.2" />
+    <circle cx="3" cy="7" r="1.2" />
+    <circle cx="7" cy="7" r="1.2" />
+    <circle cx="3" cy="11" r="1.2" />
+    <circle cx="7" cy="11" r="1.2" />
+  </svg>
+);
