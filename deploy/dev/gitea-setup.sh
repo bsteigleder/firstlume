@@ -191,6 +191,68 @@ data "helm_template" "hello" {
 resource "terraform_data" "rendered" { input = sha256(data.helm_template.hello.manifest) }
 TF
 
+# Apply followed resource by resource (spec 0004), with no cloud: fast and
+# slow resources, one that fails when the Firstlume variable fail = true, one
+# that depends on it (not applied) and one recreated whenever rev changes.
+mkdir -p environments/apply-demo/.firstlume
+printf 'version: 1\nengine: terraform\nengine_version: 1.15.6\n' > environments/apply-demo/.firstlume/config.yaml
+cat > environments/apply-demo/main.tf <<'TF'
+terraform {
+  backend "http" {}
+}
+variable "fail" {
+  type    = bool
+  default = false
+}
+variable "rev" {
+  type    = string
+  default = "1"
+}
+resource "terraform_data" "network" { input = "net-${var.rev}" }
+resource "terraform_data" "dns" { input = "dns-${var.rev}" }
+resource "terraform_data" "vm" {
+  input = terraform_data.network.output
+  provisioner "local-exec" { command = "sleep 40" }
+}
+resource "terraform_data" "release" {
+  triggers_replace = [var.rev]
+  provisioner "local-exec" {
+    command = var.fail ? "echo 'timed out waiting for the condition' >&2; exit 1" : "sleep 5"
+  }
+}
+resource "terraform_data" "release_dns" { input = terraform_data.release.id }
+resource "terraform_data" "web" { triggers_replace = [var.rev] }
+TF
+
+# The same in Terragrunt run --all: net and app share an address, net fails
+# when fail = true, and web depends on net, so it does not run then.
+mkdir -p environments/apply-demo-tg/.firstlume
+printf 'version: 1\nengine: terraform\nengine_version: 1.15.6\nterragrunt_version: 1.1.6\nrun_all: true\n' \
+  > environments/apply-demo-tg/.firstlume/config.yaml
+cp environments/tg/root.hcl environments/apply-demo-tg/root.hcl
+for u in net app web; do
+  mkdir -p "environments/apply-demo-tg/$u"
+  printf 'include "root" { path = find_in_parent_folders("root.hcl") }\n' > "environments/apply-demo-tg/$u/terragrunt.hcl"
+done
+printf 'dependencies { paths = ["../net"] }\n' >> environments/apply-demo-tg/web/terragrunt.hcl
+cat > environments/apply-demo-tg/net/main.tf <<'TF'
+variable "fail" {
+  type    = bool
+  default = false
+}
+resource "terraform_data" "shared" { input = "net" }
+resource "terraform_data" "gateway" {
+  provisioner "local-exec" { command = var.fail ? "echo 'gateway unreachable' >&2; exit 1" : "sleep 20" }
+}
+TF
+cat > environments/apply-demo-tg/app/main.tf <<'TF'
+resource "terraform_data" "shared" { input = "app" }
+resource "terraform_data" "worker" {
+  provisioner "local-exec" { command = "sleep 10" }
+}
+TF
+echo 'resource "terraform_data" "site" { input = "web" }' > environments/apply-demo-tg/web/main.tf
+
 mkdir -p legacy/vpn/.firstlume
 printf 'version: 1\nengine: terraform\nengine_version: latest\n' > legacy/vpn/.firstlume/config.yaml
 echo 'resource "terraform_data" "vpn" {}' > legacy/vpn/main.tf

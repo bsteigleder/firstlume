@@ -469,6 +469,71 @@ type ResourceChange struct {
 	Attributes []AttributeChange `json:"attributes,omitempty"`
 	// Truncated says more attributes changed than are listed.
 	Truncated bool `json:"truncated,omitempty"`
+	// Apply is where the resource is in the apply (spec 0004); nil when the
+	// run's apply did not report progress.
+	Apply *ResourceApply `json:"apply,omitempty"`
+}
+
+type ApplyState string
+
+const (
+	ApplyPending  ApplyState = "pending"
+	ApplyApplying ApplyState = "applying"
+	ApplyDone     ApplyState = "done"
+	ApplyFailed   ApplyState = "failed"
+	// ApplyNotApplied: the apply finished without starting the resource.
+	ApplyNotApplied ApplyState = "not_applied"
+)
+
+// ResourceApply is what the apply did to one resource of the plan.
+type ResourceApply struct {
+	State      ApplyState `json:"state"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	DurationMS int64      `json:"duration_ms,omitempty"`
+	// Steps are the operations in the order they ran: one, or two for a replace.
+	Steps  []ApplyStep  `json:"steps,omitempty"`
+	Errors []ApplyError `json:"errors,omitempty"`
+}
+
+// ApplyStep is one operation Terraform ran on a resource.
+type ApplyStep struct {
+	// Action is create, update or delete.
+	Action     ChangeAction `json:"action"`
+	StartedAt  *time.Time   `json:"started_at,omitempty"`
+	FinishedAt *time.Time   `json:"finished_at,omitempty"`
+	Failed     bool         `json:"failed,omitempty"`
+}
+
+// ApplyError is an error Terraform reported for a resource, already masked.
+type ApplyError struct {
+	Summary string `json:"summary"`
+	Detail  string `json:"detail,omitempty"`
+	// File and Line point into the configuration, relative to the module's directory.
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
+}
+
+// ApplyProgress is what the executor reports about one resource: the facts
+// seen so far. The server derives the state from them and the plan's action.
+type ApplyProgress struct {
+	// Key is the ResourceChange key (unit:address, or the address).
+	Key    string       `json:"key"`
+	Steps  []ApplyStep  `json:"steps,omitempty"`
+	Errors []ApplyError `json:"errors,omitempty"`
+}
+
+// ApplyProgressRequest carries the resources that changed since the last
+// report. An empty one says the apply reports progress at all.
+type ApplyProgressRequest struct {
+	Resources []ApplyProgress `json:"resources"`
+}
+
+// ApplyTotals counts the outcome of a finished apply that reported progress.
+type ApplyTotals struct {
+	Done       int `json:"done"`
+	Failed     int `json:"failed"`
+	NotApplied int `json:"not_applied"`
 }
 
 // Key identifies a resource across a run --all plan.
@@ -560,11 +625,14 @@ type Run struct {
 	Config *StackConfig `json:"config,omitempty"`
 	// SettingsUsed is what the plan ran with: effective settings and variables (no secret values).
 	SettingsUsed *RunSettings `json:"settings_used,omitempty"`
-	ApprovedAt   *time.Time   `json:"approved_at,omitempty"`
-	StartedAt    *time.Time   `json:"started_at,omitempty"`
-	FinishedAt   *time.Time   `json:"finished_at,omitempty"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
+	// ApplyTotals is set on a single run read, once an apply that reported
+	// progress resource by resource has finished.
+	ApplyTotals *ApplyTotals `json:"apply_totals,omitempty"`
+	ApprovedAt  *time.Time   `json:"approved_at,omitempty"`
+	StartedAt   *time.Time   `json:"started_at,omitempty"`
+	FinishedAt  *time.Time   `json:"finished_at,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
 }
 
 // ActiveRun is a run that holds or waits for its stack's lock, with where its stack lives.
