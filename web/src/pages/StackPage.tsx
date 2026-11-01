@@ -20,11 +20,13 @@ import {
 import { RunDialog } from "./RunDialog";
 import { SettingsEditor } from "./SettingsEditor";
 import { StackDeclaration } from "./StackDeclaration";
+import { StackResources } from "./StackResources";
 
-export function StackPage({ tab }: { tab: "runs" | "settings" | "source" }) {
+export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "source" }) {
   const { stackId = "" } = useParams();
   const { api, org, link, folderChain, reloadTree } = useOrg();
   const stack = useData(() => api.getStack(stackId), [api, stackId], { poll: true, pollMs: 10000 });
+  const units = useData(() => api.stateUnits(stackId), [api, stackId], { poll: true, pollMs: 15000 });
   const [running, setRunning] = useState(false);
   const chain = folderChain(stack.data?.folder_id);
 
@@ -38,6 +40,7 @@ export function StackPage({ tab }: { tab: "runs" | "settings" | "source" }) {
   if (!stack.data) return null;
   const s = stack.data;
   const web = repoWebURL(s.repository);
+  const resourceCount = units.data?.reduce((n, u) => n + u.resources, 0);
 
   return (
     <div className="page">
@@ -73,6 +76,10 @@ export function StackPage({ tab }: { tab: "runs" | "settings" | "source" }) {
         <NavLink end to={link(`s/${s.id}`)} role="tab">
           Runs
         </NavLink>
+        <NavLink to={link(`s/${s.id}/resources`)} role="tab">
+          Resources
+          {resourceCount !== undefined && resourceCount > 0 && <span className="badge idle tab-count">{resourceCount}</span>}
+        </NavLink>
         <NavLink to={link(`s/${s.id}/settings`)} role="tab">
           Variables &amp; settings
         </NavLink>
@@ -82,6 +89,7 @@ export function StackPage({ tab }: { tab: "runs" | "settings" | "source" }) {
       </div>
 
       {tab === "runs" && <Runs stack={s} />}
+      {tab === "resources" && <StackResources stack={s} />}
       {tab === "settings" && <SettingsEditor level={{ kind: "stack", id: s.id, name: s.name }} path={settingsPath({ kind: "stack", id: s.id })} />}
       {tab === "source" && (
         <Source

@@ -186,7 +186,7 @@ O endereço de uma unit é `<URL da API>/state/v1/stacks/<id do stack>/<chave da
 O desenho das telas vem antes da implementação, como na spec 0001. A aba tem o seguinte.
 
 - **R8.1** **Units:** chave, versão atual, serial, número de recursos, última gravação (quem e quando, com link para a run) e situação da trava.
-- **R8.2** **Unit:**
+- **R8.2** **Unit:** (os recursos ficaram numa aba própria do stack, **Resources**, desenhada nos quadros 21 e 22 do canvas de telas e aprovada em 2026-10-31; ver R8.8)
   - **recursos** do state atual: endereço, tipo e provider, **sem valores** de atributos;
   - **histórico** de versões;
   - **diferença** entre duas versões: recursos que entraram, saíram ou mudaram, só por endereço.
@@ -195,6 +195,12 @@ O desenho das telas vem antes da implementação, como na spec 0001. A aba tem o
 - **R8.5** **Download** de uma versão: só admin. Avisa que o state pode ter segredos e fica registrado.
 - **R8.6** **Importar** (R9) e **tokens** (R7).
 - **R8.7** Toda ação de R8.3 a R8.6, mais criar e revogar token, entra num registro de eventos do state, visível na aba.
+- **R8.8** **Aba Resources** (emenda de 2026-10-31):
+  - lista, por unit, cada instância de recurso do state atual: endereço (com módulo e índice), tipo, provider e dependências, **sem valores** de atributos;
+  - mostra a última mudança de cada recurso e as últimas cinco, vindas das runs de apply (um apply que falhou conta só o que terminou);
+  - mostra o que a última checagem de drift encontrou, até um apply terminar depois dela;
+  - cada recurso tem um ícone: o logo do serviço (EKS, RDS, Cloudflare, PostgreSQL…) quando o tipo é conhecido, senão um desenho da categoria na cor do provider; data sources aparecem tracejados;
+  - uma unit cujo state não pode ser lido aparece com o motivo, sem esconder as outras; sem state no Firstlume depois de um apply, a aba explica que o código guarda o state em outro backend.
 
 ### 4.9 Importação
 
@@ -302,6 +308,9 @@ Testes: `internal/server/stateimport_test.go` (bundles montados no teste, tokens
 - [ ] **CAS4.3** O rollback para a versão 1 cria a versão 4 com o conteúdo da 1. O plan seguinte mostra o que voltou. Com a unit travada, o rollback é recusado.
 - [ ] **CAS4.4** Destravar à força, baixar, importar, fazer rollback, criar ou revogar token e excluir o state aparecem nos eventos, com quem e quando.
 - [ ] **CAS4.5** A tela da run mostra o backend usado por unit (R2.3).
+- [x] **CAS4.6** A aba Resources lista os recursos de cada unit com endereço, tipo e provider; nenhum valor de atributo aparece na resposta da API (R8.8).
+- [x] **CAS4.7** Um recurso criado por uma run mostra essa run como última mudança; um drift aberto marca os recursos afetados até o próximo apply.
+- [x] **CAS4.8** Um stack que já fez apply sem gravar state no Firstlume mostra o aviso de state em outro backend.
 
 ### Critérios gerais
 
