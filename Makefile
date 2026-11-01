@@ -88,6 +88,9 @@ helm-lint:
 	helm template test $(CHART) --set controlPlane.database.url=postgres://x --set controlPlane.state.storage=s3 \
 	  --set controlPlane.state.s3.endpoint=http://garage:3900 --set controlPlane.state.s3.bucket=state \
 	  --set controlPlane.state.s3.existingSecret=state-s3 > /dev/null
+	helm template test $(CHART) --set controlPlane.database.url=postgres://x --set controlPlane.publicUrl=https://fl.example.com \
+	  --set controlPlane.auth.oidc.enabled=true --set controlPlane.auth.oidc.issuer=https://gitea.example.com \
+	  --set controlPlane.auth.oidc.clientId=firstlume --set controlPlane.auth.oidc.existingSecret=firstlume-oidc > /dev/null
 
 docker-build:
 	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE) .

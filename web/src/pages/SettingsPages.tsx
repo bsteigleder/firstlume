@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate, useParams } from "react-router";
-import { api as rootAPI, settingsPath, type CreateAgentResponse, type GitConnection } from "../api";
+import { Link, useNavigate, useParams } from "react-router";
+import { api as rootAPI, settingsPath, type CreateAgentResponse, type GitConnection, type Organization } from "../api";
 import { Logo } from "../icons";
 import { PageTitle, rememberOrg, useCrumbs, useOrg } from "../org";
+import { useSession } from "../session";
 import { Empty, ErrorBanner, slugify, timeAgo, useAction, useData } from "../ui";
 import { SettingsEditor } from "./SettingsEditor";
 
@@ -285,8 +286,16 @@ function Agents() {
 }
 
 /** Creates an organization; with `welcome`, it is the first screen of a user without any. */
-export function CreateOrgPage({ welcome }: { welcome?: boolean }) {
+/**
+ * Creates an organization. As the welcome screen (first access, R7.7) it
+ * greets a signed-in user and, until members arrive (D8), lists the
+ * organizations that already exist.
+ */
+export function CreateOrgPage({ welcome, existing = [] }: { welcome?: boolean; existing?: Organization[] }) {
   const navigate = useNavigate();
+  const { me, reload } = useSession();
+  const user = me.user;
+  const firstName = user?.name.split(" ")[0] || user?.login;
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
@@ -298,7 +307,11 @@ export function CreateOrgPage({ welcome }: { welcome?: boolean }) {
     await run(async () => {
       const o = await rootAPI.createOrg(address, name.trim());
       rememberOrg(o.slug);
+      // Leave "/" first: reloading /me while the welcome screen is mounted
+      // re-renders it with the old organization list, which redirects away.
+      // The reload makes /me list the new membership for the next visit.
       navigate(`/o/${o.slug}`);
+      void reload();
     });
   }
 
@@ -309,10 +322,10 @@ export function CreateOrgPage({ welcome }: { welcome?: boolean }) {
         <strong>Firstlume</strong>
       </header>
       <main className="welcome-main">
-        <h1>{welcome ? "Welcome" : "Create organization"}</h1>
+        <h1>{welcome ? (firstName ? `Welcome, ${firstName}` : "Welcome") : "Create organization"}</h1>
         <p className="lead">
           {welcome
-            ? "You don’t belong to any organization yet, so let’s create your first one."
+            ? "You don’t belong to any organization yet, so let’s create your first one. You’ll be its administrator."
             : "An organization has its own folders, stacks, settings and agents. Nothing is shared between organizations."}
         </p>
         <form className="card form-card welcome-card" onSubmit={submit}>
@@ -341,6 +354,23 @@ export function CreateOrgPage({ welcome }: { welcome?: boolean }) {
           </div>
         </form>
         {welcome && <p className="hint">Next you’ll create your first stack from a repository with a .firstlume folder.</p>}
+        {welcome && existing.length > 0 && (
+          <section className="card welcome-existing" aria-labelledby="existing-orgs">
+            <h2 id="existing-orgs">Or open an existing organization</h2>
+            <p className="muted small">Everyone who signs in sees every organization for now. Members and invitations come next.</p>
+            <ul>
+              {existing.map((o) => (
+                <li key={o.slug}>
+                  <Link to={`/o/${o.slug}`} onClick={() => rememberOrg(o.slug)}>
+                    {o.name}
+                  </Link>{" "}
+                  <span className="mono muted small">{o.slug}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
       </main>
     </div>
   );

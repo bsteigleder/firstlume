@@ -57,6 +57,35 @@ fi
 save FIRSTLUME_DEV_GITEA_URL "$GITEA"
 save FIRSTLUME_DEV_GITEA_ACCOUNT "$ORG"
 
+# Sign-in with Gitea (spec 0001, R7.13): an OAuth app for the dev server, a
+# team acme:infra and a user outside acme, to try the allowed groups (R7.11).
+# devadmin is in acme (Owners) and acme:infra; outsider is in neither.
+PUBLIC_URL=${FIRSTLUME_PUBLIC_URL:-http://127.0.0.1:8787}
+INFRA=$(api "$GITEA/api/v1/orgs/$ORG/teams" | jq -r '.[] | select(.name=="infra") | .id')
+if [ -z "$INFRA" ]; then
+  INFRA=$(api -X POST "$GITEA/api/v1/orgs/$ORG/teams" -d '{"name": "infra", "permission": "read", "includes_all_repositories": true,
+    "units": ["repo.code"]}' | jq -r .id)
+fi
+api -o /dev/null -X PUT "$GITEA/api/v1/teams/$INFRA/members/$ADMIN"
+if [ -z "${FIRSTLUME_DEV_GITEA_OUTSIDER_PASSWORD:-}" ]; then
+  FIRSTLUME_DEV_GITEA_OUTSIDER_PASSWORD=$(openssl rand -hex 16)
+  save FIRSTLUME_DEV_GITEA_OUTSIDER_PASSWORD "$FIRSTLUME_DEV_GITEA_OUTSIDER_PASSWORD"
+fi
+gitea admin user create --username outsider --password "$FIRSTLUME_DEV_GITEA_OUTSIDER_PASSWORD" --email outsider@example.com \
+  --must-change-password=false >/dev/null 2>&1 || true
+# The client secret is shown only when the app is created, so the app is
+# created again when .env lost it or the app is gone.
+if [ -z "${FIRSTLUME_OIDC_CLIENT_ID:-}" ] || \
+   ! api "$GITEA/api/v1/user/applications/oauth2" | jq -e --arg id "$FIRSTLUME_OIDC_CLIENT_ID" '.[] | select(.client_id==$id)' >/dev/null; then
+  APP=$(api -X POST "$GITEA/api/v1/user/applications/oauth2" -d '{"name": "Firstlume (dev)", "confidential_client": true,
+    "redirect_uris": ["'"$PUBLIC_URL"'/auth/callback"]}')
+  save FIRSTLUME_OIDC_CLIENT_ID "$(jq -r .client_id <<<"$APP")"
+  save FIRSTLUME_OIDC_CLIENT_SECRET "$(jq -r .client_secret <<<"$APP")"
+fi
+save FIRSTLUME_PUBLIC_URL "$PUBLIC_URL"
+save FIRSTLUME_OIDC_ISSUER "$GITEA"
+save FIRSTLUME_OIDC_ALLOWED_GROUPS "${FIRSTLUME_OIDC_ALLOWED_GROUPS:-$ORG}"
+
 # Content of acme/infra. Rewritten on every run and committed only when it
 # changed, so existing setups pick up new examples.
 WORK=$(mktemp -d)
@@ -152,3 +181,5 @@ cd - >/dev/null
 
 echo "Gitea ready at $GITEA: organization $ORG, bot $BOT (token in .env as FIRSTLUME_DEV_GITEA_TOKEN)."
 echo "Sign in to Gitea as $ADMIN with the password in .env (FIRSTLUME_DEV_GITEA_ADMIN_PASSWORD)."
+echo "Sign-in with Gitea is on for the dev server: only members of ${FIRSTLUME_OIDC_ALLOWED_GROUPS:-$ORG} get in;"
+echo "\"outsider\" (password FIRSTLUME_DEV_GITEA_OUTSIDER_PASSWORD) shows the refusal."

@@ -1,9 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
-import { api, setToken, type ActiveRun, type Folder, type OrgAPI, type Organization, type StackSummary, type Tree } from "./api";
+import { api, signOut, type ActiveRun, type Folder, type Me, type OrgAPI, type Organization, type StackSummary, type Tree, type User } from "./api";
 import { ChevronDownIcon, ChevronRightIcon, CloseIcon, FolderIcon, FolderPlusIcon, GearIcon, PlusIcon, SearchIcon } from "./icons";
 import { DeleteFolderDialog, FolderNameDialog, NewStackDialog } from "./pages/dialogs";
 import { ErrorBanner, Initials, StatusBadge, timeAgo, useData } from "./ui";
+import { useSession } from "./session";
 import { ThemeSwitch } from "./theme";
 
 export interface Crumb {
@@ -120,6 +121,7 @@ export function OrgShell() {
         <Sidebar />
         <div className="main-col">
           <Header crumbs={crumbs} onOpenRuns={() => setDrawer(true)} />
+          <EveryoneSeesAll />
           <main className="content">
             <Outlet />
           </main>
@@ -155,10 +157,90 @@ function Header({ crumbs, onOpenRuns }: { crumbs: Crumb[]; onOpenRuns: () => voi
         </span>
         <span className={`badge ${waiting ? "warn" : "idle"}`}>{waiting} need approval</span>
       </button>
-      <span className="who" title="Signed in with the admin token">
-        <Initials name="admin" size={28} />
-      </span>
+      <AccountMenu />
     </header>
+  );
+}
+
+/** Until members and invitations (Marco 3b), a signed-in user sees every organization (D8). */
+function EveryoneSeesAll() {
+  const { me } = useSession();
+  if (me.kind !== "user") return null;
+  return (
+    <div role="note" className="seen-by-all">
+      Everyone who signs in sees every organization for now. Members and invitations come next.
+    </div>
+  );
+}
+
+/** Ends the session, then shows the login screen ("signed out" only for a user). */
+async function signOutAndLeave(me: Me) {
+  await signOut();
+  window.location.assign(me.kind === "user" ? "/?signed_out=1" : "/");
+}
+
+function Avatar({ user, size }: { user?: User; size: number }) {
+  const [broken, setBroken] = useState(false);
+  if (user?.avatar_url && !broken) {
+    return <img className="avatar" src={user.avatar_url} alt="" width={size} height={size} onError={() => setBroken(true)} />;
+  }
+  return <Initials name={user ? user.name || user.login : "admin"} size={size} />;
+}
+
+/** Who is signed in, their Gitea groups, and Sign out. */
+function AccountMenu() {
+  const { me } = useSession();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+
+  const user = me.user;
+  return (
+    <div className="account" ref={ref}>
+      <button className="account-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <Avatar user={user} size={28} />
+        <span className="account-login">{user ? user.login : "admin token"}</span>
+        <ChevronDownIcon />
+      </button>
+      {open && (
+        <div role="menu" aria-label="Account" className="menu account-menu">
+          <div className="account-head">
+            <Avatar user={user} size={40} />
+            <span className="account-id">
+              <strong>{user ? user.name || user.login : "Admin token"}</strong>
+              <span className="mono muted small">{user ? `${user.login} · signed in with Gitea` : "for automation and emergencies"}</span>
+            </span>
+          </div>
+          {user && user.groups.length > 0 && (
+            <div className="account-groups">
+              <span className="small">Gitea groups</span>
+              <span className="chips">
+                {user.groups.map((g) => (
+                  <span key={g} className="chip mono">
+                    {g}
+                  </span>
+                ))}
+              </span>
+            </div>
+          )}
+          <div className="menu-sep" />
+          <button role="menuitem" className="menu-item" onClick={() => void signOutAndLeave(me)}>
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -217,17 +299,18 @@ function Sidebar() {
           Agents and settings
         </NavLink>
         <ThemeSwitch />
-        <button
-          className="link"
-          onClick={() => {
-            setToken(null);
-            window.location.assign("/");
-          }}
-        >
-          Sign out
-        </button>
+        <SidebarSignOut />
       </div>
     </aside>
+  );
+}
+
+function SidebarSignOut() {
+  const { me } = useSession();
+  return (
+    <button className="link" onClick={() => void signOutAndLeave(me)}>
+      Sign out
+    </button>
   );
 }
 

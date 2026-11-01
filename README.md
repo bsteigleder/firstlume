@@ -2,7 +2,7 @@
 
 Plataforma de automação de Infraestrutura como Código (Terraform, OpenTofu e Terragrunt), no estilo do env0, instalável via Helm em qualquer cluster Kubernetes.
 
-> **Status: fase 2.** Já existem organizações, pastas e stacks com configurações herdadas, runs de plan/apply com revisão por recurso e aprovação configurável, drift detection agendado, a conexão com o Gitea, o state backend próprio (por unit, com lock e versões), uma UI web, o agent que cria Jobs no Kubernetes e o chart Helm. Ainda não existem usuários e login. Veja o [roadmap](#roadmap).
+> **Status: fase 2.** Já existem organizações, pastas e stacks com configurações herdadas, runs de plan/apply com revisão por recurso e aprovação configurável, drift detection agendado, a conexão com o Gitea, o state backend próprio (por unit, com lock e versões), uma UI web, o agent que cria Jobs no Kubernetes e o chart Helm, e o login pelo Gitea (OIDC) com sessões e lista de grupos permitidos. Membros e convites vêm a seguir. Veja o [roadmap](#roadmap).
 
 ## Arquitetura
 
@@ -309,7 +309,7 @@ deploy/docker/        Dockerfile
 
 ## Limitações conhecidas
 
-- **Autenticação só por token admin.** Usuários, grupos, SSO e aprovadores por pessoa ou grupo entram depois.
+- **Login pelo Gitea (OIDC) ou token admin, todos administradores.** Por enquanto quem entra vê todas as organizações. Membros, convites, papéis e aprovadores por pessoa ou grupo entram depois.
 - **Cancelar um run em execução não é suportado**, de propósito: interromper um apply pode corromper o state.
 - **As ferramentas são baixadas a cada run** (releases oficiais, com checksum SHA256 verificado). O executor precisa de acesso de saída à internet, ou de um mirror (ainda não configurável).
 - **Licença do Terraform:** as versões 1.6 em diante são BSL. Para oferecer a plataforma comercialmente, use `engine: opentofu` ou Terraform ≤ 1.5.7.

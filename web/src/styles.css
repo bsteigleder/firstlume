@@ -2151,6 +2151,214 @@ a.banner:hover {
   text-align: center;
 }
 
+/* Sign-in with the OIDC provider (spec 0001, R7.14). */
+.login-provider {
+  justify-content: center;
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+a.login-provider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--text);
+  color: var(--surface);
+  text-decoration: none;
+}
+
+a.login-provider:hover {
+  text-decoration: none;
+  opacity: 0.92;
+}
+
+.login-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.login-or::before,
+.login-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.login-token summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-weight: 500;
+  font-size: 13.5px;
+}
+
+.login-token-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.login-token-form .hint {
+  text-align: left;
+}
+
+.login-msg {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.login-msg-error {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
+}
+
+.login-msg-attention {
+  background: var(--attention-soft);
+  border-color: var(--attention-edge);
+  color: var(--attention);
+}
+
+.login-msg-success {
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 30%, transparent);
+  color: var(--success);
+}
+
+.login-unset {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login-unset p {
+  margin: 0;
+  font-size: 13.5px;
+}
+
+.login-unset pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.welcome-existing {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 20px;
+}
+
+.welcome-existing h2 {
+  font-size: 15px;
+}
+
+.welcome-existing p {
+  margin: 0;
+}
+
+.welcome-existing ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Account menu in the top bar. */
+.account {
+  position: relative;
+}
+
+.account-btn {
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.account-btn[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.account-login {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+img.avatar {
+  object-fit: cover;
+  background: var(--surface-2);
+}
+
+.account-menu {
+  right: 0;
+  top: calc(100% + 8px);
+  width: 280px;
+  padding: 12px;
+  gap: 10px;
+}
+
+.account-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.account-id {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.account-id .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.account-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.account-groups .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.account-groups .chip {
+  font-size: 12px;
+  font-weight: 400;
+  padding: 2px 8px;
+}
+
+.seen-by-all {
+  padding: 9px 24px;
+  background: var(--attention-soft);
+  border-bottom: 1px solid var(--attention-edge);
+  color: var(--attention);
+  font-size: 13px;
+}
+
 .page-center {
   max-width: 520px;
   margin: 15vh auto;

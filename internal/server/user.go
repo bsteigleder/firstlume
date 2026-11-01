@@ -123,7 +123,13 @@ func (s *Server) createOrganization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = name
-	o, err := s.store.CreateOrganization(r.Context(), req)
+	var o *api.Organization
+	if u := principalFrom(r.Context()).user; u != nil {
+		// The creator becomes its administrator (R7.7).
+		o, err = s.store.CreateOrganizationBy(r.Context(), req, u.ID)
+	} else {
+		o, err = s.store.CreateOrganization(r.Context(), req)
+	}
 	if err != nil {
 		s.storeError(w, r, err, "organization")
 		return
