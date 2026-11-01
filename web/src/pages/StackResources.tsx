@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import type { ChangeAction, ResourceUnit, Stack, StateResource } from "../api";
+import type { ChangeAction, ResourceLabel, ResourceUnit, Stack, StateResource } from "../api";
 import { useOrg } from "../org";
 import { providerColor, providerName, ResourceIcon, resourceKind } from "../resourceIcons";
 import { Empty, ErrorBanner, timeAgo, useData } from "../ui";
 
 // The stack's Resources tab (spec 0002 R8.2): what the state manages, unit by
-// unit, with the applies that last changed each resource. No attribute values.
+// unit, with the applies that last changed each resource. Attribute values
+// show only in labels, read by the server from a fixed list per type.
 
 const pastTense: Record<ChangeAction, string> = { create: "created", update: "updated", replace: "replaced", delete: "deleted" };
 const actionTone: Record<ChangeAction, string> = { create: "ok", update: "warn", replace: "rep", delete: "bad" };
@@ -50,7 +51,10 @@ export function StackResources({ stack }: { stack: Stack }) {
           (showData || r.mode === "managed") &&
           (!provider || r.provider === provider) &&
           (!onlyDrift || !!r.drift) &&
-          (!needle || r.address.toLowerCase().includes(needle) || r.type.includes(needle)),
+          (!needle ||
+            r.address.toLowerCase().includes(needle) ||
+            r.type.includes(needle) ||
+            !!r.label?.name.toLowerCase().includes(needle)),
       ),
     }))
     .filter((g) => g.rows.length > 0 || (!filtering && (g.unit.error || g.unit.resources.length === 0)));
@@ -98,7 +102,8 @@ export function StackResources({ stack }: { stack: Stack }) {
               {latest.run_id ? <> by <RunLink id={latest.run_id} /></> : latest.written_by ? <> by {latest.written_by}</> : null}.
             </>
           )}{" "}
-          Attribute values are never shown here.
+          Only the fields that say what a resource is (its name; for DNS also type and target) are shown. Other attribute
+          values never are.
         </p>
       </section>
 
@@ -124,7 +129,7 @@ export function StackResources({ stack }: { stack: Stack }) {
             <circle cx="11" cy="11" r="7" />
             <path d="M20 20l-3.5-3.5" />
           </svg>
-          <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by address or type" />
+          <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name, address or type" />
         </label>
         {!single && (
           <label className="res-select">
@@ -180,7 +185,7 @@ export function StackResources({ stack }: { stack: Stack }) {
             {open && rows.length > 0 && (
               <div className="res-table">
                 <div className="res-row res-row-head">
-                  <span className="res-addr-head">Address</span>
+                  <span className="res-addr-head">Resource</span>
                   <span>Type</span>
                   <span>Provider</span>
                   <span>Last change</span>
@@ -223,13 +228,20 @@ function UnitBadges({ unit: u }: { unit: ResourceUnit }) {
 function Row({ r, unitKey, selected, onPick }: { r: StateResource; unitKey: string; selected: boolean; onPick: () => void }) {
   const data = r.mode === "data";
   const last = r.history?.[0];
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"" | "address" | "name">("");
   return (
     <>
       <button className={selected ? "res-row selected" : "res-row"} aria-expanded={selected} onClick={onPick}>
         <span className="res-addr">
           <ResourceIcon type={r.type} data={data} />
-          <span className={data ? "mono muted" : "mono"}>{r.address}</span>
+          {r.label ? (
+            <span className="res-named">
+              <LabelLine label={r.label} data={data} />
+              <span className="mono res-addr-sub">{r.address}</span>
+            </span>
+          ) : (
+            <span className={data ? "mono muted" : "mono"}>{r.address}</span>
+          )}
         </span>
         <span className="res-type">
           <span className="mono">{r.type}</span>
@@ -254,12 +266,27 @@ function Row({ r, unitKey, selected, onPick }: { r: StateResource; unitKey: stri
       </button>
       {selected && (
         <div className="res-detail">
+          {r.label?.record && <RecordCol label={r.label} type={r.type} data={data} />}
           <div className="res-detail-col">
             <span className="card-label">Identity</span>
-            <span className="res-kind">
-              <ResourceIcon type={r.type} data={data} />
-              <strong>{resourceKind(r.type)}</strong>
-            </span>
+            {r.label?.record ? (
+              <span className="mono res-dep">{r.address}</span>
+            ) : (
+              <span className="res-kind">
+                <ResourceIcon type={r.type} data={data} />
+                <strong>{r.label?.name ?? resourceKind(r.type)}</strong>
+              </span>
+            )}
+            {r.label && !r.label.record && (
+              <span>
+                <span className="muted">Kind</span> {resourceKind(r.type)}
+              </span>
+            )}
+            {r.label?.details?.map((d) => (
+              <span key={d.key}>
+                <span className="muted">{capitalize(d.key)}</span> <span className="mono">{d.value}</span>
+              </span>
+            ))}
             <span>
               <span className="muted">Mode</span> {data ? "data source" : "managed"}
             </span>
@@ -277,14 +304,23 @@ function Row({ r, unitKey, selected, onPick }: { r: StateResource; unitKey: stri
             <span>
               <span className="muted">Instances in this block</span> {r.instances}
             </span>
-            <span>
+            <span className="res-copy">
               <button className="small-btn"
                 onClick={() => {
                   void navigator.clipboard?.writeText(r.address);
-                  setCopied(true);
+                  setCopied("address");
                 }}>
-                {copied ? "Copied" : "Copy address"}
+                {copied === "address" ? "Copied" : "Copy address"}
               </button>
+              {r.label && (
+                <button className="small-btn"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(r.label!.name);
+                    setCopied("name");
+                  }}>
+                  {copied === "name" ? "Copied" : "Copy name"}
+                </button>
+              )}
             </span>
           </div>
           <div className="res-detail-col">
@@ -326,6 +362,70 @@ function Row({ r, unitKey, selected, onPick }: { r: StateResource; unitKey: stri
     </>
   );
 }
+
+// The row's first line: the resource's name, and for a DNS record its type,
+// target and proxy; for other kinds the identifying details.
+function LabelLine({ label, data }: { label: ResourceLabel; data: boolean }) {
+  const rec = label.record;
+  return (
+    <span className="res-label">
+      <strong className={data ? "muted" : undefined}>{label.name}</strong>
+      {rec?.type && <span className="res-rtype">{rec.type}</span>}
+      {rec?.target && <span className="mono res-target">→ {rec.target}</span>}
+      {rec?.proxied && <span className="res-proxied">proxied</span>}
+      {!rec && label.details?.length ? (
+        <span className="muted small">{label.details.map((d) => `${d.key} ${d.value}`).join(" · ")}</span>
+      ) : null}
+    </span>
+  );
+}
+
+function RecordCol({ label, type, data }: { label: ResourceLabel; type: string; data: boolean }) {
+  const rec = label.record!;
+  return (
+    <div className="res-detail-col">
+      <span className="card-label">Record</span>
+      <span className="res-kind">
+        <ResourceIcon type={type} data={data} />
+        <strong className="res-record-name">{label.name}</strong>
+      </span>
+      {rec.type && (
+        <span>
+          <span className="muted">Type</span> <span className="res-rtype">{rec.type}</span>
+        </span>
+      )}
+      {rec.target && (
+        <span>
+          <span className="muted">Points to</span> <span className="mono">{rec.target}</span>
+        </span>
+      )}
+      {rec.proxied !== undefined && (
+        <span>
+          <span className="muted">Proxy</span>{" "}
+          {rec.proxied ? (
+            <>
+              <span className="res-proxied">proxied</span> <span className="muted">through Cloudflare</span>
+            </>
+          ) : (
+            "DNS only"
+          )}
+        </span>
+      )}
+      {!!rec.ttl && (
+        <span>
+          <span className="muted">TTL</span> {rec.ttl === 1 ? "auto" : `${rec.ttl} s`}
+        </span>
+      )}
+      {rec.zone && (
+        <span>
+          <span className="muted">Zone</span> <span className="mono">{rec.zone}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 function RunLink({ id, label }: { id: string; label?: string }) {
   const { link } = useOrg();
