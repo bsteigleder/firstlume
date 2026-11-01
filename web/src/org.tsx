@@ -78,7 +78,16 @@ export function OrgShell() {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [drawer, setDrawer] = useState(false);
 
+  const navigate = useNavigate();
+  const location = useLocation();
   useEffect(() => rememberOrg(slug), [slug]);
+  // A former address still resolves: move to the current one.
+  const current = org.data?.slug;
+  useEffect(() => {
+    if (current && current !== slug) {
+      navigate(location.pathname.replace(`/o/${slug}`, `/o/${current}`) + location.search + location.hash, { replace: true });
+    }
+  }, [current, slug, navigate, location]);
 
   const folderChain = useCallback(
     (folderID?: string) => {

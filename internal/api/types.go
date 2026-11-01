@@ -98,6 +98,8 @@ type CreateOrganizationRequest struct {
 
 type UpdateOrganizationRequest struct {
 	Name string `json:"name"`
+	// Slug changes the address when set; the old one keeps resolving.
+	Slug string `json:"slug,omitempty"`
 }
 
 // MaxFolderDepth is how deep folders can nest; a top-level folder has depth 1.

@@ -21,7 +21,7 @@ func (s *Server) userRoutes(r chi.Router) {
 	r.Route("/orgs/{org}", func(r chi.Router) {
 		r.Use(s.requireOrg)
 		r.Get("/", s.getOrganization)
-		r.Patch("/", s.renameOrganization)
+		r.Patch("/", s.updateOrganization)
 		r.Delete("/", s.deleteOrganization)
 		r.Get("/tree", s.tree)
 		r.Get("/settings", s.getSettings(api.LevelOrganization))
@@ -135,7 +135,7 @@ func (s *Server) getOrganization(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, orgFrom(r.Context()))
 }
 
-func (s *Server) renameOrganization(w http.ResponseWriter, r *http.Request) {
+func (s *Server) updateOrganization(w http.ResponseWriter, r *http.Request) {
 	var req api.UpdateOrganizationRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -145,7 +145,13 @@ func (s *Server) renameOrganization(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	o, err := s.store.RenameOrganization(r.Context(), orgID(r), name)
+	if req.Slug != "" {
+		if err := validateSlug(req.Slug); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+	}
+	o, err := s.store.UpdateOrganization(r.Context(), orgID(r), name, req.Slug)
 	if err != nil {
 		s.storeError(w, r, err, "organization")
 		return

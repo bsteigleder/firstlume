@@ -59,7 +59,9 @@ export function OrgSettingsPage() {
 function General() {
   const { org, api } = useOrg();
   const [name, setName] = useState(org.name);
+  const [slug, setSlug] = useState(org.slug);
   const { busy, error, run } = useAction();
+  const slugChanged = slug.trim() !== org.slug;
   return (
     <form
       id="general"
@@ -67,8 +69,10 @@ function General() {
       onSubmit={(e) => {
         e.preventDefault();
         void run(async () => {
-          await api.rename(name);
-          window.location.reload();
+          const o = await api.update(name.trim(), slug.trim());
+          rememberOrg(o.slug);
+          // A full load, so the organization list and every link use the new address.
+          window.location.assign(window.location.pathname.replace(`/o/${org.slug}`, `/o/${o.slug}`) + window.location.hash);
         });
       }}
     >
@@ -80,13 +84,23 @@ function General() {
         </label>
         <label className="field">
           Address
-          <input className="mono" value={org.slug} disabled />
-          <span className="hint">The address can’t be changed.</span>
+          <span className="prefixed">
+            <span className="mono prefix">{window.location.host}/o/</span>
+            <input className="mono" value={slug} onChange={(e) => setSlug(e.target.value)} required placeholder="acme" />
+          </span>
+          {slugChanged ? (
+            <span className="hint warn-text">
+              Links to <span className="mono">/o/{org.slug}</span> will keep working. Vault roles that check the <span className="mono">org</span> claim
+              must be updated to <span className="mono">{slug.trim() || "…"}</span>.
+            </span>
+          ) : (
+            <span className="hint">Lowercase letters, digits and hyphens.</span>
+          )}
         </label>
       </div>
       {error && <div className="form-error">{error}</div>}
       <div className="form-actions">
-        <button className="primary" disabled={busy || name.trim() === org.name || !name.trim()}>
+        <button className="primary" disabled={busy || !name.trim() || !slug.trim() || (name.trim() === org.name && !slugChanged)}>
           Save
         </button>
       </div>

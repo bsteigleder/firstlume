@@ -1050,3 +1050,47 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// An organization can change its address; the old one keeps resolving to it
+// and no other organization can take it.
+func TestChangeOrganizationSlug(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	old := "/api/v1/orgs/" + h.org
+	var o api.Organization
+	h.call("GET", old, nil, http.StatusOK, &o)
+
+	slug := "n-" + randomSuffix()
+	h.call("PATCH", old, api.UpdateOrganizationRequest{Name: o.Name, Slug: "Bad Slug"}, http.StatusUnprocessableEntity, nil)
+	var changed api.Organization
+	h.call("PATCH", old, api.UpdateOrganizationRequest{Name: o.Name, Slug: slug}, http.StatusOK, &changed)
+	if changed.ID != o.ID || changed.Slug != slug {
+		t.Fatalf("changed to %+v", changed)
+	}
+	var got api.Organization
+	h.call("GET", old, nil, http.StatusOK, &got)
+	if got.ID != o.ID || got.Slug != slug {
+		t.Fatalf("old address resolved to %+v", got)
+	}
+	if id, err := h.store.EnsureOrganization(ctx, h.org); err != nil || id != o.ID {
+		t.Fatalf("bootstrap by old slug gave %q (%v), want %q", id, err, o.ID)
+	}
+
+	// Neither the old nor the current address can be taken by another organization.
+	h.call("POST", "/api/v1/orgs", api.CreateOrganizationRequest{Slug: h.org, Name: "x"}, http.StatusConflict, nil)
+	h.call("POST", "/api/v1/orgs", api.CreateOrganizationRequest{Slug: slug, Name: "x"}, http.StatusConflict, nil)
+	var other api.Organization
+	h.call("POST", "/api/v1/orgs", api.CreateOrganizationRequest{Slug: "o-" + randomSuffix(), Name: "Other"}, http.StatusCreated, &other)
+	h.call("PATCH", "/api/v1/orgs/"+other.Slug, api.UpdateOrganizationRequest{Name: "Other", Slug: h.org}, http.StatusConflict, nil)
+	h.call("PATCH", "/api/v1/orgs/"+other.Slug, api.UpdateOrganizationRequest{Name: "Other", Slug: slug}, http.StatusConflict, nil)
+
+	// The organization can take its old address back.
+	h.call("PATCH", "/api/v1/orgs/"+slug, api.UpdateOrganizationRequest{Name: o.Name, Slug: h.org}, http.StatusOK, &changed)
+	if changed.Slug != h.org {
+		t.Fatalf("taking the old address back gave %+v", changed)
+	}
+	h.call("GET", "/api/v1/orgs/"+slug, nil, http.StatusOK, &got)
+	if got.ID != o.ID || got.Slug != h.org {
+		t.Fatalf("second address resolved to %+v", got)
+	}
+}

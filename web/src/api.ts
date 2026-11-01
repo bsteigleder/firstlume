@@ -337,7 +337,8 @@ export const api = {
     const p = `/orgs/${encodeURIComponent(slug)}`;
     return {
       get: () => request<Organization>("GET", p),
-      rename: (name: string) => request<Organization>("PATCH", p, { name }),
+      /** Renames the organization; a new slug changes its address and the old one keeps working. */
+      update: (name: string, slug: string) => request<Organization>("PATCH", p, { name, slug }),
       tree: () => request<Tree>("GET", `${p}/tree`),
 
       createFolder: (parentID: string, name: string) => request<Folder>("POST", `${p}/folders`, { parent_id: parentID, name }),
