@@ -223,6 +223,16 @@ func (s *Server) listStateUnits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, units)
 }
 
+// stackResources lists what the stack's state manages, without attribute values (R8.2).
+func (s *Server) stackResources(w http.ResponseWriter, r *http.Request) {
+	out, err := s.store.StackResources(r.Context(), orgID(r), id(r))
+	if err != nil {
+		s.storeError(w, r, err, "stack")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) deleteState(w http.ResponseWriter, r *http.Request) {
 	var req api.DeleteStateRequest
 	if !decodeJSON(w, r, &req) {

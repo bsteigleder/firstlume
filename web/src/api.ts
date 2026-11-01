@@ -247,6 +247,69 @@ export function changeKey(c: ResourceChange): string {
   return c.unit ? `${c.unit}:${c.address}` : c.address;
 }
 
+export interface StateLock {
+  id: string;
+  holder: string;
+  operation?: string;
+  run_id?: string;
+  since: string;
+}
+
+export interface StateUnit {
+  key: string;
+  version: number;
+  serial: number;
+  resources: number;
+  size: number;
+  updated_at?: string;
+  written_by?: string;
+  run_id?: string;
+  lock?: StateLock;
+}
+
+/** An apply that changed a resource. */
+export interface ResourceEvent {
+  action: ChangeAction;
+  run_id: string;
+  run_type: RunType;
+  at: string;
+  by: string;
+}
+
+/** One resource instance in a state: no attribute values. */
+export interface StateResource {
+  address: string;
+  mode: "managed" | "data";
+  type: string;
+  name: string;
+  module?: string;
+  provider: string;
+  instances: number;
+  depends_on?: string[];
+  history?: ResourceEvent[];
+  /** What the latest drift check would do to it to match the code. */
+  drift?: ChangeAction;
+}
+
+export interface ResourceUnit {
+  key: string;
+  version: number;
+  serial: number;
+  updated_at?: string;
+  written_by?: string;
+  run_id?: string;
+  lock?: StateLock;
+  error?: string;
+  resources: StateResource[];
+}
+
+export interface StackResources {
+  units: ResourceUnit[];
+  drift?: { run_id: string; at: string; resources: number };
+  /** An apply ran but the stack has no state in Firstlume: the code keeps it elsewhere. */
+  state_outside?: boolean;
+}
+
 export interface RunSettings {
   require_approval: { value: boolean; origin: Level };
   confirm_destructive: { value: boolean; origin: Level };
@@ -437,6 +500,8 @@ export const api = {
       deleteStack: (id: string) => request<void>("DELETE", `${p}/stacks/${id}`),
       listRuns: (stackID: string, limit = 50) => request<Run[]>("GET", `${p}/stacks/${stackID}/runs?limit=${limit}`),
       createRun: (stackID: string, type: RunType, ref = "") => request<Run>("POST", `${p}/stacks/${stackID}/runs`, { type, ref }),
+      stateUnits: (stackID: string) => request<StateUnit[]>("GET", `${p}/stacks/${stackID}/state`),
+      resources: (stackID: string) => request<StackResources>("GET", `${p}/stacks/${stackID}/resources`),
 
       activeRuns: () => request<ActiveRun[]>("GET", `${p}/runs?active=true&failed_within=1h`),
       getRun: (id: string) => request<Run>("GET", `${p}/runs/${id}`),

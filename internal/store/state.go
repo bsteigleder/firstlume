@@ -169,11 +169,15 @@ func lockUnit(ctx context.Context, tx pgx.Tx, a *StateActor, key string) (*state
 
 // ReadState returns the unit's current state, or nil when it has none yet.
 func (s *Store) ReadState(ctx context.Context, a *StateActor, key string) ([]byte, error) {
+	return s.stateBytes(ctx, a.StackID, key)
+}
+
+func (s *Store) stateBytes(ctx context.Context, stackID, key string) ([]byte, error) {
 	var objectKey string
 	err := s.pool.QueryRow(ctx, `
 		SELECT v.object_key FROM state_units u
 		JOIN state_versions v ON v.unit_id = u.id AND v.number = u.current_version
-		WHERE u.stack_id = $1 AND u.key = $2 AND u.deleted_at IS NULL`, a.StackID, key).Scan(&objectKey)
+		WHERE u.stack_id = $1 AND u.key = $2 AND u.deleted_at IS NULL`, stackID, key).Scan(&objectKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

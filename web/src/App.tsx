@@ -22,6 +22,7 @@ const router = createBrowserRouter([
       { path: "f/:folderId", element: <FolderPage /> },
       { path: "f/:folderId/settings", element: <FolderSettingsPage /> },
       { path: "s/:stackId", element: <StackPage tab="runs" /> },
+      { path: "s/:stackId/resources", element: <StackPage tab="resources" /> },
       { path: "s/:stackId/settings", element: <StackPage tab="settings" /> },
       { path: "s/:stackId/source", element: <StackPage tab="source" /> },
       { path: "r/:runId", element: <RunPage /> },

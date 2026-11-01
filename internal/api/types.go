@@ -823,6 +823,66 @@ type StateLock struct {
 	Since     time.Time `json:"since"`
 }
 
+// StackResources is what a stack's state manages, unit by unit (spec 0002
+// R8.2). Attribute values never appear in it.
+type StackResources struct {
+	Units []ResourceUnit `json:"units"`
+	// Drift is the latest drift check, when it found differences that no
+	// apply has fixed since.
+	Drift *ResourceDrift `json:"drift,omitempty"`
+	// StateOutside says an apply ran but Firstlume has no state for the
+	// stack: its code keeps the state in another backend.
+	StateOutside bool `json:"state_outside,omitempty"`
+}
+
+// ResourceUnit is one unit's current state and the resources in it.
+type ResourceUnit struct {
+	Key       string     `json:"key"`
+	Version   int        `json:"version"`
+	Serial    int64      `json:"serial"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+	WrittenBy string     `json:"written_by,omitempty"`
+	RunID     string     `json:"run_id,omitempty"`
+	Lock      *StateLock `json:"lock,omitempty"`
+	// Error says why the state could not be read; Resources is then empty.
+	Error     string          `json:"error,omitempty"`
+	Resources []StateResource `json:"resources"`
+}
+
+// StateResource is one resource instance in a state.
+type StateResource struct {
+	Address string `json:"address"`
+	// Mode is managed, or data for a data source.
+	Mode   string `json:"mode"`
+	Type   string `json:"type"`
+	Name   string `json:"name"`
+	Module string `json:"module,omitempty"`
+	// Provider is the provider's source, such as registry.terraform.io/hashicorp/aws.
+	Provider string `json:"provider"`
+	// Instances counts the instances of its block (count or for_each).
+	Instances int      `json:"instances"`
+	DependsOn []string `json:"depends_on,omitempty"`
+	// History lists the latest applies that changed it, newest first.
+	History []ResourceEvent `json:"history,omitempty"`
+	// Drift is what the latest drift check would do to it to match the code.
+	Drift ChangeAction `json:"drift,omitempty"`
+}
+
+// ResourceEvent is an apply that changed a resource.
+type ResourceEvent struct {
+	Action  ChangeAction `json:"action"`
+	RunID   string       `json:"run_id"`
+	RunType RunType      `json:"run_type"`
+	At      time.Time    `json:"at"`
+	By      string       `json:"by"`
+}
+
+type ResourceDrift struct {
+	RunID     string    `json:"run_id"`
+	At        time.Time `json:"at"`
+	Resources int       `json:"resources"`
+}
+
 // DeleteStateRequest confirms deleting a stack's state by its name.
 type DeleteStateRequest struct {
 	Confirm string `json:"confirm"`
