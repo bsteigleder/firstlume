@@ -27,6 +27,8 @@
   --running-soft: light-dark(#e5edfb, #1a2640);
   --replace: light-dark(#7b1f75, #e58ae0);
   --replace-soft: light-dark(#f6e3f5, #351733);
+  --vault: light-dark(#4a3a8c, #b9a8ff);
+  --vault-soft: light-dark(#e8e4f6, #241d3d);
   --log-bg: light-dark(#16171b, #0b0c0e);
   --log-text: #d9dae0;
   --log-step: #f5b544;
@@ -262,7 +264,8 @@ a.small-btn:hover {
 }
 
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: var(--text);
   background: var(--surface);
@@ -2400,4 +2403,130 @@ img.avatar {
     display: flex;
   }
 
+}
+
+/* Spec 0003: files, Vault and registries. */
+textarea {
+  resize: vertical;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+textarea.mono {
+  font-size: 12.5px;
+}
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.badge.vault {
+  background: var(--vault-soft);
+  color: var(--vault);
+}
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13.5px;
+  font-weight: 400;
+}
+.check input {
+  margin-top: 3px;
+}
+.hint.block {
+  display: block;
+}
+.plain-fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.plain-fieldset legend {
+  padding: 0;
+  margin-bottom: 6px;
+}
+.grid-vault-ref {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 10px;
+}
+.segmented.fit {
+  align-self: flex-start;
+}
+.field.compact {
+  min-width: 220px;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.ref-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.ref {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.ref.vault {
+  border-color: var(--vault-soft);
+  color: var(--vault);
+}
+.declared-file {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.declared-file .head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.declared-file .head strong {
+  flex: 1;
+  min-width: 220px;
+}
+.check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.check-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13.5px;
+}
+.key-box {
+  margin: 0;
+  overflow-x: auto;
+}
+@media (max-width: 640px) {
+  .grid-vault-ref {
+    grid-template-columns: 1fr;
+  }
+}
+.notice-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.vault-check {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }

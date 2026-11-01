@@ -150,6 +150,8 @@ files:
       host: { vault: "secret/infra/dev/${name}", field: ip }
       user: { vault: "secret/infra/dev/${name}", field: user }
       port: 22
+env:
+  DEPLOY_USER: { vault: secret/infra/dev/n01, field: user }
 YAML
 cp environments/tg/root.hcl environments/machines/root.hcl
 echo 'connection.hcl' > environments/machines/.gitignore
