@@ -24,6 +24,7 @@ import {
   Initials,
   levelName,
   StatusBadge,
+  onTabShown,
   timeAgo,
   useAction,
   useData,
@@ -50,11 +51,16 @@ export function RunPage() {
   // Keep the run and its steps fresh while they can still change.
   useEffect(() => {
     if (!active) return;
-    const t = setInterval(() => {
+    const refresh = () => {
       void run.reload();
       void steps.reload();
-    }, 2000);
-    return () => clearInterval(t);
+    };
+    const t = setInterval(refresh, 2000);
+    const stop = onTabShown(refresh);
+    return () => {
+      clearInterval(t);
+      stop();
+    };
   }, [active, run.reload, steps.reload]);
   useEffect(() => {
     void steps.reload();

@@ -249,10 +249,23 @@ export function useData<T>(load: () => Promise<T>, deps: unknown[], opts: { poll
   useEffect(() => {
     if (!poll) return;
     const t = setInterval(() => void reload(), pollMs);
-    return () => clearInterval(t);
+    const stop = onTabShown(() => void reload());
+    return () => {
+      clearInterval(t);
+      stop();
+    };
   }, [poll, pollMs, reload]);
 
   return { data, error, reload, setError };
+}
+
+/** Calls `fn` when the tab comes back into view: browsers slow timers in hidden tabs. */
+export function onTabShown(fn: () => void): () => void {
+  const handler = () => {
+    if (document.visibilityState === "visible") fn();
+  };
+  document.addEventListener("visibilitychange", handler);
+  return () => document.removeEventListener("visibilitychange", handler);
 }
 
 export function errorMessage(e: unknown): string {
