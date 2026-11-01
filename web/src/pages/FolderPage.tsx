@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { settingsPath, type Stack } from "../api";
 import { PeopleIcon, PlayIcon } from "../icons";
-import { PageTitle, useCrumbs, useOrg } from "../org";
+import { folderContents, PageTitle, useCrumbs, useOrg } from "../org";
 import { DriftBadge, driftLabel, Empty, repoLabel, StatusBadge, timeAgo, useData } from "../ui";
 import { RunDialog } from "./RunDialog";
 
@@ -23,6 +23,7 @@ export function FolderPage() {
   const stacks = tree.stacks.filter((s) => (s.folder_id ?? "") === folderId);
   const drift = settings.data?.effective.drift_interval_minutes.value ?? 0;
   const subfolders = tree.folders.filter((f) => (f.parent_id ?? "") === folderId).length;
+  const contents = folderContents(tree, folderId);
 
   return (
     <div className="page">
@@ -39,7 +40,16 @@ export function FolderPage() {
             {folder && (
               <>
                 <button onClick={() => open({ kind: "rename-folder", folder })}>Rename</button>
-                <button onClick={() => open({ kind: "delete-folder", folder })}>Delete</button>
+                {contents.empty ? (
+                  <button className="danger-text" onClick={() => open({ kind: "delete-folder", folder })}>
+                    Delete
+                  </button>
+                ) : (
+                  <button aria-disabled="true" className="tip tip-wrap"
+                    data-tip={`Only empty folders can be deleted. ${folder.name} still has ${contents.summary}: move or delete them first.`}>
+                    Delete
+                  </button>
+                )}
               </>
             )}
             <button className="primary" onClick={() => open({ kind: "new-stack", folderID: folderId })}>

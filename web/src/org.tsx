@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
 import { api, signOut, type ActiveRun, type Folder, type Me, type OrgAPI, type Organization, type StackSummary, type Tree, type User } from "./api";
-import { ChevronDownIcon, ChevronRightIcon, CloseIcon, FolderIcon, FolderPlusIcon, GearIcon, PlusIcon, SearchIcon } from "./icons";
+import { ChevronDownIcon, ChevronRightIcon, CloseIcon, FolderIcon, FolderPlusIcon, GearIcon, PlusIcon, SearchIcon, TrashIcon } from "./icons";
 import { DeleteFolderDialog, FolderNameDialog, NewStackDialog } from "./pages/dialogs";
 import { ErrorBanner, Initials, StatusBadge, timeAgo, useData } from "./ui";
 import { useSession } from "./session";
@@ -59,6 +59,17 @@ export function rememberOrg(slug: string) {
   } catch {
     // only a convenience
   }
+}
+
+/** What sits directly in a folder. Only an empty one (no folders, no stacks) can be deleted. */
+export function folderContents(tree: Tree | null, folderID: string) {
+  const folders = tree?.folders.filter((f) => f.parent_id === folderID).length ?? 0;
+  const stacks = tree?.stacks.filter((s) => s.folder_id === folderID).length ?? 0;
+  const parts = [
+    folders > 0 && `${folders} folder${folders === 1 ? "" : "s"}`,
+    stacks > 0 && `${stacks} stack${stacks === 1 ? "" : "s"}`,
+  ].filter(Boolean);
+  return { folders, stacks, empty: folders === 0 && stacks === 0, summary: parts.join(" and ") };
 }
 
 export function lastOrg(): string | null {
@@ -380,6 +391,12 @@ function TreeLevel({ parentID, depth, query, path }: { parentID: string; depth: 
                 <Link className="icon-btn tip" data-tip="Settings" aria-label={`Settings of ${f.name}`} to={link(`f/${f.id}/settings`)}>
                   <GearIcon />
                 </Link>
+                {folderContents(tree, f.id).empty && (
+                  <button className="icon-btn tip danger-icon" data-tip={`Delete ${f.name} (empty folder)`} aria-label={`Delete ${f.name}`}
+                    onClick={() => open({ kind: "delete-folder", folder: f })}>
+                    <TrashIcon />
+                  </button>
+                )}
               </span>
             </div>
             {isOpen && <TreeLevel parentID={f.id} depth={depth + 1} query={query} path={path} />}
