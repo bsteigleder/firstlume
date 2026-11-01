@@ -480,6 +480,9 @@ func statusForPhase(p api.Phase) api.RunStatus {
 // variablesArtifact holds the variables a plan ran with; the apply reuses them.
 const variablesArtifact = "variables"
 
+// registriesArtifact holds the registry credentials a plan ran with; the apply reuses them.
+const registriesArtifact = "registries"
+
 // ExecSpec assembles everything an executor needs, decrypting secrets. It only
 // succeeds while the run is executing the given phase. The plan phase gets
 // the stack's effective variables and records them; the apply phase gets
@@ -517,6 +520,16 @@ func (s *Store) ExecSpec(ctx context.Context, runID string, phase api.Phase) (*a
 		if err := json.Unmarshal(data, &spec.Variables); err != nil {
 			return nil, err
 		}
+		data, err = s.LoadArtifact(ctx, runID, phase, registriesArtifact)
+		switch {
+		case errors.Is(err, ErrNotFound): // planned before registry credentials existed
+		case err != nil:
+			return nil, fmt.Errorf("loading the plan's registry credentials: %w", err)
+		default:
+			if err := json.Unmarshal(data, &spec.Registries); err != nil {
+				return nil, err
+			}
+		}
 		return &spec, nil
 	}
 
@@ -525,6 +538,17 @@ func (s *Store) ExecSpec(ctx context.Context, runID string, phase api.Phase) (*a
 		return nil, err
 	}
 	if spec.Variables, err = s.execVariables(resolved); err != nil {
+		return nil, err
+	}
+	levels, err := chain(ctx, s.pool, orgID, api.Level{Kind: api.LevelStack, ID: spec.StackID})
+	if err != nil {
+		return nil, err
+	}
+	regs, _, err := effectiveRegistries(ctx, s.pool, orgID, levels)
+	if err != nil {
+		return nil, err
+	}
+	if spec.Registries, err = s.execRegistries(regs); err != nil {
 		return nil, err
 	}
 	// What the run was configured with, as shown on the run (secret values are already blank).
@@ -543,6 +567,12 @@ func (s *Store) ExecSpec(ctx context.Context, runID string, phase api.Phase) (*a
 		return nil, err
 	}
 	if err := s.SaveArtifact(ctx, runID, phase, variablesArtifact, data); err != nil {
+		return nil, err
+	}
+	if data, err = json.Marshal(spec.Registries); err != nil {
+		return nil, err
+	}
+	if err := s.SaveArtifact(ctx, runID, phase, registriesArtifact, data); err != nil {
 		return nil, err
 	}
 	return &spec, nil

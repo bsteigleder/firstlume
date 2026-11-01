@@ -238,6 +238,29 @@ O JWT traz `sub` (`stack:<id>`), `org`, `stack_id`, `stack_name`, `stack_path` (
 
 Para experimentar localmente: com o server de dev rodando, `make dev-vault` sobe um Vault em modo dev, confiando no server, com segredos em `secret/infra/{dev,prod}` e os papéis `dev` e `prod`. Ponha o stack `environments/machines` do Gitea de dev numa pasta `dev` com `vault_role: dev`.
 
+#### Credenciais de registry
+
+Para o código baixar charts e imagens de registries com login (Harbor, GHCR, Docker Hub) ou módulos e providers de um registry Terraform privado:
+
+- **Nas configurações**, herdadas por host (o nível mais próximo vence, e hosts diferentes se somam):
+
+  ```bash
+  curl -X PUT -H "$H" $O/settings -d '{
+    "registries": [
+      {"host": "harbor.example.com", "username": "robot$infra", "password": "..."},
+      {"host": "ghcr.io", "username": "bot", "password_vault": {"path": "secret/ci/ghcr", "field": "token"}},
+      {"host": "tf.example.com", "kind": "terraform", "password": "..."}
+    ]
+  }'
+  ```
+
+  A senha nunca é devolvida. Mandada vazia, a guardada continua. Sem o campo `registries`, as credenciais do nível ficam como estão; `[]` remove todas.
+- **No repositório**, em `registries` do `config.yaml`, com as mesmas fontes da declaração (`{var: ...}`, `{vault: ...}`). Para o mesmo host, vencem as configurações.
+
+No run, o Firstlume escreve o `config.json` do Docker no HOME da fase, aponta `DOCKER_CONFIG` e `HELM_REGISTRY_CONFIG` para ele (o provider `helm` e o próprio `helm` leem daí) e exporta `TF_TOKEN_<host>` para registries do tipo `terraform`. Senhas e o `usuário:senha` em base64 são mascarados no log. O apply usa as credenciais do plan.
+
+Para experimentar localmente: `make dev-registry` sobe um registry com login em `localhost:5001`, com o chart `oci://localhost:5001/charts/hello`. O stack `environments/charts` do Gitea de dev usa esse chart.
+
 ## Rodando localmente
 
 Requisitos: Go 1.26+, Node 22+, Docker e git.
@@ -353,7 +376,7 @@ deploy/docker/        Dockerfile
 1. ✅ Runs de plan/apply, logs, aprovação configurável, drift detection agendado (só reporta), UI web, agent com Kubernetes e chart Helm
 2. State backend HTTP próprio, por unit, com lock, versões e criptografia, no Postgres ou no Garage/S3 (✅ marcos S1 e S2), importação de state existente e modo "só state" para quem continua usando o CI atual (✅ marco S3); aba State na UI
 3. Terragrunt nativo: descoberta de units, grafo de dependências, um run por unit e agents com labels por rede/zona
-4. Arquivos e variáveis declarados no repositório, variáveis do tipo arquivo e segredos do Vault com JWT emitido pelo Firstlume por fase, sem o Firstlume virar um segundo cofre (✅ marcos F1 e F2 da spec 0003); credenciais de registry
+4. Arquivos e variáveis declarados no repositório, variáveis do tipo arquivo segredos do Vault com JWT emitido pelo Firstlume por fase, sem o Firstlume virar um segundo cofre, e credenciais de registry (✅ marcos F1 a F3 da spec 0003)
 5. Usuários, grupos e SSO; aprovadores por pessoa ou grupo; trilha de auditoria
 6. Integração Git (Gitea/Forgejo, GitHub, GitLab): plan em PR, commit status, apply no merge e gatilho por impacto
 7. Observabilidade: export via OpenTelemetry (métricas, eventos, logs e traces) e notificações (webhook, Slack, Rocket.Chat)

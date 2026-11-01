@@ -249,6 +249,11 @@ func (s *Store) effective(ctx context.Context, q querier, orgID string, at api.L
 		return api.EffectiveSettings{}, nil, err
 	}
 	eff, resolved := resolve(levels, settings, vars)
+	regs, _, err := effectiveRegistries(ctx, q, orgID, levels)
+	if err != nil {
+		return api.EffectiveSettings{}, nil, err
+	}
+	eff.Registries = publicRegistries(regs)
 	return eff, resolved, nil
 }
 
@@ -264,6 +269,11 @@ func (s *Store) GetSettings(ctx context.Context, orgID string, at api.Level) (*a
 		return nil, err
 	}
 	eff, _ := resolve(levels, settings, vars)
+	resolvedRegs, regs, err := effectiveRegistries(ctx, s.pool, orgID, levels)
+	if err != nil {
+		return nil, err
+	}
+	eff.Registries = publicRegistries(resolvedRegs)
 	own := settings[keyOf(at)]
 	out := &api.SettingsResponse{
 		Level: api.LevelSettings{
@@ -272,8 +282,12 @@ func (s *Store) GetSettings(ctx context.Context, orgID string, at api.Level) (*a
 			ConfirmDestructive:   own.confirmDestructive,
 			VaultRole:            own.vaultRole,
 			Variables:            []api.Variable{},
+			Registries:           []api.RegistryCredential{},
 		},
 		Effective: eff,
+	}
+	for _, r := range regs[keyOf(at)] {
+		out.Level.Registries = append(out.Level.Registries, r.RegistryCredential)
 	}
 	for _, v := range vars[keyOf(at)] {
 		if v.Sensitive {
@@ -350,6 +364,9 @@ func (s *Store) PutSettings(ctx context.Context, orgID string, at api.Level, in 
 				orgID, folderID, stackID, v.Category, v.Key, v.Sensitive, plain, enc); err != nil {
 				return classify(err)
 			}
+		}
+		if in.Registries != nil {
+			return s.putRegistries(ctx, tx, orgID, folderID, stackID, in.Registries)
 		}
 		return nil
 	})

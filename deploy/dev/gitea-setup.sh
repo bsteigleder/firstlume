@@ -141,6 +141,27 @@ resource "terraform_data" "machine" { input = "${var.user}@${var.host}:${var.por
 TF
 done
 
+# A chart from the dev registry (make dev-registry), which needs a login: the
+# credential comes from the registries in Firstlume's settings.
+mkdir -p environments/charts/.firstlume
+printf 'version: 1\nengine: terraform\nengine_version: 1.15.6\n' > environments/charts/.firstlume/config.yaml
+cat > environments/charts/main.tf <<'TF'
+terraform {
+  backend "http" {}
+  required_providers {
+    helm = { source = "hashicorp/helm", version = "~> 3.1" }
+  }
+}
+provider "helm" {}
+data "helm_template" "hello" {
+  name       = "hello"
+  repository = "oci://localhost:5001/charts"
+  chart      = "hello"
+  version    = "0.1.0"
+}
+resource "terraform_data" "rendered" { input = sha256(data.helm_template.hello.manifest) }
+TF
+
 mkdir -p legacy/vpn/.firstlume
 printf 'version: 1\nengine: terraform\nengine_version: latest\n' > legacy/vpn/.firstlume/config.yaml
 echo 'resource "terraform_data" "vpn" {}' > legacy/vpn/main.tf

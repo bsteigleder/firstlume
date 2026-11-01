@@ -177,7 +177,7 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			return nil
 		}},
 		{name: "Prepare", skip: func() bool { return !e.needsPrepare() }, run: func() (err error) {
-			if e.prepared, err = prepare(ctx, workDir, e.decl, s.Variables, e.vault, e.masker, e.out); err != nil {
+			if e.prepared, err = prepare(ctx, workDir, homeDir, e.decl, s.Variables, s.Registries, e.vault, e.masker, e.out); err != nil {
 				return err
 			}
 			return e.checkVaultValues(ctx)
@@ -247,6 +247,9 @@ func (e *executor) checkVaultValues(ctx context.Context) error {
 		}
 		return e.client.PutArtifact(ctx, api.VaultHashesArtifact, data)
 	}
+	if len(e.vault.hashes) == 0 { // same commit: the plan read nothing from Vault either
+		return nil
+	}
 	plan := map[string]string{}
 	data, err := e.client.GetArtifact(ctx, api.VaultHashesArtifact)
 	var se *apiclient.StatusError
@@ -267,7 +270,7 @@ func (e *executor) checkVaultValues(ctx context.Context) error {
 
 // needsPrepare reports whether the phase has files or variables to prepare.
 func (e *executor) needsPrepare() bool {
-	if e.decl != nil {
+	if e.decl != nil || len(e.spec.Registries) > 0 {
 		return true
 	}
 	for _, v := range e.spec.Variables {

@@ -144,7 +144,7 @@ terraform:
 	masker := NewMasker(nil)
 	src := newVaultSource(v.spec("dev", "dev/machines", "plan"), masker)
 	var log bytes.Buffer
-	p, err := prepare(ctx, root, d, nil, src, masker, &log)
+	p, err := prepare(ctx, root, t.TempDir(), d, nil, nil, src, masker, &log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ terraform:
 		root := t.TempDir()
 		mkdirs(t, root, "n01", "n02")
 		s := newVaultSource(v.spec("dev", "dev/machines", "apply"), NewMasker(nil))
-		if _, err := prepare(ctx, root, d, nil, s, NewMasker(nil), io.Discard); err != nil {
+		if _, err := prepare(ctx, root, t.TempDir(), d, nil, nil, s, NewMasker(nil), io.Discard); err != nil {
 			t.Fatal(err)
 		}
 		return s
@@ -200,7 +200,7 @@ terraform:
 	refuse := func(name string, spec *api.ExecVault, decl, want string, unwanted ...string) {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
-			_, err := prepare(ctx, root, declaration(t, decl), nil, newVaultSource(spec, NewMasker(nil)), NewMasker(nil), io.Discard)
+			_, err := prepare(ctx, root, t.TempDir(), declaration(t, decl), nil, nil, newVaultSource(spec, NewMasker(nil)), NewMasker(nil), io.Discard)
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("got %v, want %q", err, want)
 			}

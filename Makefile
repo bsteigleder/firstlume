@@ -12,7 +12,7 @@ TEST_DATABASE_URL := postgres://firstlume:firstlume@localhost:5432/firstlume_tes
 -include .env
 export
 
-.PHONY: build web web-dev test test-integration vet dev-db dev-gitea dev-garage dev-vault dev-state-bundle dev-env run-server run-agent helm-lint docker-build clean
+.PHONY: build web web-dev test test-integration vet dev-db dev-gitea dev-garage dev-vault dev-registry dev-state-bundle dev-env run-server run-agent helm-lint docker-build clean
 
 build: web
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/firstlume
@@ -47,6 +47,8 @@ test-integration:
 	FIRSTLUME_TEST_S3_BUCKET=$(FIRSTLUME_DEV_GARAGE_TEST_BUCKET) FIRSTLUME_TEST_S3_REGION=$(FIRSTLUME_STATE_S3_REGION) \
 	FIRSTLUME_TEST_S3_ACCESS_KEY_ID=$(FIRSTLUME_STATE_S3_ACCESS_KEY_ID) FIRSTLUME_TEST_S3_SECRET_ACCESS_KEY=$(FIRSTLUME_STATE_S3_SECRET_ACCESS_KEY) \
 	FIRSTLUME_TEST_VAULT_ADDR=$(FIRSTLUME_DEV_VAULT_ADDR) FIRSTLUME_TEST_VAULT_TOKEN=$(FIRSTLUME_DEV_VAULT_ROOT_TOKEN) \
+	FIRSTLUME_TEST_REGISTRY=$(FIRSTLUME_DEV_REGISTRY) FIRSTLUME_TEST_REGISTRY_USER=$(FIRSTLUME_DEV_REGISTRY_USER) \
+	FIRSTLUME_TEST_REGISTRY_PASSWORD=$(FIRSTLUME_DEV_REGISTRY_PASSWORD) \
 	go test -race -count=1 ./...
 
 vet:
@@ -71,6 +73,10 @@ dev-garage:
 ## secrets and the roles dev and prod. Needs make run-server running.
 dev-vault:
 	deploy/dev/vault-setup.sh
+
+## Local OCI registry with a login and an example chart.
+dev-registry:
+	deploy/dev/registry-setup.sh
 
 ## Example bundle of local Terraform states to try the state import with.
 dev-state-bundle:

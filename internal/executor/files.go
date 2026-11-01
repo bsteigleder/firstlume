@@ -43,25 +43,23 @@ type outputFile struct {
 }
 
 // prepare writes the declared files and the file variables into dir, the
-// stack's directory, and returns the declared variables' environment. Settings
-// win over the declaration for the same variable (D6). Secrets it writes are
-// added to masker.
-func prepare(ctx context.Context, dir string, decl *stackconfig.Declaration, vars []api.ExecVariable, vault *vaultSource,
-	masker *Masker, out io.Writer) (*prepared, error) {
+// stack's directory, and the registry credentials into home, the phase's
+// HOME. It returns the environment of the declared variables and of the
+// registries. Settings win over the declaration for the same variable or
+// registry host (D6). Secrets it handles are added to masker.
+func prepare(ctx context.Context, dir, home string, decl *stackconfig.Declaration, vars []api.ExecVariable,
+	registries []api.ExecRegistry, vault *vaultSource, masker *Masker, out io.Writer) (*prepared, error) {
 	r := &resolver{ctx: ctx, vars: vars, vault: vault}
+	if decl == nil {
+		decl = &stackconfig.Declaration{}
+	}
 	var files []outputFile
-	if decl != nil {
-		if len(decl.Registries) > 0 {
-			return nil, fmt.Errorf("line %d: registries in %s come with spec 0003, Marco F3; not supported yet",
-				decl.Registries[0].Line, stackconfig.File)
+	for i := range decl.Files {
+		out, err := r.declaredFile(dir, &decl.Files[i])
+		if err != nil {
+			return nil, err
 		}
-		for i := range decl.Files {
-			out, err := r.declaredFile(dir, &decl.Files[i])
-			if err != nil {
-				return nil, err
-			}
-			files = append(files, out...)
-		}
+		files = append(files, out...)
 	}
 	for _, v := range vars {
 		if v.Category == api.CategoryFile {
@@ -78,9 +76,6 @@ func prepare(ctx context.Context, dir string, decl *stackconfig.Declaration, var
 			masker.Add(string(f.content))
 		}
 		fmt.Fprintf(out, "==> Wrote %s (%s%s)\n", f.rel, f.origin, sensitiveNote(f.sensitive))
-	}
-	if decl == nil {
-		return p, nil
 	}
 
 	inSettings := map[string]bool{}
@@ -114,6 +109,11 @@ func prepare(ctx context.Context, dir string, decl *stackconfig.Declaration, var
 			p.env = append(p.env, group.prefix+v.Name+"="+value)
 		}
 	}
+	regEnv, err := r.registries(home, registries, decl.Registries, masker, out)
+	if err != nil {
+		return nil, err
+	}
+	p.env = append(p.env, regEnv...)
 	return p, nil
 }
 

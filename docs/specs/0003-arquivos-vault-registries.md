@@ -1,6 +1,6 @@
 # Spec 0003: arquivos, segredos do Vault e credenciais de registry
 
-- **Status:** aprovada em 2026-10-31; Marcos F1 e F2 implementados em 2026-10-31
+- **Status:** aprovada em 2026-10-31; Marcos F1 a F3 implementados em 2026-10-31
 - **Data:** 2026-10-31
 - **Depende de:** spec 0001 (configurações herdadas e `.firstlume/config.yaml`) e spec 0002 (state), já implementadas
 
@@ -220,7 +220,7 @@ As configurações continuam em `GET|PUT /api/v1/orgs/{org}/(folders|stacks)/{id
 |---|---|
 | `variables[].category` | aceita `file` (R2.8) |
 | `vault_role` | nova configuração herdada (R3.2) |
-| `registries[]` | `{host, kind: oci\|terraform, username, password \| password_vault: {path, field}}`; a senha nunca é devolvida |
+| `registries[]` | `{host, kind: oci\|terraform, username, password \| password_vault: {path, field}}`; a senha nunca é devolvida. Sem o campo, as credenciais do nível ficam como estão |
 
 Novas rotas:
 
@@ -278,10 +278,12 @@ Testes: `internal/executor/vaultsource_test.go` e `internal/server/vault_test.go
 
 ### Marco F3: credenciais de registry
 
-- [ ] **CAF3.1** Com o registry do `make dev-registry`, um stack com `data "helm_template"` de um chart `oci://` desse registry funciona com a credencial herdada da organização e falha sem ela.
-- [ ] **CAF3.2** Uma credencial no stack substitui a da organização para o mesmo host; hosts diferentes se somam; a da declaração entra quando o host não está nas configurações.
-- [ ] **CAF3.3** Uma credencial `terraform` vira `TF_TOKEN_<host>` com o nome no formato do Terraform (teste unitário com host com ponto e hífen).
-- [ ] **CAF3.4** A senha vinda do Vault funciona, tanto nas configurações quanto na declaração. Nem ela nem o base64 `usuário:senha` aparecem no log.
+Testes: `internal/executor/registries_test.go` (arquivos e variáveis, precedência, mascaramento, e `helm pull` real contra o registry do `make dev-registry`, com a senha nas configurações e no Vault) e `internal/server/registries_test.go` (validação, herança por host, senha nunca devolvida, apply com as credenciais do plan). Também verificado ponta a ponta com o agent: o stack `environments/charts` do Gitea de dev, com `data "helm_template"` do provider `helm`, falha com "basic credential not found" sem credencial e aplica com a credencial da organização.
+
+- [x] **CAF3.1** Com o registry do `make dev-registry`, um stack com `data "helm_template"` de um chart `oci://` desse registry funciona com a credencial herdada da organização e falha sem ela.
+- [x] **CAF3.2** Uma credencial no stack substitui a da organização para o mesmo host; hosts diferentes se somam; a da declaração entra quando o host não está nas configurações.
+- [x] **CAF3.3** Uma credencial `terraform` vira `TF_TOKEN_<host>` com o nome no formato do Terraform (teste unitário com host com ponto e hífen).
+- [x] **CAF3.4** A senha vinda do Vault funciona, tanto nas configurações quanto na declaração. Nem ela nem o base64 `usuário:senha` aparecem no log.
 
 ### Marco F4: telas (depois do desenho aprovado)
 

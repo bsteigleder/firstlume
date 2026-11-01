@@ -161,6 +161,9 @@ func validateLevelSettings(s *api.LevelSettings) error {
 	if r := s.VaultRole; r != nil && !vaultRoleRe.MatchString(*r) {
 		return fmt.Errorf("vault_role must be 1-128 letters, digits, '.', '_' or '-'")
 	}
+	if err := validateRegistries(s.Registries); err != nil {
+		return err
+	}
 	if s.Variables == nil {
 		s.Variables = []api.Variable{}
 	}
@@ -205,3 +208,46 @@ func reservedEnv(key string) bool { return stackconfig.ReservedEnv(key) }
 
 // maxFileVariable bounds a file variable's content (spec 0003, R2.7).
 const maxFileVariable = 256 << 10
+
+const maxRegistries = 50
+
+// validateRegistries checks a level's registry credentials (spec 0003, R4.2).
+func validateRegistries(regs []api.RegistryCredential) error {
+	if len(regs) > maxRegistries {
+		return fmt.Errorf("at most %d registry credentials per level", maxRegistries)
+	}
+	seen := map[string]bool{}
+	for i := range regs {
+		r := &regs[i]
+		r.Host = strings.ToLower(strings.TrimSpace(r.Host))
+		if r.Kind == "" {
+			r.Kind = "oci"
+		}
+		r.HasPassword = false
+		if err := stackconfig.ValidRegistry(r.Host, r.Kind); err != nil {
+			return err
+		}
+		switch {
+		case seen[r.Host]:
+			return fmt.Errorf("registry %s is listed twice", r.Host)
+		case r.Kind == "oci" && r.Username == "":
+			return fmt.Errorf("registry %s: username is required", r.Host)
+		case r.Kind == "terraform" && r.Username != "":
+			return fmt.Errorf("registry %s: a terraform registry takes only a token, as password", r.Host)
+		case r.PasswordVault != nil && r.Password != "":
+			return fmt.Errorf("registry %s: give the password or password_vault, not both", r.Host)
+		case len(r.Username) > 256 || len(r.Password) > 8192:
+			return fmt.Errorf("registry %s: username or password too long", r.Host)
+		}
+		if v := r.PasswordVault; v != nil {
+			if err := stackconfig.ValidVaultPath(v.Path); err != nil {
+				return fmt.Errorf("registry %s: %w", r.Host, err)
+			}
+			if v.Field == "" {
+				return fmt.Errorf("registry %s: password_vault needs a field", r.Host)
+			}
+		}
+		seen[r.Host] = true
+	}
+	return nil
+}

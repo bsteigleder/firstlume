@@ -339,6 +339,36 @@ type LevelSettings struct {
 	// VaultRole is the role runs log in to Vault with (spec 0003). Nil inherits.
 	VaultRole *string    `json:"vault_role,omitempty"`
 	Variables []Variable `json:"variables"`
+	// Registries are this level's registry credentials (spec 0003, R4). Unlike
+	// the variables, nil leaves them as they are; an empty list removes them.
+	Registries []RegistryCredential `json:"registries,omitempty"`
+}
+
+// RegistryCredential logs runs in to a registry: an OCI registry (Harbor,
+// GHCR, Docker Hub) or a private Terraform registry. The password is never
+// returned; sent empty, the stored one is kept.
+type RegistryCredential struct {
+	Host string `json:"host"`
+	// Kind is oci (the default) or terraform.
+	Kind     string `json:"kind,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	// PasswordVault reads the password from Vault instead.
+	PasswordVault *VaultRef `json:"password_vault,omitempty"`
+	// HasPassword says a password is stored.
+	HasPassword bool `json:"has_password,omitempty"`
+}
+
+type VaultRef struct {
+	Path  string `json:"path"`
+	Field string `json:"field"`
+}
+
+type EffectiveRegistry struct {
+	RegistryCredential
+	Origin Level `json:"origin"`
+	// Overrides is the next level up with a credential for the same host, if any.
+	Overrides *Level `json:"overrides,omitempty"`
 }
 
 type EffectiveBool struct {
@@ -370,6 +400,7 @@ type EffectiveSettings struct {
 	ConfirmDestructive   EffectiveBool       `json:"confirm_destructive"`
 	VaultRole            EffectiveString     `json:"vault_role"`
 	Variables            []EffectiveVariable `json:"variables"`
+	Registries           []EffectiveRegistry `json:"registries"`
 }
 
 type SettingsResponse struct {
@@ -600,6 +631,17 @@ type ExecSpec struct {
 	Variables []ExecVariable `json:"variables"`
 	// Vault is set when the organization has a Vault connection (spec 0003).
 	Vault *ExecVault `json:"vault,omitempty"`
+	// Registries are the stack's effective registry credentials, the
+	// password decrypted unless it comes from Vault. The apply gets the plan's.
+	Registries []ExecRegistry `json:"registries,omitempty"`
+}
+
+type ExecRegistry struct {
+	Host          string    `json:"host"`
+	Kind          string    `json:"kind"`
+	Username      string    `json:"username,omitempty"`
+	Password      string    `json:"password,omitempty"`
+	PasswordVault *VaultRef `json:"password_vault,omitempty"`
 }
 
 // VaultHashesArtifact holds the keyed hashes of the Vault values a plan

@@ -70,7 +70,22 @@ services:
       timeout: 3s
       retries: 30
 
+  # An OCI registry with a login (make dev-registry writes the password file).
+  registry:
+    image: registry:3
+    profiles: ["registry"]
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: firstlume-dev
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+    ports:
+      - "127.0.0.1:5001:5000"
+    volumes:
+      - ./deploy/dev/registry.htpasswd:/auth/htpasswd:ro
+      - registrydata:/var/lib/registry
+
 volumes:
   pgdata:
   giteadata:
   garagedata:
+  registrydata:

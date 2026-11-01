@@ -94,7 +94,7 @@ terraform:
 	}
 	masker := NewMasker(nil)
 	var log bytes.Buffer
-	p, err := prepare(context.Background(), root, d, vars, newVaultSource(nil, masker), masker, &log)
+	p, err := prepare(context.Background(), root, t.TempDir(), d, vars, nil, newVaultSource(nil, masker), masker, &log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,10 +210,6 @@ func TestPrepareRefuses(t *testing.T) {
 			decl: "files:\n  - path: a.txt\n    format: raw\n    content: {vault: secret/a, field: b}\n",
 			want: "the organization has no Vault connection",
 		},
-		"registries before F3": {
-			decl: "registries:\n  - host: h.example.com\n    username: u\n    password: p\n",
-			want: "Marco F3",
-		},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -222,7 +218,7 @@ func TestPrepareRefuses(t *testing.T) {
 				c.prep(t, root)
 			}
 			masker := NewMasker(nil)
-			_, err := prepare(context.Background(), root, declaration(t, c.decl), c.vars, newVaultSource(nil, masker), masker, &bytes.Buffer{})
+			_, err := prepare(context.Background(), root, t.TempDir(), declaration(t, c.decl), c.vars, nil, newVaultSource(nil, masker), masker, &bytes.Buffer{})
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("got %v, want an error with %q", err, c.want)
 			}
@@ -311,8 +307,8 @@ terraform:
   limits: { cpu: 2, memory: 4096 }
 `)
 	masker := NewMasker(nil)
-	p, err := prepare(context.Background(), root, d, []api.ExecVariable{{Key: "ZONE", Category: api.CategoryEnv, Value: tricky}},
-		newVaultSource(nil, masker), masker, &bytes.Buffer{})
+	p, err := prepare(context.Background(), root, t.TempDir(), d, []api.ExecVariable{{Key: "ZONE", Category: api.CategoryEnv, Value: tricky}},
+		nil, newVaultSource(nil, masker), masker, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
