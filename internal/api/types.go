@@ -635,7 +635,8 @@ type Run struct {
 	UpdatedAt   time.Time    `json:"updated_at"`
 }
 
-// ActiveRun is a run that holds or waits for its stack's lock, with where its stack lives.
+// ActiveRun is a run that holds or waits for its stack's lock (or, when asked
+// for, one that failed recently), with where its stack lives.
 type ActiveRun struct {
 	Run
 	StackName string `json:"stack_name"`
