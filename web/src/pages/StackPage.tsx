@@ -17,6 +17,7 @@ import {
   useAction,
   useData,
 } from "../ui";
+import { RenameStackDialog } from "./dialogs";
 import { RunDialog } from "./RunDialog";
 import { SettingsEditor } from "./SettingsEditor";
 import { StackDeclaration } from "./StackDeclaration";
@@ -28,6 +29,7 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
   const stack = useData(() => api.getStack(stackId), [api, stackId], { poll: true, pollMs: 10000 });
   const units = useData(() => api.stateUnits(stackId), [api, stackId], { poll: true, pollMs: 15000 });
   const [running, setRunning] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const chain = folderChain(stack.data?.folder_id);
 
   useCrumbs([
@@ -66,9 +68,12 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
           </span>
         }
         actions={
-          <button className="primary" onClick={() => setRunning(true)}>
-            <PlayIcon /> Run…
-          </button>
+          <>
+            <button onClick={() => setRenaming(true)}>Rename</button>
+            <button className="primary" onClick={() => setRunning(true)}>
+              <PlayIcon /> Run…
+            </button>
+          </>
         }
       />
 
@@ -101,6 +106,7 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
         />
       )}
       {running && <RunDialog stack={s} onClose={() => setRunning(false)} />}
+      {renaming && <RenameStackDialog stack={s} onClose={() => setRenaming(false)} onSaved={stack.reload} />}
     </div>
   );
 }

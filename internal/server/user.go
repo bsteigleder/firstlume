@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -340,6 +341,10 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, err := s.store.UpdateStack(r.Context(), orgID(r), id(r), req)
+	if errors.Is(err, store.ErrDuplicate) && req.Name != nil {
+		writeError(w, http.StatusConflict, fmt.Sprintf("this folder already has a stack named %q: names are unique per folder, ignoring case", *req.Name))
+		return
+	}
 	if err != nil {
 		s.storeError(w, r, err, "stack")
 		return

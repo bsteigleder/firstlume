@@ -514,6 +514,21 @@ func TestStacks(t *testing.T) {
 	h.call("POST", "/stacks", api.CreateStackRequest{FolderID: f.ID, Name: "PROD", Repository: "https://h/r.git"}, http.StatusConflict, nil)
 	h.stack("", "prod", "") // fine at the top level
 
+	// Renaming keeps the stack and follows the same rule.
+	name := "  cluster "
+	var renamed api.Stack
+	h.call("PATCH", "/stacks/"+prod.ID, api.UpdateStackRequest{Name: &name}, http.StatusOK, &renamed)
+	if renamed.ID != prod.ID || renamed.Name != "cluster" || renamed.FolderID != f.ID || renamed.Path != prod.Path {
+		t.Fatalf("renamed stack %+v", renamed)
+	}
+	taken := "Prod-Next"
+	raw = h.call("PATCH", "/stacks/"+prod.ID, api.UpdateStackRequest{Name: &taken}, http.StatusConflict, nil)
+	if !strings.Contains(string(raw), "unique per folder") {
+		t.Fatalf("duplicate name: %s", raw)
+	}
+	blank := " "
+	h.call("PATCH", "/stacks/"+prod.ID, api.UpdateStackRequest{Name: &blank}, http.StatusUnprocessableEntity, nil)
+
 	// Each stack has its own lock: a run on one does not hold the other's queue.
 	a := h.run(prod.ID, api.RunApply)
 	b := h.run(root.ID, api.RunPlan)
