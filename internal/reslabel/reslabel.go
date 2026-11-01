@@ -1,4 +1,8 @@
-package store
+// Package reslabel says which resource a state or plan entry is in plain
+// words (a DNS record's name, type and target; a Helm release's name), from
+// a fixed list of identifying attributes per type. No other attribute value,
+// and no attribute marked sensitive, is ever read.
+package reslabel
 
 import (
 	"encoding/json"
@@ -9,18 +13,21 @@ import (
 	"github.com/bsteigleder/firstlume/internal/api"
 )
 
-// maxLabel bounds a label field's length; longer values are cut with "…".
-const maxLabel = 120
+// maxLen bounds a label field's length; longer values are cut with "…".
+const maxLen = 120
 
-// labelAttrs reads an instance's identifying attributes: only the ones a
-// labeler asks for, and never one the state marks sensitive.
-type labelAttrs struct {
-	raw       map[string]json.RawMessage
-	sensitive map[string]bool
+// Attrs are an instance's attributes as the labels may read them: hidden
+// ones (sensitive, or unknown until apply) read as absent.
+type Attrs struct {
+	raw    map[string]json.RawMessage
+	hidden map[string]bool
 }
 
-func newLabelAttrs(attrs map[string]json.RawMessage, sensitive json.RawMessage) (labelAttrs, bool) {
-	a := labelAttrs{raw: attrs, sensitive: map[string]bool{}}
+// FromState reads a state instance's attributes and sensitive_attributes.
+// ok is false for a sensitive_attributes format it does not know, and then
+// nothing may be read.
+func FromState(attrs map[string]json.RawMessage, sensitive json.RawMessage) (a Attrs, ok bool) {
+	a = Attrs{raw: attrs, hidden: map[string]bool{}}
 	if len(sensitive) == 0 || string(sensitive) == "null" {
 		return a, true
 	}
@@ -30,7 +37,7 @@ func newLabelAttrs(attrs map[string]json.RawMessage, sensitive json.RawMessage) 
 		Value json.RawMessage `json:"value"`
 	}
 	if err := json.Unmarshal(sensitive, &paths); err != nil {
-		return a, false // an unknown format: read nothing
+		return a, false
 	}
 	for _, p := range paths {
 		if len(p) == 0 {
@@ -38,14 +45,64 @@ func newLabelAttrs(attrs map[string]json.RawMessage, sensitive json.RawMessage) 
 		}
 		var name string
 		if json.Unmarshal(p[0].Value, &name) == nil {
-			a.sensitive[name] = true
+			a.hidden[name] = true
 		}
 	}
 	return a, true
 }
 
-func (a labelAttrs) str(name string) string {
-	if a.sensitive[name] {
+// FromPlan reads a planned value from `show -json`. sensitive and unknown
+// mirror its shape; an attribute with anything sensitive or unknown inside
+// it is hidden whole.
+func FromPlan(value, sensitive, unknown any) (a Attrs, ok bool) {
+	values, isMap := value.(map[string]any)
+	if !isMap || sensitive == true || unknown == true {
+		return a, false
+	}
+	a = Attrs{raw: map[string]json.RawMessage{}, hidden: map[string]bool{}}
+	for k, v := range values {
+		if marked(sensitive, k) || marked(unknown, k) {
+			a.hidden[k] = true
+			continue
+		}
+		if b, err := json.Marshal(v); err == nil {
+			a.raw[k] = b
+		}
+	}
+	return a, true
+}
+
+// marked reports whether a shape map marks key, or anything inside it.
+func marked(shape any, key string) bool {
+	m, ok := shape.(map[string]any)
+	if !ok {
+		return false
+	}
+	return any_(m[key])
+}
+
+func any_(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case map[string]any:
+		for _, e := range x {
+			if any_(e) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if any_(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (a Attrs) str(name string) string {
+	if a.hidden[name] {
 		return ""
 	}
 	var s string
@@ -55,8 +112,8 @@ func (a labelAttrs) str(name string) string {
 	return cut(s)
 }
 
-func (a labelAttrs) num(name string) int {
-	if a.sensitive[name] {
+func (a Attrs) num(name string) int {
+	if a.hidden[name] {
 		return 0
 	}
 	var n float64
@@ -66,8 +123,8 @@ func (a labelAttrs) num(name string) int {
 	return int(n)
 }
 
-func (a labelAttrs) boolean(name string) *bool {
-	if a.sensitive[name] {
+func (a Attrs) boolean(name string) *bool {
+	if a.hidden[name] {
 		return nil
 	}
 	var b bool
@@ -79,30 +136,31 @@ func (a labelAttrs) boolean(name string) *bool {
 
 // firstBlock reads a string field of the first nested block, such as
 // metadata[0].name.
-func (a labelAttrs) firstBlock(block, name string) string {
-	if a.sensitive[block] {
+func (a Attrs) firstBlock(block, name string) string {
+	if a.hidden[block] {
 		return ""
 	}
 	var blocks []map[string]json.RawMessage
 	if json.Unmarshal(a.raw[block], &blocks) != nil || len(blocks) == 0 {
 		return ""
 	}
-	return labelAttrs{raw: blocks[0]}.str(name)
+	return Attrs{raw: blocks[0]}.str(name)
 }
 
 func cut(s string) string {
 	s = strings.TrimSpace(s)
-	if utf8.RuneCountInString(s) <= maxLabel {
+	if utf8.RuneCountInString(s) <= maxLen {
 		return s
 	}
-	return string([]rune(s)[:maxLabel-1]) + "…"
+	return string([]rune(s)[:maxLen-1]) + "…"
 }
 
-// zoneNames maps Cloudflare zone ids to names, from the zones a state
+// Zones maps Cloudflare zone ids to names, from the zones a state or plan
 // manages or reads, so a record named relative to its zone shows in full.
-type zoneNames map[string]string
+type Zones map[string]string
 
-func (z zoneNames) add(typ string, a labelAttrs) {
+// Add records the zones a resource or data source of typ holds.
+func (z Zones) Add(typ string, a Attrs) {
 	switch typ {
 	case "cloudflare_zone":
 		name := a.str("name")
@@ -116,7 +174,7 @@ func (z zoneNames) add(typ string, a labelAttrs) {
 		}
 	case "cloudflare_zones":
 		for _, list := range []string{"result", "zones"} { // v5, v4
-			if a.sensitive[list] {
+			if a.hidden[list] {
 				continue
 			}
 			var zones []struct {
@@ -135,8 +193,9 @@ func (z zoneNames) add(typ string, a labelAttrs) {
 	}
 }
 
-// resourceLabel returns what identifies a resource of a known type, or nil.
-func resourceLabel(mode, typ string, a labelAttrs, zones zoneNames) *api.ResourceLabel {
+// Label returns what identifies a resource of a known type, or nil. mode is
+// "managed" or "data".
+func Label(mode, typ string, a Attrs, zones Zones) *api.ResourceLabel {
 	named := func(name string, details ...api.LabelDetail) *api.ResourceLabel {
 		if name == "" {
 			return nil
@@ -181,7 +240,7 @@ func resourceLabel(mode, typ string, a labelAttrs, zones zoneNames) *api.Resourc
 	return nil
 }
 
-func dnsLabel(a labelAttrs, zones zoneNames) *api.ResourceLabel {
+func dnsLabel(a Attrs, zones Zones) *api.ResourceLabel {
 	zone := zones[a.str("zone_id")]
 	name := a.str("hostname") // provider v4 keeps the full name here
 	if name == "" {

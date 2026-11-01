@@ -506,6 +506,9 @@ type ResourceChange struct {
 	Type    string       `json:"type"`
 	Name    string       `json:"name"`
 	Action  ChangeAction `json:"action"`
+	// Label says which resource it is (see StateResource.Label): what it
+	// will be, or for a delete what it was.
+	Label *ResourceLabel `json:"label,omitempty"`
 	// Attributes lists what changes (for a create: what it is created with).
 	Attributes []AttributeChange `json:"attributes,omitempty"`
 	// Truncated says more attributes changed than are listed.

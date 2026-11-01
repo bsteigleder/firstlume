@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bsteigleder/firstlume/internal/api"
+	"github.com/bsteigleder/firstlume/internal/reslabel"
 )
 
 const (
@@ -35,6 +36,32 @@ type planJSON struct {
 			ReplacePaths    [][]any  `json:"replace_paths"`
 		} `json:"change"`
 	} `json:"resource_changes"`
+	PriorState struct {
+		Values struct {
+			RootModule stateModule `json:"root_module"`
+		} `json:"values"`
+	} `json:"prior_state"`
+}
+
+type stateModule struct {
+	Resources []struct {
+		Type            string `json:"type"`
+		Values          any    `json:"values"`
+		SensitiveValues any    `json:"sensitive_values"`
+	} `json:"resources"`
+	ChildModules []stateModule `json:"child_modules"`
+}
+
+// addZones records the Cloudflare zones a module and its children hold.
+func (m stateModule) addZones(z reslabel.Zones) {
+	for _, r := range m.Resources {
+		if a, ok := reslabel.FromPlan(r.Values, r.SensitiveValues, nil); ok {
+			z.Add(r.Type, a)
+		}
+	}
+	for _, c := range m.ChildModules {
+		c.addZones(z)
+	}
 }
 
 // ExtractChanges lists what a plan (`show -json` output) does to each managed
@@ -46,6 +73,13 @@ func ExtractChanges(raw []byte, unit string, mask func(string) string) ([]api.Re
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
+	zones := reslabel.Zones{}
+	p.PriorState.Values.RootModule.addZones(zones)
+	for _, rc := range p.ResourceChanges {
+		if a, ok := reslabel.FromPlan(rc.Change.After, rc.Change.AfterSensitive, rc.Change.AfterUnknown); ok {
+			zones.Add(rc.Type, a)
+		}
+	}
 	out := []api.ResourceChange{}
 	for _, rc := range p.ResourceChanges {
 		action, ok := actionOf(rc.Change.Actions)
@@ -53,6 +87,14 @@ func ExtractChanges(raw []byte, unit string, mask func(string) string) ([]api.Re
 			continue
 		}
 		c := api.ResourceChange{Unit: unit, Address: rc.Address, Type: rc.Type, Name: rc.Name, Action: action}
+		// A deleted resource is named by what it was, the others by what they will be.
+		a, ok := reslabel.FromPlan(rc.Change.After, rc.Change.AfterSensitive, rc.Change.AfterUnknown)
+		if action == api.ActionDelete {
+			a, ok = reslabel.FromPlan(rc.Change.Before, rc.Change.BeforeSensitive, nil)
+		}
+		if ok {
+			c.Label = maskLabel(reslabel.Label(rc.Mode, rc.Type, a, zones), mask)
+		}
 		if action != api.ActionDelete {
 			before := map[string]string{}
 			if action != api.ActionCreate {
@@ -70,6 +112,21 @@ func ExtractChanges(raw []byte, unit string, mask func(string) string) ([]api.Re
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// maskLabel hides any secret that leaked into a label's values.
+func maskLabel(l *api.ResourceLabel, mask func(string) string) *api.ResourceLabel {
+	if l == nil || mask == nil {
+		return l
+	}
+	l.Name = mask(l.Name)
+	if l.Record != nil {
+		l.Record.Target = mask(l.Record.Target)
+	}
+	for i := range l.Details {
+		l.Details[i].Value = mask(l.Details[i].Value)
+	}
+	return l
 }
 
 func actionOf(actions []string) (api.ChangeAction, bool) {

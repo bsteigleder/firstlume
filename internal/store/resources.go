@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/bsteigleder/firstlume/internal/api"
+	"github.com/bsteigleder/firstlume/internal/reslabel"
 )
 
 // historyRuns bounds how many of the stack's latest applies are read to tell
@@ -46,11 +47,11 @@ func listResources(data []byte) ([]api.StateResource, error) {
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, err
 	}
-	zones := zoneNames{}
+	zones := reslabel.Zones{}
 	for _, r := range st.Resources {
 		for _, in := range r.Instances {
-			if a, ok := newLabelAttrs(in.Attributes, in.Sensitive); ok {
-				zones.add(r.Type, a)
+			if a, ok := reslabel.FromState(in.Attributes, in.Sensitive); ok {
+				zones.Add(r.Type, a)
 			}
 		}
 	}
@@ -74,8 +75,8 @@ func listResources(data []byte) ([]api.StateResource, error) {
 				addr += "[" + k + "]"
 			}
 			var label *api.ResourceLabel
-			if a, ok := newLabelAttrs(in.Attributes, in.Sensitive); ok {
-				label = resourceLabel(r.Mode, r.Type, a, zones)
+			if a, ok := reslabel.FromState(in.Attributes, in.Sensitive); ok {
+				label = reslabel.Label(r.Mode, r.Type, a, zones)
 			}
 			out = append(out, api.StateResource{
 				Address: addr, Mode: r.Mode, Type: r.Type, Name: r.Name, Module: r.Module, Provider: provider,

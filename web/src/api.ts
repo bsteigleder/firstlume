@@ -266,6 +266,8 @@ export interface ResourceChange {
   type: string;
   name: string;
   action: ChangeAction;
+  /** Which resource it is: what it will be, or for a delete what it was. */
+  label?: ResourceLabel;
   attributes?: AttributeChange[];
   truncated?: boolean;
 }
