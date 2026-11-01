@@ -13,7 +13,7 @@ import {
   type RunStep,
   type Stack,
 } from "../api";
-import { ExternalIcon } from "../icons";
+import { ChevronRightIcon, ExternalIcon } from "../icons";
 import { useCrumbs, useOrg } from "../org";
 import {
   commitURL,
@@ -416,12 +416,19 @@ function ChangeList({ changes, drift, ack, planning }: {
   ack: { acked: Record<string, boolean>; toggle: (k: string) => void; origin?: Level } | null;
   planning: boolean;
 }) {
+  const [open, setOpen] = useState<Record<string, boolean>>({});
   if (!changes) return null;
   if (changes.length === 0) {
     return <div className="empty">{planning ? "The plan is still running. Changes show up here when it finishes." : "Nothing changes."}</div>;
   }
+  const allOpen = changes.every((c) => open[changeKey(c)]);
   return (
     <>
+      <div className="change-toolbar">
+        <button className="link" onClick={() => setOpen(allOpen ? {} : Object.fromEntries(changes.map((c) => [changeKey(c), true])))}>
+          {allOpen ? "Collapse all" : "Expand all"}
+        </button>
+      </div>
       {actionOrder.map((a) => {
         const items = changes.filter((c) => c.action === a);
         if (!items.length) return null;
@@ -431,7 +438,14 @@ function ChangeList({ changes, drift, ack, planning }: {
               {drift ? actionInfo[a].driftGroup : actionInfo[a].group} · {items.length}
             </h3>
             {items.map((c) => (
-              <ChangeCard key={changeKey(c)} change={c} drift={drift} ack={ack} />
+              <ChangeCard
+                key={changeKey(c)}
+                change={c}
+                drift={drift}
+                ack={ack}
+                open={!!open[changeKey(c)]}
+                onToggle={() => setOpen((o) => ({ ...o, [changeKey(c)]: !o[changeKey(c)] }))}
+              />
             ))}
           </div>
         );
@@ -440,20 +454,38 @@ function ChangeList({ changes, drift, ack, planning }: {
   );
 }
 
-function ChangeCard({ change: c, drift, ack }: { change: ResourceChange; drift: boolean; ack: { acked: Record<string, boolean>; toggle: (k: string) => void; origin?: Level } | null }) {
+// Collapsed by default: a long plan reads as a list of names, and the
+// attribute diff opens per resource. Warnings and acks always show.
+function ChangeCard({ change: c, drift, ack, open, onToggle }: {
+  change: ResourceChange;
+  drift: boolean;
+  ack: { acked: Record<string, boolean>; toggle: (k: string) => void; origin?: Level } | null;
+  open: boolean;
+  onToggle: () => void;
+}) {
   const info = actionInfo[c.action];
   const key = changeKey(c);
   const destructive = c.action === "delete" || c.action === "replace";
   const forcing = (c.attributes ?? []).filter((a) => a.forces_replacement).map((a) => a.path);
+  const nattrs = c.attributes?.length ?? 0;
   return (
     <article className={`change-card edge-${info.tone}`}>
-      <div className="change-head">
+      <button className="change-head" aria-expanded={open} onClick={onToggle} disabled={!nattrs}>
+        <span className={`change-chev${open ? " open" : ""}`} aria-hidden>
+          {nattrs > 0 && <ChevronRightIcon />}
+        </span>
         <span className={`badge ${info.tone}`}>{info.label}</span>
         <strong>{c.name}</strong>
         <span className="muted small">{humanType(c.type)}</span>
+        {!open && nattrs > 0 && (
+          <span className="muted small">
+            · {nattrs}
+            {c.truncated ? "+" : ""} attribute{nattrs === 1 ? "" : "s"}
+          </span>
+        )}
         <span className="grow" />
         <span className="mono muted small">{c.unit ? `${c.unit} · ${c.address}` : c.address}</span>
-      </div>
+      </button>
       {c.action === "delete" && !drift && <p className="change-warning bad">This resource and anything stored in it will be deleted.</p>}
       {c.action === "replace" && (
         <p className="change-warning rep">
@@ -461,7 +493,7 @@ function ChangeCard({ change: c, drift, ack }: { change: ResourceChange; drift: 
           Anything that depends on it may be affected.
         </p>
       )}
-      {(c.attributes?.length ?? 0) > 0 && (
+      {open && nattrs > 0 && (
         <div className="diff">
           {drift && <><span className="diff-head">attribute</span><span className="diff-head">real infrastructure → code</span></>}
           {c.attributes!.map((a) => (

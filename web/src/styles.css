@@ -1825,8 +1825,43 @@ a.banner:hover {
   gap: 10px;
 }
 
+button.change-head {
+  font: inherit;
+  font-weight: inherit;
+  border: 0;
+  background: none;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  white-space: normal;
+  text-align: left;
+  width: 100%;
+}
+
+button.change-head:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
 .change-head strong {
   font-size: 15px;
+}
+
+.change-chev {
+  display: inline-flex;
+  width: 12px;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+.change-chev.open {
+  transform: rotate(90deg);
+}
+
+.change-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: -4px;
 }
 
 .change-warning {
