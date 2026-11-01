@@ -63,6 +63,8 @@ export function SettingsEditor({ level, path }: { level: Level; path: string }) 
       require_approval: fromTri(approval),
       confirm_destructive: fromTri(confirmDestructive),
       drift_interval_minutes: drift,
+      // Edited elsewhere for now (spec 0003, F4): kept as it is.
+      vault_role: settings.data?.level.vault_role ?? null,
       variables: vars.map(({ key, category, sensitive, value }) => ({ key: key.trim(), category, sensitive, value: value ?? "" })),
     };
     if (await save.run(() => api.putSettings(path, body))) await settings.reload();

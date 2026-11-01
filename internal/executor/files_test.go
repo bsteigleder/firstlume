@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -96,7 +97,7 @@ terraform:
 	}
 	masker := NewMasker(nil)
 	var log bytes.Buffer
-	p, err := prepare(root, d, vars, masker, &log)
+	p, err := prepare(context.Background(), root, t.TempDir(), d, vars, nil, newVaultSource(nil, masker), masker, &log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,13 +213,9 @@ func TestPrepareRefuses(t *testing.T) {
 			decl: "terraform:\n  a: {var: NOPE}\n",
 			want: "variable NOPE is not set",
 		},
-		"vault before F2": {
+		"vault without a connection": {
 			decl: "files:\n  - path: a.txt\n    format: raw\n    content: {vault: secret/a, field: b}\n",
-			want: "Vault connection",
-		},
-		"registries before F3": {
-			decl: "registries:\n  - host: h.example.com\n    username: u\n    password: p\n",
-			want: "Marco F3",
+			want: "the organization has no Vault connection",
 		},
 	}
 	for name, c := range cases {
@@ -227,7 +224,8 @@ func TestPrepareRefuses(t *testing.T) {
 			if c.prep != nil {
 				c.prep(t, root)
 			}
-			_, err := prepare(root, declaration(t, c.decl), c.vars, NewMasker(nil), &bytes.Buffer{})
+			masker := NewMasker(nil)
+			_, err := prepare(context.Background(), root, t.TempDir(), declaration(t, c.decl), c.vars, nil, newVaultSource(nil, masker), masker, &bytes.Buffer{})
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("got %v, want an error with %q", err, c.want)
 			}
@@ -315,7 +313,9 @@ terraform:
   zone: { var: ZONE }
   limits: { cpu: 2, memory: 4096 }
 `)
-	p, err := prepare(root, d, []api.ExecVariable{{Key: "ZONE", Category: api.CategoryEnv, Value: tricky}}, NewMasker(nil), &bytes.Buffer{})
+	masker := NewMasker(nil)
+	p, err := prepare(context.Background(), root, t.TempDir(), d, []api.ExecVariable{{Key: "ZONE", Category: api.CategoryEnv, Value: tricky}},
+		nil, newVaultSource(nil, masker), masker, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}

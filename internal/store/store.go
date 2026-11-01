@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -16,6 +17,7 @@ import (
 	"github.com/pressly/goose/v3/lock"
 
 	"github.com/bsteigleder/firstlume/internal/secrets"
+	"github.com/bsteigleder/firstlume/internal/vault"
 	"github.com/bsteigleder/firstlume/migrations"
 )
 
@@ -39,6 +41,9 @@ type Store struct {
 	blobs Blobs
 	// keepVersions caps the state versions kept per unit; 0 keeps all.
 	keepVersions int
+	// signingKey caches the key run JWTs are signed with.
+	signingMu  sync.Mutex
+	signingKey *vault.SigningKey
 }
 
 func New(pool *pgxpool.Pool, keys *secrets.Keys) *Store {

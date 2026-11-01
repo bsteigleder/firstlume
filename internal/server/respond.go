@@ -45,7 +45,7 @@ func (s *Server) storeError(w http.ResponseWriter, r *http.Request, err error, w
 	case errors.Is(err, store.ErrTooDeep):
 		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("folders can nest at most %d levels deep", api.MaxFolderDepth))
 	case errors.Is(err, store.ErrMissingSecret):
-		writeError(w, http.StatusUnprocessableEntity, "a new sensitive variable needs a value")
+		writeError(w, http.StatusUnprocessableEntity, "a new sensitive variable or registry credential needs a value")
 	case errors.As(err, &inUse):
 		writeError(w, http.StatusConflict, inUse.Error())
 	case errors.As(err, &missingAck):

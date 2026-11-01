@@ -103,7 +103,9 @@ remote_state {
 HCL
 
 # Machines whose connection.hcl Firstlume writes from the declaration in
-# config.yaml (spec 0003): one per machine directory, never committed.
+# config.yaml (spec 0003): one per machine directory, never committed, with
+# values from the dev Vault (make dev-vault). Put the stack in a folder named
+# dev, whose vault_role is dev.
 mkdir -p environments/machines/.firstlume
 cat > environments/machines/.firstlume/config.yaml <<'YAML'
 version: 1
@@ -116,8 +118,8 @@ files:
     format: hcl
     block: locals
     values:
-      host: "${name}.lan"
-      user: { var: SSH_USER }
+      host: { vault: "secret/infra/dev/${name}", field: ip }
+      user: { vault: "secret/infra/dev/${name}", field: user }
       port: 22
 YAML
 cp environments/tg/root.hcl environments/machines/root.hcl
@@ -138,6 +140,27 @@ variable "port" { type = number }
 resource "terraform_data" "machine" { input = "${var.user}@${var.host}:${var.port}" }
 TF
 done
+
+# A chart from the dev registry (make dev-registry), which needs a login: the
+# credential comes from the registries in Firstlume's settings.
+mkdir -p environments/charts/.firstlume
+printf 'version: 1\nengine: terraform\nengine_version: 1.15.6\n' > environments/charts/.firstlume/config.yaml
+cat > environments/charts/main.tf <<'TF'
+terraform {
+  backend "http" {}
+  required_providers {
+    helm = { source = "hashicorp/helm", version = "~> 3.1" }
+  }
+}
+provider "helm" {}
+data "helm_template" "hello" {
+  name       = "hello"
+  repository = "oci://localhost:5001/charts"
+  chart      = "hello"
+  version    = "0.1.0"
+}
+resource "terraform_data" "rendered" { input = sha256(data.helm_template.hello.manifest) }
+TF
 
 mkdir -p legacy/vpn/.firstlume
 printf 'version: 1\nengine: terraform\nengine_version: latest\n' > legacy/vpn/.firstlume/config.yaml

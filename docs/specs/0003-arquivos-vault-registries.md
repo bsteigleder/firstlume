@@ -1,6 +1,6 @@
 # Spec 0003: arquivos, segredos do Vault e credenciais de registry
 
-- **Status:** aprovada em 2026-10-31; Marco F1 implementado em 2026-10-31
+- **Status:** aprovada em 2026-10-31; Marcos F1 a F3 implementados em 2026-10-31
 - **Data:** 2026-10-31
 - **Depende de:** spec 0001 (configurações herdadas e `.firstlume/config.yaml`) e spec 0002 (state), já implementadas
 
@@ -171,7 +171,7 @@ registries:
   | `exp` | 15 minutos (só para o login; a duração do token do Vault é do papel) |
 
   O papel do Vault restringe com `bound_claims` (por exemplo `stack_path = "infra/prod/*"` e `phase = "apply"`). Assim, um stack de dev não lê segredos de prod, e o plan pode ter um papel mais restrito que o apply.
-- **R3.4** **Chave de assinatura:** gerada uma vez e guardada cifrada com a chave mestra. A chave pública é publicada:
+- **R3.4** **Chave de assinatura:** gerada uma vez e guardada cifrada com a chave mestra. Trocar a chave mestra gera uma chave de assinatura nova, que precisa ser dada ao Vault de novo. A chave pública é publicada:
   - em `GET /.well-known/openid-configuration` e `GET /.well-known/jwks.json`, sem autenticação, para o Vault usar `oidc_discovery_url` ou `jwks_url`;
   - em PEM, na tela da conexão, para quando o Vault não alcança o Firstlume (`jwt_validation_pubkeys`).
 - **R3.5** **Quem lê é o executor.** Ele faz o login, lê os segredos, monta os arquivos e revoga o próprio token do Vault ao fim da fase (`auth/token/revoke-self`). Os valores não passam pelo servidor, não vão para o banco e não entram nos artefatos do run. O servidor só fala com o Vault no teste de conexão (seção 5), que confere permissões sem ler valores.
@@ -220,7 +220,7 @@ As configurações continuam em `GET|PUT /api/v1/orgs/{org}/(folders|stacks)/{id
 |---|---|
 | `variables[].category` | aceita `file` (R2.8) |
 | `vault_role` | nova configuração herdada (R3.2) |
-| `registries[]` | `{host, kind: oci\|terraform, username, password \| password_vault: {path, field}}`; a senha nunca é devolvida |
+| `registries[]` | `{host, kind: oci\|terraform, username, password \| password_vault: {path, field}}`; a senha nunca é devolvida. Sem o campo, as credenciais do nível ficam como estão |
 
 Novas rotas:
 
@@ -265,21 +265,25 @@ Testes: `internal/stackconfig` (a declaração e os erros com a linha), `interna
 
 ### Marco F2: Vault
 
-- [ ] **CAF2.1** Com o Vault do `make dev-vault`, `{vault: secret/infra/dev/n01, field: ip}` num arquivo e em `terraform` é lido pelo executor. O valor não aparece em log, API, banco nem artefatos do run.
-- [ ] **CAF2.2** O papel `dev` lê `secret/infra/dev/*` e **não** lê `secret/infra/prod/*`: um stack em `dev` cuja declaração aponta para prod falha com "permissão negada" citando o item e o caminho, sem valor.
-- [ ] **CAF2.3** Um papel ligado a `phase = apply` não serve para o plan: o plan falha com a mensagem do Vault.
-- [ ] **CAF2.4** O JWT emitido valida com a chave de `/.well-known/jwks.json` e com a PEM da tela. Vence em 15 minutos. O token do Vault é revogado ao fim da fase.
-- [ ] **CAF2.5** Um segredo trocado no Vault entre o plan e o apply faz o apply falhar com "o segredo mudou desde o plan", sem valores. Planejado de novo, aplica.
-- [ ] **CAF2.6** Vault fora do ar, papel inexistente ou campo ausente falham a fase com mensagem que diz qual dos três, e qual item.
-- [ ] **CAF2.7** `POST …/vault/check` diz "pode ler" para `secret/infra/dev/n01` com o papel `dev` e "não pode" para o caminho de prod, sem ler valores. Com o papel inexistente, devolve o erro do Vault.
-- [ ] **CAF2.8** Com `${name}` vindo de uma pasta, o caminho do Vault não consegue sair do prefixo declarado (R3.6).
+Testes: `internal/executor/vaultsource_test.go` e `internal/server/vault_test.go`, contra o Vault 2.0.4 real do `make dev-vault`. Também verificado ponta a ponta com o agent: o stack `environments/machines` do Gitea de dev numa pasta `dev`, com os valores mascarados no log e um segredo trocado entre o plan e o apply fazendo o apply falhar.
+
+- [x] **CAF2.1** Com o Vault do `make dev-vault`, `{vault: secret/infra/dev/n01, field: ip}` num arquivo e em `terraform` é lido pelo executor. O valor não aparece em log, API, banco nem artefatos do run.
+- [x] **CAF2.2** O papel `dev` lê `secret/infra/dev/*` e **não** lê `secret/infra/prod/*`: um stack em `dev` cuja declaração aponta para prod falha com "permissão negada" citando o item e o caminho, sem valor.
+- [x] **CAF2.3** Um papel ligado a `phase = apply` não serve para o plan: o plan falha com a mensagem do Vault.
+- [x] **CAF2.4** O JWT emitido valida com a chave de `/.well-known/jwks.json` e com a PEM da tela. Vence em 15 minutos. O token do Vault é revogado ao fim da fase.
+- [x] **CAF2.5** Um segredo trocado no Vault entre o plan e o apply faz o apply falhar com "o segredo mudou desde o plan", sem valores. Planejado de novo, aplica.
+- [x] **CAF2.6** Vault fora do ar, papel inexistente ou campo ausente falham a fase com mensagem que diz qual dos três, e qual item.
+- [x] **CAF2.7** `POST …/vault/check` diz "pode ler" para `secret/infra/dev/n01` com o papel `dev` e "não pode" para o caminho de prod, sem ler valores. Com o papel inexistente, devolve o erro do Vault.
+- [x] **CAF2.8** Com `${name}` vindo de uma pasta, o caminho do Vault não consegue sair do prefixo declarado (R3.6).
 
 ### Marco F3: credenciais de registry
 
-- [ ] **CAF3.1** Com o registry do `make dev-registry`, um stack com `data "helm_template"` de um chart `oci://` desse registry funciona com a credencial herdada da organização e falha sem ela.
-- [ ] **CAF3.2** Uma credencial no stack substitui a da organização para o mesmo host; hosts diferentes se somam; a da declaração entra quando o host não está nas configurações.
-- [ ] **CAF3.3** Uma credencial `terraform` vira `TF_TOKEN_<host>` com o nome no formato do Terraform (teste unitário com host com ponto e hífen).
-- [ ] **CAF3.4** A senha vinda do Vault funciona, tanto nas configurações quanto na declaração. Nem ela nem o base64 `usuário:senha` aparecem no log.
+Testes: `internal/executor/registries_test.go` (arquivos e variáveis, precedência, mascaramento, e `helm pull` real contra o registry do `make dev-registry`, com a senha nas configurações e no Vault) e `internal/server/registries_test.go` (validação, herança por host, senha nunca devolvida, apply com as credenciais do plan). Também verificado ponta a ponta com o agent: o stack `environments/charts` do Gitea de dev, com `data "helm_template"` do provider `helm`, falha com "basic credential not found" sem credencial e aplica com a credencial da organização.
+
+- [x] **CAF3.1** Com o registry do `make dev-registry`, um stack com `data "helm_template"` de um chart `oci://` desse registry funciona com a credencial herdada da organização e falha sem ela.
+- [x] **CAF3.2** Uma credencial no stack substitui a da organização para o mesmo host; hosts diferentes se somam; a da declaração entra quando o host não está nas configurações.
+- [x] **CAF3.3** Uma credencial `terraform` vira `TF_TOKEN_<host>` com o nome no formato do Terraform (teste unitário com host com ponto e hífen).
+- [x] **CAF3.4** A senha vinda do Vault funciona, tanto nas configurações quanto na declaração. Nem ela nem o base64 `usuário:senha` aparecem no log.
 
 ### Marco F4: telas (depois do desenho aprovado)
 

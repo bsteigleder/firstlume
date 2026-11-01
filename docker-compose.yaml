@@ -55,7 +55,37 @@ services:
       timeout: 3s
       retries: 40
 
+  # Vault in dev mode (in memory: make dev-vault configures it again after a restart).
+  vault:
+    image: hashicorp/vault:2.0.4
+    profiles: ["vault"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${FIRSTLUME_DEV_VAULT_ROOT_TOKEN:-run make dev-vault}
+    cap_add: ["IPC_LOCK"]
+    ports:
+      - "127.0.0.1:8200:8200"
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # An OCI registry with a login (make dev-registry writes the password file).
+  registry:
+    image: registry:3
+    profiles: ["registry"]
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: firstlume-dev
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+    ports:
+      - "127.0.0.1:5001:5000"
+    volumes:
+      - ./deploy/dev/registry.htpasswd:/auth/htpasswd:ro
+      - registrydata:/var/lib/registry
+
 volumes:
   pgdata:
   giteadata:
   garagedata:
+  registrydata:

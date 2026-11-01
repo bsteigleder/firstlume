@@ -146,6 +146,7 @@ export interface LevelSettings {
   require_approval: boolean | null;
   drift_interval_minutes: number | null;
   confirm_destructive: boolean | null;
+  vault_role?: string | null;
   variables: Variable[];
 }
 

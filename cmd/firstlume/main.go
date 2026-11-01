@@ -147,6 +147,7 @@ func runServer(ctx context.Context, log *slog.Logger) error {
 		HeartbeatTimeout: heartbeat,
 		StateMaxBytes:    int64(stateMaxMiB) << 20,
 		UI:               web.FS(),
+		PublicURL:        os.Getenv("FIRSTLUME_PUBLIC_URL"),
 	}, st, keys, log)
 	return srv.Run(ctx)
 }

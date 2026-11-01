@@ -162,6 +162,33 @@ func ValidFilePath(p string, patterns bool) error {
 	return nil
 }
 
+// ValidRegistry checks a registry credential's host and kind (spec 0003, R4.2).
+// A Terraform registry's host can't have a port: TF_TOKEN_ names can't hold one.
+func ValidRegistry(host, kind string) error {
+	switch {
+	case !hostRe.MatchString(host):
+		return fmt.Errorf("registry host %q must be a host name, optionally with a port", host)
+	case kind != "oci" && kind != "terraform":
+		return fmt.Errorf("registry %s: kind must be oci or terraform", host)
+	case kind == "terraform" && strings.Contains(host, ":"):
+		return fmt.Errorf("registry %s: a terraform registry's host can't have a port", host)
+	}
+	return nil
+}
+
+// ValidVaultPath checks a Vault path as `vault kv get` takes it.
+func ValidVaultPath(p string) error {
+	if p == "" || len(p) > maxPathLen || strings.HasPrefix(p, "/") || strings.Contains(p, "//") || strings.HasSuffix(p, "/") {
+		return fmt.Errorf("vault path %q must look like mount/path/to/secret", p)
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." || seg == "." {
+			return fmt.Errorf("vault path %q must not use . or ..", p)
+		}
+	}
+	return nil
+}
+
 func hasPattern(s string) bool { return strings.ContainsAny(s, "*?[") }
 
 func lineErr(n *yaml.Node, format string, args ...any) error {
@@ -343,11 +370,10 @@ func parseRegistries(n *yaml.Node) ([]Registry, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := ValidRegistry(r.Host, r.Kind); err != nil {
+			return nil, lineErr(item, "%v", err)
+		}
 		switch {
-		case !hostRe.MatchString(r.Host):
-			return nil, lineErr(item, "registry host %q must be a host name, optionally with a port", r.Host)
-		case r.Kind != "oci" && r.Kind != "terraform":
-			return nil, lineErr(item, "registry %s: kind must be oci or terraform", r.Host)
 		case r.Kind == "oci" && r.Username == nil:
 			return nil, lineErr(item, "registry %s: username is required", r.Host)
 		case r.Kind == "terraform" && r.Username != nil:
@@ -457,13 +483,8 @@ func parseSource(n *yaml.Node) (*Value, error) {
 		v.Kind, v.Var = VarRef, fields["var"]
 	case fields["vault"] != "" && fields["field"] != "" && len(fields) == 2:
 		p := fields["vault"]
-		if strings.HasPrefix(p, "/") || strings.Contains(p, "//") || strings.HasSuffix(p, "/") {
-			return nil, lineErr(n, "vault path %q must look like mount/path/to/secret", p)
-		}
-		for _, seg := range strings.Split(p, "/") {
-			if seg == ".." || seg == "." {
-				return nil, lineErr(n, "vault path %q must not use . or ..", p)
-			}
+		if err := ValidVaultPath(p); err != nil {
+			return nil, lineErr(n, "%v", err)
 		}
 		v.Kind, v.Path, v.Field = VaultRef, p, fields["field"]
 	default:

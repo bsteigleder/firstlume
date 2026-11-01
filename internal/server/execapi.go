@@ -25,7 +25,7 @@ const (
 var commitRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 
 // artifactNames lists what executors may store, so the table can't be used as a blob dump.
-var artifactNames = map[string]bool{"plan": true}
+var artifactNames = map[string]bool{"plan": true, api.VaultHashesArtifact: true}
 
 func (s *Server) execRoutes(r chi.Router) {
 	r.Get("/spec", s.execSpec)
@@ -63,6 +63,10 @@ func (s *Server) execSpec(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only usable while the run executes this phase, whatever its expiry says.
 	if spec.StateToken, err = s.keys.IssueStateToken(runID, string(phase), s.cfg.RunTokenTTL); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if spec.Vault, err = s.execVault(r.Context(), spec); err != nil {
 		s.internalError(w, r, err)
 		return
 	}

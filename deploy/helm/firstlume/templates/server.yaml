@@ -68,6 +68,15 @@ spec:
               value: {{ .Values.controlPlane.organization | quote }}
             - name: FIRSTLUME_HEARTBEAT_TIMEOUT
               value: {{ .Values.controlPlane.heartbeatTimeout | quote }}
+            {{- $ing := .Values.controlPlane.ingress }}
+            {{- $public := .Values.controlPlane.publicURL }}
+            {{- if and (not $public) $ing.enabled $ing.host }}
+            {{- $public = printf "%s://%s" (ternary "https" "http" (gt (len $ing.tls) 0)) $ing.host }}
+            {{- end }}
+            {{- with $public }}
+            - name: FIRSTLUME_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.controlPlane.state }}
             - name: FIRSTLUME_STATE_MAX_MIB
               value: {{ .maxMiB | quote }}
