@@ -72,6 +72,38 @@ func FromPlan(value, sensitive, unknown any) (a Attrs, ok bool) {
 	return a, true
 }
 
+// FromChange reads the values a stored plan change was made with, for runs
+// planned before changes carried labels. Only top-level attributes count;
+// sensitive and unknown ones are absent.
+func FromChange(attrs []api.AttributeChange) Attrs {
+	a := Attrs{raw: map[string]json.RawMessage{}, hidden: map[string]bool{}}
+	for _, at := range attrs {
+		if at.After == nil || strings.ContainsAny(at.Path, ".[") {
+			continue
+		}
+		if v := *at.After; v != sensitiveValue && v != unknownValue {
+			a.raw[at.Path], _ = json.Marshal(v)
+		}
+	}
+	return a
+}
+
+// The executor's renderings of values it does not show.
+const (
+	sensitiveValue = "(sensitive)"
+	unknownValue   = "(known after apply)"
+)
+
+// Known reports whether a managed resource type has a label.
+func Known(typ string) bool {
+	switch typ {
+	case "cloudflare_dns_record", "cloudflare_record", "cloudflare_zone", "helm_release", "aws_s3_bucket",
+		"aws_eks_cluster", "aws_iam_role", "lxd_instance", "aws_db_instance", "kubernetes_namespace", "kubernetes_namespace_v1":
+		return true
+	}
+	return false
+}
+
 // marked reports whether a shape map marks key, or anything inside it.
 func marked(shape any, key string) bool {
 	m, ok := shape.(map[string]any)
@@ -118,7 +150,11 @@ func (a Attrs) num(name string) int {
 	}
 	var n float64
 	if json.Unmarshal(a.raw[name], &n) != nil {
-		return 0
+		var s string // a stored plan change keeps numbers as text
+		if json.Unmarshal(a.raw[name], &s) != nil {
+			return 0
+		}
+		n, _ = strconv.ParseFloat(s, 64)
 	}
 	return int(n)
 }
@@ -129,7 +165,11 @@ func (a Attrs) boolean(name string) *bool {
 	}
 	var b bool
 	if json.Unmarshal(a.raw[name], &b) != nil {
-		return nil
+		var s string // a stored plan change keeps booleans as text
+		if json.Unmarshal(a.raw[name], &s) != nil || (s != "true" && s != "false") {
+			return nil
+		}
+		b = s == "true"
 	}
 	return &b
 }

@@ -3,6 +3,8 @@ package reslabel
 import (
 	"strings"
 	"testing"
+
+	"github.com/bsteigleder/firstlume/internal/api"
 )
 
 func TestCut(t *testing.T) {
@@ -30,5 +32,22 @@ func TestFromPlanHidesSensitiveAndUnknown(t *testing.T) {
 	}
 	if _, ok := FromPlan(nil, nil, nil); ok {
 		t.Error("a deleted value has nothing to read")
+	}
+}
+
+func TestFromChange(t *testing.T) {
+	s := func(v string) *string { return &v }
+	a := FromChange([]api.AttributeChange{
+		{Path: "name", After: s("firstlume")}, {Path: "zone_id", After: s("z1")}, {Path: "type", After: s("A")},
+		{Path: "content", After: s("(sensitive)")}, {Path: "proxied", After: s("true")}, {Path: "ttl", After: s("1")},
+		{Path: "id", After: s("(known after apply)")}, {Path: "tags[0]", After: s("x")},
+	})
+	l := Label("managed", "cloudflare_dns_record", a, Zones{"z1": "acme.example"})
+	if l == nil || l.Name != "firstlume.acme.example" || l.Record.Type != "A" || l.Record.Target != "" ||
+		l.Record.Proxied == nil || !*l.Record.Proxied || l.Record.TTL != 1 {
+		t.Fatalf("label: %+v %+v", l, l.Record)
+	}
+	if !Known("cloudflare_dns_record") || Known("random_password") {
+		t.Error("Known")
 	}
 }

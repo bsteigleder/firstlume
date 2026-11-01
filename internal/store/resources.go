@@ -43,9 +43,15 @@ var providerSource = regexp.MustCompile(`^provider\["([^"]+)"\]`)
 
 // listResources returns a state's resource instances in the state's order.
 func listResources(data []byte) ([]api.StateResource, error) {
+	res, _, err := readState(data)
+	return res, err
+}
+
+// readState returns a state's resource instances and the Cloudflare zones it holds.
+func readState(data []byte) ([]api.StateResource, reslabel.Zones, error) {
 	var st stateResources
 	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	zones := reslabel.Zones{}
 	for _, r := range st.Resources {
@@ -84,7 +90,7 @@ func listResources(data []byte) ([]api.StateResource, error) {
 			})
 		}
 	}
-	return out, nil
+	return out, zones, nil
 }
 
 // StackResources lists what the stack's state manages, unit by unit, with the
