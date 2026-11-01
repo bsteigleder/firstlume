@@ -238,7 +238,7 @@ function Row({ r, unitKey, selected, onPick }: { r: StateResource; unitKey: stri
           {r.label ? (
             <span className="res-named">
               <LabelLine label={r.label} data={data} />
-              <span className="mono res-addr-sub">{r.address}</span>
+              <span className="mono res-addr-tip">{r.address}</span>
             </span>
           ) : (
             <span className={data ? "mono muted" : "mono"}>{r.address}</span>
@@ -270,14 +270,13 @@ function Row({ r, unitKey, selected, onPick }: { r: StateResource; unitKey: stri
           {r.label?.record && <RecordCol label={r.label} type={r.type} data={data} />}
           <div className="res-detail-col">
             <span className="card-label">Identity</span>
-            {r.label?.record ? (
-              <span className="mono res-dep">{r.address}</span>
-            ) : (
+            {!r.label?.record && (
               <span className="res-kind">
                 <ResourceIcon type={r.type} data={data} />
                 <strong>{r.label?.name ?? resourceKind(r.type)}</strong>
               </span>
             )}
+            {r.label && <span className="mono res-dep">{r.address}</span>}
             {r.label && !r.label.record && (
               <span>
                 <span className="muted">Kind</span> {resourceKind(r.type)}
