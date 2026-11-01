@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import type { ChangeAction, ResourceLabel, ResourceUnit, Stack, StateResource } from "../api";
 import { useOrg } from "../org";
 import { providerColor, providerName, ResourceIcon, resourceKind } from "../resourceIcons";
+import { LabelLine } from "../resourceLabel";
 import { Empty, ErrorBanner, timeAgo, useData } from "../ui";
 
 // The stack's Resources tab (spec 0002 R8.2): what the state manages, unit by
@@ -360,23 +361,6 @@ function Row({ r, unitKey, selected, onPick }: { r: StateResource; unitKey: stri
         </div>
       )}
     </>
-  );
-}
-
-// The row's first line: the resource's name, and for a DNS record its type,
-// target and proxy; for other kinds the identifying details.
-function LabelLine({ label, data }: { label: ResourceLabel; data: boolean }) {
-  const rec = label.record;
-  return (
-    <span className="res-label">
-      <strong className={data ? "muted" : undefined}>{label.name}</strong>
-      {rec?.type && <span className="res-rtype">{rec.type}</span>}
-      {rec?.target && <span className="mono res-target">→ {rec.target}</span>}
-      {rec?.proxied && <span className="res-proxied">proxied</span>}
-      {!rec && label.details?.length ? (
-        <span className="muted small">{label.details.map((d) => `${d.key} ${d.value}`).join(" · ")}</span>
-      ) : null}
-    </span>
   );
 }
 

@@ -425,3 +425,32 @@ func TestGitTokenOnlyGoesToTheRepositoryHost(t *testing.T) {
 		t.Errorf("another host got the token: %q", atOtherHost)
 	}
 }
+
+func TestExtractChangesLabels(t *testing.T) {
+	raw := []byte(`{"prior_state":{"values":{"root_module":{"resources":[
+		{"type":"cloudflare_zones","values":{"name":"acme.example","result":[{"id":"z1","name":"acme.example"}]},"sensitive_values":{}}
+	]}}},"resource_changes":[
+		{"address":"cloudflare_dns_record.this[\"api\"]","mode":"managed","type":"cloudflare_dns_record","name":"this","change":{
+			"actions":["create"],"after":{"zone_id":"z1","name":"api","type":"A","content":"203.0.113.10","proxied":true,"ttl":1,"id":null},
+			"after_unknown":{"id":true},"after_sensitive":{}}},
+		{"address":"cloudflare_dns_record.this[\"old\"]","mode":"managed","type":"cloudflare_dns_record","name":"this","change":{
+			"actions":["delete"],"before":{"zone_id":"z1","name":"old.acme.example","type":"CNAME","content":"s3cr3t-token.acme.example"},
+			"before_sensitive":{},"after":null}},
+		{"address":"helm_release.app","mode":"managed","type":"helm_release","name":"app","change":{
+			"actions":["update"],"after":{"name":"app","chart":"app","version":"1.2.0","namespace":"apps","values":["x"]},
+			"after_sensitive":{"values":[true]},"after_unknown":{}}}
+	]}`)
+	changes, err := ExtractChanges(raw, "", NewMasker([]string{"s3cr3t-token"}).Mask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := changes[0].Label; l == nil || l.Name != "api.acme.example" || l.Record.Type != "A" || l.Record.Target != "203.0.113.10" {
+		t.Errorf("create: %+v", l)
+	}
+	if l := changes[1].Label; l == nil || l.Name != "old.acme.example" || strings.Contains(l.Record.Target, "s3cr3t") {
+		t.Errorf("delete is named by what it was, with secrets masked: %+v %+v", l, l.Record)
+	}
+	if l := changes[2].Label; l == nil || l.Name != "app" || len(l.Details) != 2 {
+		t.Errorf("helm update: %+v", l)
+	}
+}

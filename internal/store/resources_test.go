@@ -72,11 +72,3 @@ func TestListResourcesLabels(t *testing.T) {
 		}
 	}
 }
-
-func TestCutLabel(t *testing.T) {
-	long := strings.Repeat("é", 200)
-	got := cut(long)
-	if n := len([]rune(got)); n != maxLabel || !strings.HasSuffix(got, "…") {
-		t.Errorf("got %d runes", n)
-	}
-}

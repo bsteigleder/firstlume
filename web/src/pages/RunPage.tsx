@@ -30,6 +30,7 @@ import {
   useData,
 } from "../ui";
 import { ResourceIcon } from "../resourceIcons";
+import { LabelLine } from "../resourceLabel";
 import { RunDialog } from "./RunDialog";
 
 export function RunPage() {
@@ -483,7 +484,7 @@ function ChangeCard({ change: c, drift, ack, open, onToggle }: {
         </span>
         <ResourceIcon type={c.type} size={28} />
         <span className={`badge ${info.tone}`}>{info.label}</span>
-        <strong>{c.name}</strong>
+        {c.label ? <LabelLine label={c.label} data={false} /> : <strong>{c.name}</strong>}
         <span className="muted small">{humanType(c.type)}</span>
         {!open && nattrs > 0 && (
           <span className="muted small">
@@ -526,7 +527,7 @@ function ChangeCard({ change: c, drift, ack, open, onToggle }: {
         <label className={`ack${ack.acked[key] ? " done" : ""}`}>
           <input type="checkbox" checked={!!ack.acked[key]} onChange={() => ack.toggle(key)} />
           <span className="grow">
-            I understand <strong>{c.name}</strong> will be {c.action === "delete" ? "deleted" : "deleted and created again"}
+            I understand <strong>{c.label?.name ?? c.name}</strong> will be {c.action === "delete" ? "deleted" : "deleted and created again"}
           </span>
           {ack.origin && <span className="muted small">required by {levelName(ack.origin)}</span>}
         </label>
