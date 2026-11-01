@@ -140,7 +140,7 @@ registries:
   | `env` | `CHAVE=valor` por linha, com aspas quando preciso; só valores escalares |
   | `raw` | o valor de `content`, sem nenhuma transformação |
 
-- **R2.3** **Expansão por pastas:** a parte de diretório do `path` pode ter curingas (`*`, `?`, `[...]`, sem `**`), como `sp*/*/connection.hcl`. O executor escreve o arquivo em **cada pasta do checkout** que casa com o padrão. Em `path`, nos caminhos do Vault e em literais de texto da declaração, `${dir}` é o caminho da pasta (`sp1/n01`) e `${name}` o último trecho (`n01`). Um único item cobre dezenas de máquinas, e uma máquina nova recebe o arquivo sem ninguém mexer no Firstlume.
+- **R2.3** **Expansão por pastas:** a parte de diretório do `path` pode ter curingas (`*`, `?`, `[...]`, sem `**`), como `sp*/*/connection.hcl`. O executor escreve o arquivo em **cada pasta do checkout** que casa com o padrão. Em `path`, nos caminhos do Vault e em literais de texto da declaração, `${dir}` é o caminho da pasta (`sp1/n01`) e `${name}` o último trecho (`n01`). Em qualquer texto, `${stack_dir}` é o caminho absoluto da pasta do stack no run (emenda de 2026-10-31: o código Terragrunt roda dentro do `.terragrunt-cache` e precisa do caminho absoluto de um arquivo gerado, como a chave SSH). Um único item cobre dezenas de máquinas, e uma máquina nova recebe o arquivo sem ninguém mexer no Firstlume.
 - **R2.4** Um padrão que não casa com nenhuma pasta **falha** a fase no passo de preparação, citando o padrão. Motivo: um erro de digitação não pode virar "arquivo que não existe" no meio do plan.
 - **R2.5** Os arquivos são escritos depois do checkout e antes do `init`, em todas as fases (plan, apply, drift).
 - **R2.6** O `path` é recusado (R1.3) se:

@@ -301,6 +301,11 @@ func kubernetesDriver(executorAPI string) (agent.Driver, error) {
 	if err != nil {
 		return nil, err
 	}
+	nodeSelector, tolerations, affinity, err := agent.ParseScheduling(os.Getenv("FIRSTLUME_EXECUTOR_NODE_SELECTOR"),
+		os.Getenv("FIRSTLUME_EXECUTOR_TOLERATIONS"), os.Getenv("FIRSTLUME_EXECUTOR_AFFINITY"))
+	if err != nil {
+		return nil, err
+	}
 	return agent.NewKubernetesDriver(agent.KubernetesConfig{
 		Namespace:        namespace,
 		AgentName:        env("FIRSTLUME_AGENT_NAME", "default"),
@@ -312,6 +317,9 @@ func kubernetesDriver(executorAPI string) (agent.Driver, error) {
 		Resources:        resources,
 		ActiveDeadline:   deadline,
 		TTLAfterFinished: ttl,
+		NodeSelector:     nodeSelector,
+		Tolerations:      tolerations,
+		Affinity:         affinity,
 	}, client), nil
 }
 

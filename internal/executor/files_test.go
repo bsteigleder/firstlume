@@ -64,6 +64,7 @@ files:
       user: { var: SSH_USER }
       port: 22
       note: { text: `+jsonString(tricky)+` }
+      key_path: "${stack_dir}/ssh/id_ed25519"
   - path: vars.auto.tfvars.json
     format: json
     values: { zone: sp1, sizes: [1, 2.5], on: true, none: null }
@@ -79,6 +80,8 @@ files:
 env:
   TOKEN: from-the-repository
   EXTRA: "1"
+  KEY_PATH: "${stack_dir}/ssh/id_ed25519"
+  LITERAL: "$${stack_dir}"
 terraform:
   zone: sp1
   limits: { cpu: 2 }
@@ -104,6 +107,9 @@ terraform:
 		name := filepath.Base(n)
 		if !strings.HasPrefix(got, "locals {\n  host = \""+name+".example\"\n  dir = \""+n+"\"\n  user = \"root\"\n  port = 22\n") {
 			t.Fatalf("%s/connection.hcl:\n%s", n, got)
+		}
+		if !strings.Contains(got, "  key_path = \""+filepath.Join(root, "ssh/id_ed25519")+"\"\n") {
+			t.Fatalf("${stack_dir} in %s/connection.hcl:\n%s", n, got)
 		}
 	}
 	for _, missing := range []string{"sp1/.terragrunt-cache/connection.hcl", "docs/connection.hcl"} {
@@ -161,7 +167,8 @@ terraform:
 
 	// Declared variables: the settings win for TOKEN, and say so.
 	env := strings.Join(p.env, "\n")
-	for _, want := range []string{"EXTRA=1", "TF_VAR_zone=sp1", `TF_VAR_limits={"cpu":2}`} {
+	for _, want := range []string{"EXTRA=1", "TF_VAR_zone=sp1", `TF_VAR_limits={"cpu":2}`,
+		"KEY_PATH=" + filepath.Join(root, "ssh/id_ed25519"), "LITERAL=${stack_dir}"} {
 		if !strings.Contains(env, want) {
 			t.Errorf("env %q lacks %s", env, want)
 		}

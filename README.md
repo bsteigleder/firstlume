@@ -196,6 +196,7 @@ terraform:
 - **Formatos:** `hcl`, `json`, `yaml`, `env` (lido pelo `source` do shell) e `raw` (o conteúdo como está). O Firstlume faz o escape. No `hcl`, um valor com `${` ou `%{` continua texto, nunca vira expressão do Terraform.
 - **Fontes:** um literal, ou `{var: NOME}`, que lê uma variável `env` ou `terraform` das configurações. A fonte `{vault: caminho, field: campo}` vem com o Vault (marco F2 da spec).
 - **Por pastas:** o curinga só vale nas pastas do `path`, não no nome do arquivo, e não casa com pastas ocultas (`.terragrunt-cache`). Um padrão que não casa com nenhuma pasta falha o run, para um erro de digitação não passar despercebido.
+- **`${stack_dir}`:** o caminho absoluto da pasta do stack no run, em qualquer texto da declaração. Serve para apontar um arquivo gerado a partir de código que roda dentro do `.terragrunt-cache`, como a chave SSH: `ssh_private_key_path: "${stack_dir}/ssh/id_ed25519"`. `$${` escreve um `${` literal.
 - **Quando:** os arquivos são escritos depois do checkout e antes do `init`, no passo **Prepare**, em toda fase. O apply recebe os mesmos valores do plan.
 - **Segurança:**
   - um arquivo que usa uma variável sensível é sensível: sai com permissão `0600` e o conteúdo é mascarado no log, linha a linha;
@@ -284,6 +285,8 @@ helm install firstlume-agent deploy/helm/firstlume -n firstlume --create-namespa
 ```
 
 A imagem é publicada pelo GitHub Actions em `ghcr.io/bsteigleder/firstlume` (`main`, `sha-<commit>` e, nas tags `vX.Y.Z`, `X.Y.Z`), para amd64 e arm64. Se o pacote for privado, crie um Secret de pull e passe `--set imagePullSecrets[0].name=<secret>`: o server, o agent e os Jobs dos runs (pela ServiceAccount do executor) passam a usá-lo. Num cluster com registry interno, prefira um proxy-cache dele apontando para o GHCR, com a credencial num lugar só.
+
+**Onde os runs rodam.** Os Jobs dos runs aceitam `agent.executor.nodeSelector`, `tolerations` e `affinity` (inclusive anti-afinidade), com os mesmos campos de um pod. Use quando só alguns nodes alcançam as máquinas que o código configura. Para código que fala com a API do próprio cluster (providers `kubernetes`/`helm` sem kubeconfig), ligue `agent.executor.automountServiceAccountToken` e dê permissões à ServiceAccount do executor com `agent.executor.serviceAccount.clusterRoles`. Elas valem para todos os runs daquele agent: para permissões diferentes, use outro agent.
 
 Para testar sem banco externo, use `--set postgresql.enabled=true`. É uma instância única e sem backup, só para desenvolvimento.
 

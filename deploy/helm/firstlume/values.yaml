@@ -125,6 +125,14 @@ agent:
       #   eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/firstlume-runs
       #   iam.gke.io/gcp-service-account: runs@project.iam.gserviceaccount.com
       annotations: {}
+      # ClusterRoles bound to this ServiceAccount, for code that talks to the
+      # Kubernetes API of this cluster (providers kubernetes/helm with in-cluster
+      # auth). Every run of this agent gets them: prefer read-only roles, and
+      # a separate agent for stacks that need more.
+      #   clusterRoles: [view]
+      clusterRoles: []
+    # Mount the ServiceAccount's token in run pods. Off by default: only turn it
+    # on when the code needs the in-cluster API (see clusterRoles above).
     automountServiceAccountToken: false
     resources:
       requests:
@@ -136,6 +144,22 @@ agent:
     activeDeadline: 2h
     # Finished Jobs (and their logs) are kept this long.
     ttlAfterFinished: 1h
+    # Where run Jobs go, with the same fields as a pod. Runs that reach
+    # machines over a network only some nodes see need this, e.g.:
+    #   nodeSelector:
+    #     topology.kubernetes.io/zone: sp1
+    #   affinity:
+    #     podAntiAffinity:            # spread runs across nodes
+    #       preferredDuringSchedulingIgnoredDuringExecution:
+    #         - weight: 100
+    #           podAffinityTerm:
+    #             topologyKey: kubernetes.io/hostname
+    #             labelSelector:
+    #               matchLabels:
+    #                 app.kubernetes.io/managed-by: firstlume
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
 
 # Single-instance Postgres for trying the chart out. NOT for production:
 # no backups, no high availability. Use a managed database instead.

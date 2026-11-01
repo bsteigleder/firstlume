@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -41,7 +42,38 @@ type KubernetesConfig struct {
 	TTLAfterFinished time.Duration
 	NodeSelector     map[string]string
 	Tolerations      []corev1.Toleration
+	Affinity         *corev1.Affinity
 	PodAnnotations   map[string]string
+}
+
+// ParseScheduling reads where run Jobs go: a node selector, tolerations and an
+// affinity (node affinity, pod affinity and anti-affinity), each as the JSON of
+// its Kubernetes field. Empty ones are skipped; unknown fields are an error, so
+// a typo doesn't silently put runs on any node.
+func ParseScheduling(nodeSelector, tolerations, affinity string) (map[string]string, []corev1.Toleration, *corev1.Affinity, error) {
+	var (
+		ns  map[string]string
+		tol []corev1.Toleration
+		aff *corev1.Affinity
+	)
+	for _, f := range []struct {
+		name, text string
+		into       any
+	}{
+		{"node selector", nodeSelector, &ns},
+		{"tolerations", tolerations, &tol},
+		{"affinity", affinity, &aff},
+	} {
+		if strings.TrimSpace(f.text) == "" {
+			continue
+		}
+		dec := json.NewDecoder(strings.NewReader(f.text))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(f.into); err != nil {
+			return nil, nil, nil, fmt.Errorf("executor %s: %w", f.name, err)
+		}
+	}
+	return ns, tol, aff, nil
 }
 
 // ParseResources builds resource requirements from quantity strings; empty ones are skipped.
@@ -119,6 +151,7 @@ func BuildJob(cfg KubernetesConfig, a *api.Assignment) (*corev1.Secret, *batchv1
 					AutomountServiceAccountToken: &automount,
 					NodeSelector:                 cfg.NodeSelector,
 					Tolerations:                  cfg.Tolerations,
+					Affinity:                     cfg.Affinity,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot:   &yes,
 						RunAsUser:      &uid,

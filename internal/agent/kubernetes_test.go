@@ -104,3 +104,41 @@ func TestKubernetesDriverLifecycle(t *testing.T) {
 		t.Fatalf("active = %d, want 0", n)
 	}
 }
+
+func TestParseScheduling(t *testing.T) {
+	// What the Helm chart renders with toJson.
+	ns, tol, aff, err := ParseScheduling(`{"topology.kubernetes.io/zone":"sp1"}`,
+		`[{"effect":"NoSchedule","key":"dedicated","operator":"Equal","value":"infra"}]`,
+		`{"podAntiAffinity":{"preferredDuringSchedulingIgnoredDuringExecution":[{"podAffinityTerm":{"labelSelector":{"matchLabels":{"app.kubernetes.io/managed-by":"firstlume"}},"topologyKey":"kubernetes.io/hostname"},"weight":100}]}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig()
+	cfg.NodeSelector, cfg.Tolerations, cfg.Affinity = ns, tol, aff
+	_, job := BuildJob(cfg, testAssignment)
+	pod := job.Spec.Template.Spec
+	if pod.NodeSelector["topology.kubernetes.io/zone"] != "sp1" {
+		t.Fatalf("node selector %v", pod.NodeSelector)
+	}
+	if len(pod.Tolerations) != 1 || pod.Tolerations[0].Effect != corev1.TaintEffectNoSchedule || pod.Tolerations[0].Value != "infra" {
+		t.Fatalf("tolerations %v", pod.Tolerations)
+	}
+	terms := pod.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	if len(terms) != 1 || terms[0].Weight != 100 || terms[0].PodAffinityTerm.TopologyKey != "kubernetes.io/hostname" {
+		t.Fatalf("affinity %+v", pod.Affinity)
+	}
+
+	if ns, tol, aff, err := ParseScheduling("", " ", ""); err != nil || ns != nil || tol != nil || aff != nil {
+		t.Fatalf("empty values: %v %v %v %v", ns, tol, aff, err)
+	}
+	if _, job := BuildJob(testConfig(), testAssignment); job.Spec.Template.Spec.Affinity != nil {
+		t.Fatal("no affinity unless configured")
+	}
+	// A typo must not silently drop the constraint.
+	if _, _, _, err := ParseScheduling("", "", `{"podAntiAfinity":{}}`); err == nil {
+		t.Fatal("unknown affinity field accepted")
+	}
+	if _, _, _, err := ParseScheduling(`["sp1"]`, "", ""); err == nil {
+		t.Fatal("malformed node selector accepted")
+	}
+}

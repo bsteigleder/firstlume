@@ -46,7 +46,11 @@ type outputFile struct {
 // win over the declaration for the same variable (D6). Secrets it writes are
 // added to masker.
 func prepare(dir string, decl *stackconfig.Declaration, vars []api.ExecVariable, masker *Masker, out io.Writer) (*prepared, error) {
-	r := &resolver{vars: vars}
+	stackDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	r := &resolver{vars: vars, stackDir: stackDir}
 	var files []outputFile
 	if decl != nil {
 		if len(decl.Registries) > 0 {
@@ -95,7 +99,7 @@ func prepare(dir string, decl *stackconfig.Declaration, vars []api.ExecVariable,
 				fmt.Fprintf(out, "==> %s %s is also set in the stack's settings, which win\n", group.category, v.Name)
 				continue
 			}
-			res, err := r.resolve(v.Value, dirVars{})
+			res, err := r.resolve(v.Value, dirVars{stackDir: r.stackDir})
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %s %s: %w", v.Line, group.category, v.Name, err)
 			}
@@ -122,10 +126,12 @@ func sensitiveNote(sensitive bool) string {
 	return ""
 }
 
-// dirVars are the ${dir} and ${name} of a file written in a matched directory.
-type dirVars struct{ dir, name string }
+// dirVars are the ${dir} and ${name} of a file written in a matched directory,
+// and ${stack_dir}, the stack's absolute directory in this run: code that runs
+// inside .terragrunt-cache needs it to find a file the run wrote.
+type dirVars struct{ dir, name, stackDir string }
 
-// expand replaces ${dir} and ${name}; $${ is a literal ${.
+// expand replaces ${dir}, ${name} and ${stack_dir}; $${ is a literal ${.
 func (d dirVars) expand(s string) string {
 	if !strings.Contains(s, "${") {
 		return s
@@ -142,6 +148,9 @@ func (d dirVars) expand(s string) string {
 		case strings.HasPrefix(rest, "${name}"):
 			b.WriteString(d.name)
 			i += len("${name}")
+		case strings.HasPrefix(rest, "${stack_dir}"):
+			b.WriteString(d.stackDir)
+			i += len("${stack_dir}")
 		default:
 			b.WriteByte(s[i])
 			i++
@@ -152,7 +161,8 @@ func (d dirVars) expand(s string) string {
 
 // resolver turns declared values into plain ones.
 type resolver struct {
-	vars []api.ExecVariable
+	vars     []api.ExecVariable
+	stackDir string
 	// sensitive is set when the last resolve used a Vault secret or a sensitive variable.
 	sensitive bool
 }
@@ -247,7 +257,7 @@ func (r *resolver) declaredFile(dir string, f *stackconfig.FileSpec) ([]outputFi
 	}
 	var out []outputFile
 	for _, d := range dirs {
-		vars := dirVars{dir: d, name: path.Base(d)}
+		vars := dirVars{dir: d, name: path.Base(d), stackDir: r.stackDir}
 		if d == "" {
 			vars.name = ""
 		}
