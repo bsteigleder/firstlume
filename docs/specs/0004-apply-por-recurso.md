@@ -1,6 +1,6 @@
 # Spec 0004: apply acompanhado recurso por recurso
 
-- **Status:** aprovada em 2026-10-31; Marco P1 implementado e testado em 2026-10-31
+- **Status:** aprovada em 2026-10-31; Marcos P1 e P2 implementados e testados em 2026-10-31
 - **Data:** 2026-10-31
 - **Depende de:** spec 0001, seção 4.11 (revisão do plano recurso por recurso), já implementada
 - **Telas:** aprovadas em 2026-10-31 no canvas de telas, quadros "16 · Apply por recurso" (rodando, terminou com erro, terminou com sucesso)
@@ -57,6 +57,7 @@ Cada mensagem também traz `@message`, a mesma linha que o Terraform escreveria 
 ### 4.1 Executor
 
 - **R1.1** O apply roda com `-json`: `apply -input=false -json -auto-approve <plan>` num módulo raiz, e `-json` depois do `--` no `terragrunt run --all`. O destroy é um apply do plano de destroy e segue a mesma regra.
+  - No `run --all`, o Terragrunt repassa o `-json` de cada unit sem dizer de qual unit é (D1). Por isso o Terragrunt roda o engine **através do binário do Firstlume** (`TG_TF_PATH` aponta para um link com o nome do engine). Num `apply -json`, o binário marca cada linha com a unit, tirada do caminho do plano salvo (`<plans>/<unit>/tfplan.tfplan`, o mesmo que dá a unit no plan); em qualquer outro comando, ele vira o engine de verdade (`exec`), com os mesmos sinais e o mesmo código de saída.
 - **R1.2** A saída `-json` **não vai para o log como JSON**. Para cada linha, o executor:
   - escreve `@message` no log, como o Terraform escreveria no modo texto;
   - para um `diagnostic`, escreve o bloco no formato de hoje (`Error: <resumo>`, o detalhe, `with <endereço>`, `on <arquivo> line <n>`), para que o log continue igual ao que as pessoas conhecem;
@@ -162,9 +163,11 @@ O executor e as regras estão cobertos. O stack `apply-demo` está no `make dev-
 
 ### Marco P2: Terragrunt `run --all`
 
-- [ ] **CAP2.1** No `apply-demo` em Terragrunt, cada mudança recebe o estado da sua unit (chave `unit:endereço`), inclusive quando as duas units têm recursos com o mesmo endereço.
-- [ ] **CAP2.2** Uma unit que falha não marca recursos de outra unit. Units que o Terragrunt não roda porque dependem da que falhou deixam os recursos `not_applied`.
-- [ ] **CAP2.3** O log continua com o prefixo da unit em cada linha, como hoje.
+Testes em `internal/executor/applyjson_test.go` com Terragrunt 1.1.6 real, com Terraform 1.15.6 e com OpenTofu 1.13.2: três units, `net` e `app` com o mesmo endereço, um erro em `net` e `web` dependendo de `net`. O `make dev-gitea` ganhou o stack `apply-demo-tg`.
+
+- [x] **CAP2.1** No `apply-demo` em Terragrunt, cada mudança recebe o estado da sua unit (chave `unit:endereço`), inclusive quando as duas units têm recursos com o mesmo endereço.
+- [x] **CAP2.2** Uma unit que falha não marca recursos de outra unit. Units que o Terragrunt não roda porque dependem da que falhou deixam os recursos `not_applied`.
+- [x] **CAP2.3** O log continua com o prefixo da unit em cada linha, como hoje.
 
 ### Marco P3: tela
 
@@ -184,7 +187,7 @@ O executor e as regras estão cobertos. O stack `apply-demo` está no `make dev-
 
 | # | Pergunta | Proposta |
 |---|---|---|
-| D1 | Como saber a unit de cada linha no `run --all`? | O Terragrunt prefixa a saída de cada unit. Proposta: ler o prefixo para saber a unit e o JSON depois dele para o evento. **A confirmar no início do P2** com a versão de Terragrunt que usamos; se o prefixo não for confiável com `-json`, usar o `--log-format json` do Terragrunt, que traz o diretório da unit em cada linha. |
+| D1 | Como saber a unit de cada linha no `run --all`? | **Decidido em 2026-10-31.** Testado com Terragrunt 1.1.6: com `-json`, a saída de cada unit chega **sem prefixo**, e `--log-format json` só marca as mensagens do próprio Terragrunt. Ficou o binário do Firstlume como engine do Terragrunt, marcando as linhas do apply com a unit (R1.1). |
 | D2 | Atualizar a tela por consulta a cada 2 s ou por stream? | **Consulta a cada 2 s**, como os passos já fazem. Basta para recursos que levam segundos ou minutos. O stream entra se a tela de runs ativas também precisar. |
 | D3 | Dizer de qual recurso um "Not applied" depende, como no desenho ("Depends on helm_release.payments_api, which failed")? | **Não no P3**: o Terraform não informa isso no apply. Dá para calcular pelas referências da configuração no plano (`show -json`), mas módulos e `count`/`for_each` complicam. Fica um texto genérico (R4.4) e, se fizer falta, um marco P4 calcula a dependência. |
 | D4 | Guardar o JSON bruto do apply? | **Não.** O log legível e o estado por recurso cobrem o uso. Se for preciso depurar, um artefato `apply.jsonl` cifrado pode ser adicionado depois. |

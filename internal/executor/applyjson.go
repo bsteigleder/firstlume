@@ -28,7 +28,8 @@ const (
 type applyStream struct {
 	out  io.Writer
 	mask func(string) string
-	// unit prefixes the keys of a Terragrunt unit's resources.
+	// unit prefixes the keys of a Terragrunt unit's resources, for lines
+	// that are not tagged with their unit (see tfwrap.go).
 	unit string
 	send func(context.Context, api.ApplyProgressRequest) error
 
@@ -41,7 +42,7 @@ type applyStream struct {
 	// general is the first error not tied to a resource (R1.6).
 	general string
 	// failed lists the resources with errors, in the order they came.
-	failed  []string
+	failed  []failedResource
 	stopped bool
 	warned  bool
 }
@@ -50,6 +51,12 @@ func newApplyStream(out io.Writer, mask func(string) string, unit string,
 	send func(context.Context, api.ApplyProgressRequest) error) *applyStream {
 	return &applyStream{out: out, mask: mask, unit: unit, send: send,
 		res: map[string]*api.ApplyProgress{}, dirty: map[string]bool{}}
+}
+
+type failedResource struct {
+	key string
+	// label names the resource in the run's error: its address, after its unit.
+	label string
 }
 
 // tfMessage is the part of Terraform's machine-readable UI that is used.
@@ -111,9 +118,20 @@ func (s *applyStream) Close() error {
 }
 
 func (s *applyStream) line(line string) {
+	unit := s.unit
+	if rest, ok := strings.CutPrefix(line, unitTag); ok {
+		if u, l, ok := strings.Cut(rest, "\t"); ok {
+			unit, line = u, l
+		}
+	}
+	// In run --all, each line says its unit, as Terragrunt does in text mode.
+	prefix := ""
+	if unit != "" {
+		prefix = "[" + unit + "] "
+	}
 	var m tfMessage
 	if !strings.HasPrefix(strings.TrimSpace(line), "{") || json.Unmarshal([]byte(line), &m) != nil || m.Type == "" {
-		fmt.Fprintln(s.out, line)
+		fmt.Fprintln(s.out, prefix+line)
 		return
 	}
 	s.tracking = true
@@ -121,10 +139,10 @@ func (s *applyStream) line(line string) {
 		m.Timestamp = time.Now()
 	}
 	if m.Type == "diagnostic" && m.Diagnostic != nil {
-		s.diagnostic(m.Diagnostic)
+		s.diagnostic(unit, prefix, m.Diagnostic)
 		return
 	}
-	fmt.Fprintln(s.out, m.Message)
+	fmt.Fprintln(s.out, prefix+m.Message)
 	if m.Hook == nil || m.Hook.Resource.Addr == "" {
 		return
 	}
@@ -135,10 +153,10 @@ func (s *applyStream) line(line string) {
 	at := m.Timestamp
 	switch m.Type {
 	case "apply_start":
-		r := s.resource(m.Hook.Resource.Addr)
+		r := s.resource(unit, m.Hook.Resource.Addr)
 		r.Steps = append(r.Steps, api.ApplyStep{Action: action, StartedAt: &at})
 	case "apply_complete", "apply_errored":
-		r := s.resource(m.Hook.Resource.Addr)
+		r := s.resource(unit, m.Hook.Resource.Addr)
 		for i := len(r.Steps) - 1; i >= 0; i-- {
 			if st := &r.Steps[i]; st.Action == action && st.FinishedAt == nil {
 				st.FinishedAt = &at
@@ -151,7 +169,7 @@ func (s *applyStream) line(line string) {
 
 // diagnostic writes the error or warning as Terraform prints it, and records
 // errors on their resource.
-func (s *applyStream) diagnostic(d *tfDiagnostic) {
+func (s *applyStream) diagnostic(unit, prefix string, d *tfDiagnostic) {
 	label := "Warning"
 	if d.Severity == "error" {
 		label = "Error"
@@ -181,7 +199,9 @@ func (s *applyStream) diagnostic(d *tfDiagnostic) {
 		}
 	}
 	b.WriteString("╵")
-	fmt.Fprintln(s.out, b.String())
+	for _, l := range strings.Split(b.String(), "\n") {
+		fmt.Fprintln(s.out, prefix+l)
+	}
 
 	if d.Severity != "error" {
 		return
@@ -192,9 +212,9 @@ func (s *applyStream) diagnostic(d *tfDiagnostic) {
 		}
 		return
 	}
-	r := s.resource(d.Address)
+	r := s.resource(unit, d.Address)
 	if len(r.Errors) == 0 {
-		s.failed = append(s.failed, d.Address)
+		s.failed = append(s.failed, failedResource{key: r.Key, label: prefix + d.Address})
 	}
 	if len(r.Errors) < maxResourceErrors {
 		e := api.ApplyError{Summary: s.mask(d.Summary), Detail: s.mask(strings.TrimRight(d.Detail, "\n"))}
@@ -206,10 +226,10 @@ func (s *applyStream) diagnostic(d *tfDiagnostic) {
 }
 
 // resource returns the progress of an address and marks it to be reported.
-func (s *applyStream) resource(addr string) *api.ApplyProgress {
+func (s *applyStream) resource(unit, addr string) *api.ApplyProgress {
 	key := addr
-	if s.unit != "" {
-		key = s.unit + ":" + addr
+	if unit != "" {
+		key = unit + ":" + addr
 	}
 	r := s.res[key]
 	if r == nil {
@@ -300,11 +320,7 @@ func (s *applyStream) failure(exitErr error) error {
 		return exitErr
 	}
 	first := s.failed[0]
-	key := first
-	if s.unit != "" {
-		key = s.unit + ":" + first
-	}
-	msg := first + ": " + s.res[key].Errors[0].Summary
+	msg := first.label + ": " + s.res[first.key].Errors[0].Summary
 	if n := len(s.failed) - 1; n == 1 {
 		msg += " (and 1 more resource)"
 	} else if n > 1 {

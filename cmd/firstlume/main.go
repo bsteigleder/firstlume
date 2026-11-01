@@ -51,6 +51,10 @@ commands:
 `
 
 func main() {
+	// Terragrunt runs the engine through this binary in run --all applies.
+	if code, ok := executor.EngineWrapper(); ok {
+		os.Exit(code)
+	}
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)

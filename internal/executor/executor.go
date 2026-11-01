@@ -114,6 +114,8 @@ type executor struct {
 	prepared *prepared
 	// logs is the shipper behind out, flushed between steps.
 	logs *LogShipper
+	// engineBin is the installed Terraform or OpenTofu binary.
+	engineBin string
 }
 
 func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
@@ -179,6 +181,7 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			if err != nil {
 				return err
 			}
+			e.engineBin = engineBin
 			bin := engineBin
 			if cfg.TerragruntVersion != "" {
 				if bin, err = inst.Install(ctx, "terragrunt", cfg.TerragruntVersion); err != nil {
@@ -420,21 +423,29 @@ func (e *executor) apply(ctx context.Context, r *runner, planPath string) (api.C
 		if err := unpackDir(data, e.allPlansDir()); err != nil {
 			return api.CompleteRequest{}, fmt.Errorf("unpacking plans: %w", err)
 		}
-		// With --out-dir, Terragrunt applies each unit's saved plan.
-		if _, err := r.run(ctx, "run", "--all", "--non-interactive", "--out-dir", e.allPlansDir(), "--",
-			"apply", "-input=false", "-no-color"); err != nil {
+		// With --out-dir, Terragrunt applies each unit's saved plan. The engine
+		// runs through this binary, which tags each line with its unit.
+		wrap, err := wrapperEnv(e.engineBin, e.allPlansDir(), filepath.Join(e.cfg.WorkDir, "engine"))
+		if err != nil {
 			return api.CompleteRequest{}, err
 		}
-		return api.CompleteRequest{Success: true}, nil
+		tg := *r
+		tg.env = append(append([]string(nil), r.env...), wrap...)
+		return e.applyJSON(ctx, &tg, "run", "--all", "--non-interactive", "--out-dir", e.allPlansDir(), "--",
+			"apply", "-input=false", "-no-color", "-json")
 	}
 	if err := os.WriteFile(planPath, data, 0o600); err != nil {
 		return api.CompleteRequest{}, err
 	}
-	// With -json, the log is rebuilt from Terraform's messages and each
-	// resource's progress is reported (spec 0004).
+	return e.applyJSON(ctx, r, "apply", "-input=false", "-no-color", "-json", "-auto-approve", planPath)
+}
+
+// applyJSON runs an apply with -json: the log is rebuilt from Terraform's
+// messages and each resource's progress is reported (spec 0004).
+func (e *executor) applyJSON(ctx context.Context, r *runner, args ...string) (api.CompleteRequest, error) {
 	stream := newApplyStream(e.out, e.mask, "", e.client.ApplyProgress)
 	stop := stream.start(ctx)
-	_, err = r.runTo(ctx, stream, "apply", "-input=false", "-no-color", "-json", "-auto-approve", planPath)
+	_, err := r.runTo(ctx, stream, args...)
 	_ = stream.Close()
 	stop()
 	if err != nil {

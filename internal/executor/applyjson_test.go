@@ -311,3 +311,129 @@ func applyDemoRun(t *testing.T, bin string) {
 		}
 	}
 }
+
+func TestApplyStreamWithRealTerragrunt(t *testing.T) {
+	tg := testTool(t, "FIRSTLUME_TEST_TERRAGRUNT", "terragrunt")
+	terragruntApplyRun(t, tg, testTool(t, "FIRSTLUME_TEST_TERRAFORM", "terraform"))
+}
+
+func TestApplyStreamWithRealTerragruntAndOpenTofu(t *testing.T) {
+	tg := testTool(t, "FIRSTLUME_TEST_TERRAGRUNT", "terragrunt")
+	terragruntApplyRun(t, tg, testTool(t, "FIRSTLUME_TEST_TOFU", "tofu"))
+}
+
+// terragruntApplyRun covers CAP2.1 to CAP2.3: in run --all, each resource is
+// reported under its unit even when two units share an address, a failure in
+// one unit marks nothing in another, a unit that depends on the failed one
+// never runs, and the log keeps the unit on each line.
+func terragruntApplyRun(t *testing.T, tg, engine string) {
+	root := t.TempDir()
+	files := map[string]string{
+		"root.hcl":           "",
+		"net/terragrunt.hcl": `include "root" { path = find_in_parent_folders("root.hcl") }`,
+		"net/main.tf": `
+resource "terraform_data" "shared" { input = "net" }
+resource "terraform_data" "breaks" {
+  provisioner "local-exec" { command = "echo net is down >&2; exit 1" }
+}`,
+		"app/terragrunt.hcl": `include "root" { path = find_in_parent_folders("root.hcl") }`,
+		"app/main.tf":        `resource "terraform_data" "shared" { input = "app" }`,
+		"web/terragrunt.hcl": `
+include "root" { path = find_in_parent_folders("root.hcl") }
+dependencies { paths = ["../net"] }`,
+		"web/main.tf": `resource "terraform_data" "site" { input = "web" }`,
+	}
+	for name, content := range files {
+		p := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	work := t.TempDir()
+	plans := filepath.Join(work, "plans")
+	env := append(inheritedEnv(), "HOME="+t.TempDir())
+	env = append(env, toolEnv(engine, filepath.Join(work, "plugin-cache"))...)
+	var log lockedBuffer
+	r := &runner{dir: root, bin: tg, env: env, out: &log}
+	ctx := context.Background()
+	if code, err := r.run(ctx, "run", "--all", "--non-interactive", "--out-dir", plans, "--json-out-dir", filepath.Join(work, "pj"), "--",
+		"plan", "-input=false", "-no-color", "-detailed-exitcode"); code != 2 {
+		t.Fatalf("plan: %d %v\n%s", code, err, log.String())
+	}
+
+	wrap, err := wrapperEnv(engine, plans, filepath.Join(work, "engine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var applyLog lockedBuffer
+	var rep reports
+	ar := &runner{dir: root, bin: tg, env: append(append([]string(nil), env...), wrap...), out: &applyLog}
+	s := newApplyStream(&applyLog, func(s string) string { return s }, "", rep.send)
+	stop := s.start(ctx)
+	_, err = ar.runTo(ctx, s, "run", "--all", "--non-interactive", "--out-dir", plans, "--", "apply", "-input=false", "-no-color", "-json")
+	_ = s.Close()
+	stop()
+	if err == nil {
+		t.Fatalf("apply should fail:\n%s", applyLog.String())
+	}
+
+	want := map[string]string{
+		"net:terraform_data.shared": "create",
+		"app:terraform_data.shared": "create",
+		"net:terraform_data.breaks": "create:failed",
+	}
+	for key, w := range want {
+		if got := actions(rep.latest[key].Steps); got != w {
+			t.Errorf("%s steps = %q, want %q\n%s", key, got, w, applyLog.String())
+		}
+	}
+	for key := range rep.latest {
+		if _, ok := want[key]; !ok {
+			t.Errorf("unexpected resource %q (web depends on net and must not run)", key)
+		}
+	}
+	if errs := rep.latest["net:terraform_data.breaks"].Errors; len(errs) == 0 || errs[0].File != "main.tf" {
+		t.Errorf("breaks errors = %+v", errs)
+	}
+	if got := s.failure(err).Error(); !strings.HasPrefix(got, "[net] terraform_data.breaks: ") {
+		t.Errorf("failure = %q", got)
+	}
+
+	text := applyLog.String()
+	if strings.Contains(text, unitTag) {
+		t.Fatalf("unit tag leaked into the log:\n%s", text)
+	}
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "{") || strings.HasPrefix(l, "[net] {") || strings.HasPrefix(l, "[app] {") {
+			t.Fatalf("JSON line in the log: %s", l)
+		}
+	}
+	for _, w := range []string{"[app] terraform_data.shared: Creation complete", "[net] │ Error: ", "[net] │   with terraform_data.breaks,",
+		"[net] " + filepath.Base(engine) + ": Initializing"} {
+		if !strings.Contains(text, w) {
+			t.Errorf("log lacks %q:\n%s", w, text)
+		}
+	}
+}
+
+func TestUnitOf(t *testing.T) {
+	plans := t.TempDir()
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"apply", "-json", filepath.Join(plans, "net", "tfplan.tfplan")}, "net"},
+		{[]string{"apply", "-json", filepath.Join(plans, "sp1", "n01", "tfplan.tfplan")}, "sp1/n01"},
+		{[]string{"apply", "-json", filepath.Join(plans, "tfplan.tfplan")}, ""},
+		{[]string{"apply", "-json", "/elsewhere/net/tfplan.tfplan"}, ""},
+		{[]string{"apply", "-json", "-auto-approve"}, ""},
+	}
+	for _, c := range cases {
+		if got := unitOf(c.args, plans); got != c.want {
+			t.Errorf("unitOf(%v) = %q, want %q", c.args, got, c.want)
+		}
+	}
+}
