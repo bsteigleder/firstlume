@@ -314,9 +314,26 @@ export interface StateResource {
   provider: string;
   instances: number;
   depends_on?: string[];
+  /** Which resource it is, from a fixed list of identifying attributes per type. */
+  label?: ResourceLabel;
   history?: ResourceEvent[];
   /** What the latest drift check would do to it to match the code. */
   drift?: ChangeAction;
+}
+
+export interface ResourceLabel {
+  name: string;
+  record?: DNSRecord;
+  details?: { key: string; value: string }[];
+}
+
+export interface DNSRecord {
+  type?: string;
+  target?: string;
+  proxied?: boolean;
+  /** Seconds; 1 means automatic. */
+  ttl?: number;
+  zone?: string;
 }
 
 export interface ResourceUnit {

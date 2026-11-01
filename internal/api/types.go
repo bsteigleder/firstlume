@@ -954,10 +954,40 @@ type StateResource struct {
 	// Instances counts the instances of its block (count or for_each).
 	Instances int      `json:"instances"`
 	DependsOn []string `json:"depends_on,omitempty"`
+	// Label says which resource it is in plain words, for the types that
+	// have a fixed list of identifying attributes.
+	Label *ResourceLabel `json:"label,omitempty"`
 	// History lists the latest applies that changed it, newest first.
 	History []ResourceEvent `json:"history,omitempty"`
 	// Drift is what the latest drift check would do to it to match the code.
 	Drift ChangeAction `json:"drift,omitempty"`
+}
+
+// ResourceLabel is what identifies a resource, read from a fixed list of
+// attributes per type (such as a DNS record's name, type and target). No
+// other attribute value, and no attribute marked sensitive, is ever read.
+type ResourceLabel struct {
+	Name string `json:"name"`
+	// Record is set for a DNS record.
+	Record *DNSRecord `json:"record,omitempty"`
+	// Details lists other identifying fields, such as a Helm release's chart.
+	Details []LabelDetail `json:"details,omitempty"`
+}
+
+// DNSRecord is a DNS record's identifying fields.
+type DNSRecord struct {
+	Type    string `json:"type,omitempty"`
+	Target  string `json:"target,omitempty"`
+	Proxied *bool  `json:"proxied,omitempty"`
+	// TTL is in seconds; 1 means automatic.
+	TTL  int    `json:"ttl,omitempty"`
+	Zone string `json:"zone,omitempty"`
+}
+
+// LabelDetail is one more identifying field of a resource.
+type LabelDetail struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 // ResourceEvent is an apply that changed a resource.

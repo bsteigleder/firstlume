@@ -2742,11 +2742,11 @@ textarea:focus-visible {
 
 .res-row {
   display: grid;
-  grid-template-columns: minmax(0, 2.3fr) minmax(0, 1.4fr) minmax(0, 0.8fr) minmax(0, 1.3fr);
+  grid-template-columns: minmax(0, 2.6fr) minmax(0, 1.3fr) minmax(0, 0.8fr) minmax(0, 1.1fr);
   gap: 12px;
   align-items: center;
   width: 100%;
-  min-width: 760px;
+  min-width: 820px;
   padding: 9px 16px;
   border: none;
   border-top: 1px solid var(--border);
@@ -2788,6 +2788,72 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
+/* A labelled resource: its name first, the address below it. */
+.res-named {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.res-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.res-label strong,
+.res-record-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.res-label strong {
+  font-size: 14px;
+}
+
+.res-record-name {
+  font-size: 15px;
+}
+
+.res-addr .res-addr-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.res-target {
+  color: var(--text-2);
+}
+
+.res-rtype {
+  display: inline-flex;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.res-proxied {
+  display: inline-flex;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--attention-soft);
+  color: var(--attention);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.res-copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .res-type {
   display: flex;
   flex-direction: column;
@@ -2806,7 +2872,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 16px 28px;
-  min-width: 760px;
+  min-width: 820px;
   padding: 16px 20px 18px 56px;
   border-top: 1px solid var(--border);
   font-size: 13px;

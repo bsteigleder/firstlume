@@ -20,7 +20,8 @@ const (
 	historyDepth = 5
 )
 
-// stateResources is the part of a state the Resources tab reads: no attribute values.
+// stateResources is the part of a state the Resources tab reads. Attribute
+// values are read only by the labels, from a fixed list per type.
 type stateResources struct {
 	Resources []struct {
 		Module    string `json:"module"`
@@ -29,8 +30,10 @@ type stateResources struct {
 		Name      string `json:"name"`
 		Provider  string `json:"provider"`
 		Instances []struct {
-			IndexKey     json.RawMessage `json:"index_key"`
-			Dependencies []string        `json:"dependencies"`
+			IndexKey     json.RawMessage            `json:"index_key"`
+			Dependencies []string                   `json:"dependencies"`
+			Attributes   map[string]json.RawMessage `json:"attributes"`
+			Sensitive    json.RawMessage            `json:"sensitive_attributes"`
 		} `json:"instances"`
 	} `json:"resources"`
 }
@@ -42,6 +45,14 @@ func listResources(data []byte) ([]api.StateResource, error) {
 	var st stateResources
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, err
+	}
+	zones := zoneNames{}
+	for _, r := range st.Resources {
+		for _, in := range r.Instances {
+			if a, ok := newLabelAttrs(in.Attributes, in.Sensitive); ok {
+				zones.add(r.Type, a)
+			}
+		}
 	}
 	out := []api.StateResource{}
 	for _, r := range st.Resources {
@@ -62,9 +73,13 @@ func listResources(data []byte) ([]api.StateResource, error) {
 			if k := string(in.IndexKey); k != "" && k != "null" {
 				addr += "[" + k + "]"
 			}
+			var label *api.ResourceLabel
+			if a, ok := newLabelAttrs(in.Attributes, in.Sensitive); ok {
+				label = resourceLabel(r.Mode, r.Type, a, zones)
+			}
 			out = append(out, api.StateResource{
 				Address: addr, Mode: r.Mode, Type: r.Type, Name: r.Name, Module: r.Module, Provider: provider,
-				Instances: len(r.Instances), DependsOn: in.Dependencies,
+				Instances: len(r.Instances), DependsOn: in.Dependencies, Label: label,
 			})
 		}
 	}
