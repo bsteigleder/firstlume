@@ -4,12 +4,13 @@ import { settingsPath, type Stack } from "../api";
 import { PeopleIcon, PlayIcon } from "../icons";
 import { folderContents, PageTitle, useCrumbs, useOrg } from "../org";
 import { DriftBadge, driftLabel, Empty, repoLabel, StatusBadge, timeAgo, useData } from "../ui";
+import { StackGrip } from "./MoveStack";
 import { RunDialog } from "./RunDialog";
 
 /** A folder, or the organization's top level when no folder is in the URL. */
 export function FolderPage() {
   const { folderId = "" } = useParams();
-  const { org, tree, api, link, open, folderChain } = useOrg();
+  const { org, tree, api, link, open, folderChain, drag } = useOrg();
   const [running, setRunning] = useState<Stack | null>(null);
   const chain = folderChain(folderId);
   const folder = chain[chain.length - 1];
@@ -85,13 +86,18 @@ export function FolderPage() {
               {stacks.map((s) => {
                 const r = s.last_run;
                 return (
-                  <tr key={s.id}>
+                  <tr key={s.id} className={drag?.id === s.id ? "dragging" : ""}>
                     <td>
-                      <Link className="row-title" to={link(`s/${s.id}`)}>
-                        {s.name}
-                      </Link>
-                      <div className="mono muted small">
-                        {repoLabel(s.repository)} · {s.path} @ {s.ref}
+                      <div className="stack-cell">
+                        <StackGrip stack={s} rowSelector="tr" />
+                        <div>
+                          <Link className="row-title" to={link(`s/${s.id}`)}>
+                            {s.name}
+                          </Link>
+                          <div className="mono muted small">
+                            {repoLabel(s.repository)} · {s.path} @ {s.ref}
+                          </div>
+                        </div>
                       </div>
                     </td>
                     <td>

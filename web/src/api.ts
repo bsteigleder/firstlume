@@ -168,6 +168,29 @@ export interface DiscoverResponse {
   stacks: DiscoveredStack[];
 }
 
+/** What moving a stack to a folder would change in what it inherits. */
+export interface MovePreview {
+  folder_id?: string;
+  /** A run queued, planning, awaiting approval or applying blocks the move. */
+  active_run?: Run;
+  /** The folder already has a stack with this name. */
+  name_taken?: boolean;
+  changes: MoveChange[];
+  /** What the stack sets itself: it goes with it and still wins. */
+  own_settings: string[];
+  own_variables: Variable[];
+}
+
+export interface MoveChange {
+  setting: "require_approval" | "drift_interval_minutes" | "confirm_destructive" | "vault_role" | "variable" | "registry";
+  category?: VariableCategory;
+  key?: string;
+  sensitive?: boolean;
+  /** Left out when not defined there. Secret values are never included. */
+  before?: { value?: string; origin: Level };
+  after?: { value?: string; origin: Level };
+}
+
 export type UpdateStackRequest = Partial<Pick<CreateStackRequest, "name" | "repository" | "ref" | "path" | "git_token">>;
 
 export type VariableCategory = "env" | "terraform" | "file";
@@ -504,6 +527,10 @@ export const api = {
       updateStack: (id: string, req: UpdateStackRequest) => request<Stack>("PATCH", `${p}/stacks/${id}`, req),
       deleteStack: (id: string) => request<void>("DELETE", `${p}/stacks/${id}`),
       getStateStorage: () => request<StateStorageSettings>("GET", `${p}/state-storage`),
+      /** folderID "" is the organization's top level. */
+      previewMove: (id: string, folderID: string) =>
+        request<MovePreview>("GET", `${p}/stacks/${id}/move?folder_id=${encodeURIComponent(folderID)}`),
+      moveStack: (id: string, folderID: string) => request<Stack>("POST", `${p}/stacks/${id}/move`, { folder_id: folderID }),
       listRuns: (stackID: string, limit = 50) => request<Run[]>("GET", `${p}/stacks/${stackID}/runs?limit=${limit}`),
       createRun: (stackID: string, type: RunType, ref = "") => request<Run>("POST", `${p}/stacks/${stackID}/runs`, { type, ref }),
       stateUnits: (stackID: string) => request<StateUnit[]>("GET", `${p}/stacks/${stackID}/state`),
