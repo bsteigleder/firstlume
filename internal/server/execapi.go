@@ -20,6 +20,10 @@ const (
 	maxArtifactBody = 128 << 20
 	// A plan's change list can be large (thousands of resources in run --all stacks).
 	maxChangesBody = 32 << 20
+	// A progress report carries the resources that changed in about a second.
+	maxProgressBody = 8 << 20
+	// maxErrorText caps a resource error's summary and detail.
+	maxErrorText = 16 << 10
 )
 
 var commitRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
@@ -37,6 +41,7 @@ func (s *Server) execRoutes(r chi.Router) {
 	r.Post("/complete", s.execComplete)
 	r.Put("/changes", s.execChanges)
 	r.Post("/steps", s.execStep)
+	r.Post("/apply-progress", s.execApplyProgress)
 }
 
 func phaseOf(r *http.Request) (string, api.Phase) {
@@ -200,6 +205,52 @@ func (s *Server) execStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) execApplyProgress(w http.ResponseWriter, r *http.Request) {
+	runID, phase := phaseOf(r)
+	var req api.ApplyProgressRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxProgressBody))
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid progress: %v", err))
+		return
+	}
+	if phase != api.PhaseApply {
+		writeError(w, http.StatusUnprocessableEntity, "progress can only be reported during apply")
+		return
+	}
+	for i, p := range req.Resources {
+		for _, st := range p.Steps {
+			if st.Action != api.ActionCreate && st.Action != api.ActionUpdate && st.Action != api.ActionDelete {
+				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("unknown step action %q", st.Action))
+				return
+			}
+		}
+		for j := range p.Errors {
+			e := &req.Resources[i].Errors[j]
+			e.Summary, e.Detail = truncate(e.Summary, maxErrorText), truncate(e.Detail, maxErrorText)
+		}
+	}
+	skipped, err := s.store.RecordApplyProgress(r.Context(), runID, req)
+	if err != nil {
+		s.execError(w, r, err)
+		return
+	}
+	if len(skipped) > 0 {
+		s.log.Warn("apply progress for resources not in the plan", "run_id", runID, "keys", skipped)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// truncate cuts s to at most n bytes, on a rune boundary.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 func (s *Server) execComplete(w http.ResponseWriter, r *http.Request) {

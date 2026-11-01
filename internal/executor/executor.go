@@ -430,8 +430,15 @@ func (e *executor) apply(ctx context.Context, r *runner, planPath string) (api.C
 	if err := os.WriteFile(planPath, data, 0o600); err != nil {
 		return api.CompleteRequest{}, err
 	}
-	if _, err := r.run(ctx, "apply", "-input=false", "-no-color", "-auto-approve", planPath); err != nil {
-		return api.CompleteRequest{}, err
+	// With -json, the log is rebuilt from Terraform's messages and each
+	// resource's progress is reported (spec 0004).
+	stream := newApplyStream(e.out, e.mask, "", e.client.ApplyProgress)
+	stop := stream.start(ctx)
+	_, err = r.runTo(ctx, stream, "apply", "-input=false", "-no-color", "-json", "-auto-approve", planPath)
+	_ = stream.Close()
+	stop()
+	if err != nil {
+		return api.CompleteRequest{}, stream.failure(err)
 	}
 	return api.CompleteRequest{Success: true}, nil
 }
@@ -529,9 +536,14 @@ func (r *runner) command(ctx context.Context, args ...string) *exec.Cmd {
 
 // run streams output to the log and returns the exit code.
 func (r *runner) run(ctx context.Context, args ...string) (int, error) {
+	return r.runTo(ctx, r.out, args...)
+}
+
+// runTo is run with stdout going to w; stderr still goes to the log.
+func (r *runner) runTo(ctx context.Context, w io.Writer, args ...string) (int, error) {
 	fmt.Fprintf(r.out, "\n==> %s %s\n", filepath.Base(r.bin), strings.Join(args, " "))
 	cmd := r.command(ctx, args...)
-	cmd.Stdout = r.out
+	cmd.Stdout = w
 	cmd.Stderr = r.out
 	err := cmd.Run()
 	var exitErr *exec.ExitError

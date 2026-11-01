@@ -187,6 +187,12 @@ func (c *Client) PutChanges(ctx context.Context, changes []api.ResourceChange) e
 	return err
 }
 
+// ApplyProgress reports what the apply did to resources since the last report.
+func (c *Client) ApplyProgress(ctx context.Context, req api.ApplyProgressRequest) error {
+	_, err := c.doJSON(ctx, http.MethodPost, "/exec/v1/apply-progress", req, nil)
+	return err
+}
+
 func (c *Client) GetArtifact(ctx context.Context, name string) ([]byte, error) {
 	var data []byte
 	_, err := c.do(ctx, http.MethodGet, "/exec/v1/artifacts/"+name, "", nil, &data)

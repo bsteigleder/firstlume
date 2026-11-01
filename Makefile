@@ -37,12 +37,13 @@ test:
 TOOLS_CACHE        := $(wildcard $(HOME)/Library/Caches/firstlume/tools $(HOME)/.cache/firstlume/tools)
 TEST_TERRAFORM     ?= $(or $(shell command -v terraform),$(lastword $(sort $(wildcard $(addsuffix /terraform/*/terraform,$(TOOLS_CACHE))))))
 TEST_TERRAGRUNT    ?= $(or $(shell command -v terragrunt),$(lastword $(sort $(wildcard $(addsuffix /terragrunt/*/terragrunt,$(TOOLS_CACHE))))))
+TEST_TOFU          ?= $(or $(shell command -v tofu),$(lastword $(sort $(wildcard $(addsuffix /opentofu/*/tofu,$(TOOLS_CACHE))))))
 
 ## Needs `make dev-db`. The state tests with real tools are skipped when they
 ## aren't found, and also run on Garage after `make dev-garage`.
 test-integration:
 	@FIRSTLUME_TEST_DATABASE_URL=$(TEST_DATABASE_URL) FIRSTLUME_TEST_TERRAFORM=$(TEST_TERRAFORM) \
-	FIRSTLUME_TEST_TERRAGRUNT=$(TEST_TERRAGRUNT) \
+	FIRSTLUME_TEST_TERRAGRUNT=$(TEST_TERRAGRUNT) FIRSTLUME_TEST_TOFU=$(TEST_TOFU) \
 	FIRSTLUME_TEST_S3_ENDPOINT=$(if $(FIRSTLUME_DEV_GARAGE_TEST_BUCKET),$(FIRSTLUME_STATE_S3_ENDPOINT)) \
 	FIRSTLUME_TEST_S3_BUCKET=$(FIRSTLUME_DEV_GARAGE_TEST_BUCKET) FIRSTLUME_TEST_S3_REGION=$(FIRSTLUME_STATE_S3_REGION) \
 	FIRSTLUME_TEST_S3_ACCESS_KEY_ID=$(FIRSTLUME_STATE_S3_ACCESS_KEY_ID) FIRSTLUME_TEST_S3_SECRET_ACCESS_KEY=$(FIRSTLUME_STATE_S3_SECRET_ACCESS_KEY) \

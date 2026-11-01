@@ -326,22 +326,6 @@ func (s *Store) SetChanges(ctx context.Context, runID string, changes []api.Reso
 	return nil
 }
 
-// GetChanges returns what a run's plan changes, resource by resource (empty before planning).
-func (s *Store) GetChanges(ctx context.Context, orgID, runID string) ([]api.ResourceChange, error) {
-	var data []byte
-	if err := s.pool.QueryRow(ctx, `SELECT changes FROM runs WHERE organization_id = $1 AND id = $2`,
-		orgID, runID).Scan(&data); err != nil {
-		return nil, notFound(err)
-	}
-	out := []api.ResourceChange{}
-	if data != nil {
-		if err := json.Unmarshal(data, &out); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
 // RecordStep starts a step (status running), records a skipped one, or
 // finishes the running step of that name, for the phase being executed. Logs
 // shipped while a step runs are tagged with it.

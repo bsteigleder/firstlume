@@ -139,6 +139,39 @@ resource "terraform_data" "machine" { input = "${var.user}@${var.host}:${var.por
 TF
 done
 
+# Apply followed resource by resource (spec 0004), with no cloud: fast and
+# slow resources, one that fails when the Firstlume variable fail = true, one
+# that depends on it (not applied) and one recreated whenever rev changes.
+mkdir -p environments/apply-demo/.firstlume
+printf 'version: 1\nengine: terraform\nengine_version: 1.15.6\n' > environments/apply-demo/.firstlume/config.yaml
+cat > environments/apply-demo/main.tf <<'TF'
+terraform {
+  backend "http" {}
+}
+variable "fail" {
+  type    = bool
+  default = false
+}
+variable "rev" {
+  type    = string
+  default = "1"
+}
+resource "terraform_data" "network" { input = "net-${var.rev}" }
+resource "terraform_data" "dns" { input = "dns-${var.rev}" }
+resource "terraform_data" "vm" {
+  input = terraform_data.network.output
+  provisioner "local-exec" { command = "sleep 40" }
+}
+resource "terraform_data" "release" {
+  triggers_replace = [var.rev]
+  provisioner "local-exec" {
+    command = var.fail ? "echo 'timed out waiting for the condition' >&2; exit 1" : "sleep 5"
+  }
+}
+resource "terraform_data" "release_dns" { input = terraform_data.release.id }
+resource "terraform_data" "web" { triggers_replace = [var.rev] }
+TF
+
 mkdir -p legacy/vpn/.firstlume
 printf 'version: 1\nengine: terraform\nengine_version: latest\n' > legacy/vpn/.firstlume/config.yaml
 echo 'resource "terraform_data" "vpn" {}' > legacy/vpn/main.tf

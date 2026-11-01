@@ -402,6 +402,10 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 		s.storeError(w, r, err, "run")
 		return
 	}
+	if run.ApplyTotals, err = s.store.ApplyTotals(r.Context(), orgID(r), run.ID); err != nil {
+		s.storeError(w, r, err, "run")
+		return
+	}
 	writeJSON(w, http.StatusOK, run)
 }
 

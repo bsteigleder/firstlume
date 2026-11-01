@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -1048,5 +1049,102 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestApplyProgress covers the server side of spec 0004 (CAP1.1, CAP1.2,
+// CAP1.3, CAP1.7, CAP1.9): states derived from what the executor reports,
+// the end of the apply, the totals and who may report.
+func TestApplyProgress(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	st := h.stack("", "progress", ".")
+	run := h.run(st.ID, api.RunApply)
+
+	exec, _ := h.spec(run.ID)
+	must(t, exec.SetCommit(ctx, api.CommitRequest{SHA: strings.Repeat("b", 40)}))
+	must(t, exec.PutChanges(ctx, []api.ResourceChange{
+		{Address: "terraform_data.a", Type: "terraform_data", Name: "a", Action: api.ActionCreate},
+		{Address: "terraform_data.b", Type: "terraform_data", Name: "b", Action: api.ActionReplace},
+		{Address: "terraform_data.c", Type: "terraform_data", Name: "c", Action: api.ActionCreate},
+		{Address: "terraform_data.d", Type: "terraform_data", Name: "d", Action: api.ActionUpdate},
+	}))
+	if err := exec.ApplyProgress(ctx, api.ApplyProgressRequest{}); err == nil {
+		t.Fatal("the plan token reported apply progress")
+	}
+	_, err := exec.Complete(ctx, api.CompleteRequest{Success: true, HasChanges: true, PlanSummary: &api.PlanSummary{Add: 2, Replace: 1, Change: 1}})
+	must(t, err)
+	h.call("POST", "/runs/"+run.ID+"/approve", nil, http.StatusOK, &run)
+
+	states := func() map[string]*api.ResourceApply {
+		var changes []api.ResourceChange
+		h.call("GET", "/runs/"+run.ID+"/changes", nil, http.StatusOK, &changes)
+		out := map[string]*api.ResourceApply{}
+		for _, c := range changes {
+			out[c.Address] = c.Apply
+		}
+		return out
+	}
+	exec, _ = h.spec(run.ID)
+	if s := states(); s["terraform_data.a"] != nil {
+		t.Fatalf("progress shown before the apply reported any: %+v", s["terraform_data.a"])
+	}
+
+	// The first report, even empty, says the apply reports progress.
+	must(t, exec.ApplyProgress(ctx, api.ApplyProgressRequest{}))
+	if s := states(); s["terraform_data.a"] == nil || s["terraform_data.a"].State != api.ApplyPending {
+		t.Fatalf("want pending, got %+v", s["terraform_data.a"])
+	}
+
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	at := func(s int) *time.Time { v := t0.Add(time.Duration(s) * time.Second); return &v }
+	must(t, exec.ApplyProgress(ctx, api.ApplyProgressRequest{Resources: []api.ApplyProgress{
+		{Key: "terraform_data.a", Steps: []api.ApplyStep{{Action: api.ActionCreate, StartedAt: at(0)}}},
+		{Key: "terraform_data.b", Steps: []api.ApplyStep{{Action: api.ActionDelete, StartedAt: at(0), FinishedAt: at(1)}}},
+		{Key: "terraform_data.d", Steps: []api.ApplyStep{{Action: api.ActionUpdate, StartedAt: at(0)}}},
+		{Key: "data.not_in_plan", Steps: []api.ApplyStep{{Action: api.ActionCreate, StartedAt: at(0)}}},
+	}}))
+	s := states()
+	if s["terraform_data.a"].State != api.ApplyApplying || s["terraform_data.b"].State != api.ApplyApplying ||
+		s["terraform_data.c"].State != api.ApplyPending || s["terraform_data.a"].StartedAt == nil {
+		t.Fatalf("while applying: a=%+v b=%+v c=%+v", s["terraform_data.a"], s["terraform_data.b"], s["terraform_data.c"])
+	}
+	var r api.Run
+	h.call("GET", "/runs/"+run.ID, nil, http.StatusOK, &r)
+	if r.ApplyTotals != nil {
+		t.Fatalf("totals before the apply ended: %+v", r.ApplyTotals)
+	}
+
+	must(t, exec.ApplyProgress(ctx, api.ApplyProgressRequest{Resources: []api.ApplyProgress{
+		{Key: "terraform_data.a", Steps: []api.ApplyStep{{Action: api.ActionCreate, StartedAt: at(0), FinishedAt: at(4), Failed: true}},
+			Errors: []api.ApplyError{{Summary: "local-exec provisioner error", Detail: "exit status 1", File: "main.tf", Line: 18}}},
+		{Key: "terraform_data.b", Steps: []api.ApplyStep{
+			{Action: api.ActionDelete, StartedAt: at(0), FinishedAt: at(1)},
+			{Action: api.ActionCreate, StartedAt: at(1), FinishedAt: at(3)}}},
+	}}))
+	// d is still running when the executor stops: it ends up failed.
+	_, err = exec.Complete(ctx, api.CompleteRequest{Success: false, Error: "terraform_data.a: local-exec provisioner error"})
+	must(t, err)
+
+	s = states()
+	a, b, c, d := s["terraform_data.a"], s["terraform_data.b"], s["terraform_data.c"], s["terraform_data.d"]
+	if a.State != api.ApplyFailed || len(a.Errors) != 1 || a.Errors[0].Line != 18 || a.DurationMS != 4000 {
+		t.Fatalf("a = %+v", a)
+	}
+	if b.State != api.ApplyDone || len(b.Steps) != 2 || b.DurationMS != 3000 {
+		t.Fatalf("b = %+v", b)
+	}
+	if c.State != api.ApplyNotApplied {
+		t.Fatalf("c = %+v", c)
+	}
+	if d.State != api.ApplyFailed || len(d.Errors) != 1 {
+		t.Fatalf("d = %+v", d)
+	}
+	h.call("GET", "/runs/"+run.ID, nil, http.StatusOK, &r)
+	if r.ApplyTotals == nil || *r.ApplyTotals != (api.ApplyTotals{Done: 1, Failed: 2, NotApplied: 1}) {
+		t.Fatalf("totals = %+v", r.ApplyTotals)
+	}
+	if err := exec.ApplyProgress(ctx, api.ApplyProgressRequest{}); !errors.Is(err, apiclient.ErrNoLongerOwner) {
+		t.Fatalf("report after the apply ended: %v", err)
 	}
 }
