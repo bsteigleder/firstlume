@@ -199,7 +199,7 @@ registries:
   - o mesmo conteúdo em `HELM_REGISTRY_CONFIG` (provider `helm` e o próprio `helm`);
   - para `terraform`, a variável `TF_TOKEN_<host>` no formato do Terraform e do OpenTofu (pontos viram `_`, hífens viram `__`).
 - **R4.5** As senhas são mascaradas no log, inclusive na forma base64 `usuário:senha` que vai no `config.json`.
-- **R4.6** O token da conexão Git continua só para o host do repositório (commit `20def23`). Credencial de registry não vale para clonar Git, e vice-versa.
+- **R4.6** O token da conexão Git continua só para o host do repositório (commit `2b88f0d`). Credencial de registry não vale para clonar Git, e vice-versa.
 
 ### 4.5 Mascaramento e segurança
 
