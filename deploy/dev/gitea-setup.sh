@@ -103,7 +103,9 @@ remote_state {
 HCL
 
 # Machines whose connection.hcl Firstlume writes from the declaration in
-# config.yaml (spec 0003): one per machine directory, never committed.
+# config.yaml (spec 0003): one per machine directory, never committed, with
+# values from the dev Vault (make dev-vault). Put the stack in a folder named
+# dev, whose vault_role is dev.
 mkdir -p environments/machines/.firstlume
 cat > environments/machines/.firstlume/config.yaml <<'YAML'
 version: 1
@@ -116,8 +118,8 @@ files:
     format: hcl
     block: locals
     values:
-      host: "${name}.lan"
-      user: { var: SSH_USER }
+      host: { vault: "secret/infra/dev/${name}", field: ip }
+      user: { vault: "secret/infra/dev/${name}", field: user }
       port: 22
 YAML
 cp environments/tg/root.hcl environments/machines/root.hcl

@@ -5,9 +5,11 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,8 +58,12 @@ func Run(ctx context.Context, cfg Config) error {
 	hbCtx, stopHeartbeat := context.WithCancel(ctx)
 	go heartbeat(hbCtx, client)
 
-	e := &executor{cfg: cfg, spec: spec, client: client, out: logs, mask: masker.Mask, masker: masker, logs: logs}
+	e := &executor{cfg: cfg, spec: spec, client: client, out: logs, mask: masker.Mask, masker: masker, logs: logs,
+		vault: newVaultSource(spec.Vault, masker)}
 	res, runErr := e.run(ctx)
+	if err := e.vault.revoke(context.WithoutCancel(ctx)); err != nil {
+		fmt.Fprintf(logs, "==> Warning: could not revoke the Vault token: %v\n", err)
+	}
 	stopHeartbeat()
 
 	if errors.Is(runErr, apiclient.ErrNoLongerOwner) {
@@ -112,6 +118,8 @@ type executor struct {
 	decl *stackconfig.Declaration
 	// prepared is what the Prepare step wrote and exported.
 	prepared *prepared
+	// vault reads the declaration's Vault secrets.
+	vault *vaultSource
 	// logs is the shipper behind out, flushed between steps.
 	logs *LogShipper
 }
@@ -169,8 +177,10 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			return nil
 		}},
 		{name: "Prepare", skip: func() bool { return !e.needsPrepare() }, run: func() (err error) {
-			e.prepared, err = prepare(workDir, e.decl, s.Variables, e.masker, e.out)
-			return err
+			if e.prepared, err = prepare(ctx, workDir, e.decl, s.Variables, e.vault, e.masker, e.out); err != nil {
+				return err
+			}
+			return e.checkVaultValues(ctx)
 		}},
 		{name: "Init", run: func() error {
 			cfg := e.stack
@@ -222,6 +232,37 @@ type step struct {
 	run  func() error
 	// skip, when set and true at its turn, leaves the step out entirely.
 	skip func() bool
+}
+
+// checkVaultValues makes the apply use the Vault values its plan used (R3.8):
+// the plan stores their keyed hashes, the apply compares.
+func (e *executor) checkVaultValues(ctx context.Context) error {
+	if e.spec.Phase == api.PhasePlan {
+		if len(e.vault.hashes) == 0 {
+			return nil
+		}
+		data, err := json.Marshal(e.vault.hashes)
+		if err != nil {
+			return err
+		}
+		return e.client.PutArtifact(ctx, api.VaultHashesArtifact, data)
+	}
+	plan := map[string]string{}
+	data, err := e.client.GetArtifact(ctx, api.VaultHashesArtifact)
+	var se *apiclient.StatusError
+	switch {
+	case errors.As(err, &se) && se.Code == http.StatusNotFound:
+	case err != nil:
+		return err
+	default:
+		if err := json.Unmarshal(data, &plan); err != nil {
+			return err
+		}
+	}
+	if changed := e.vault.changedSince(plan); len(changed) > 0 {
+		return fmt.Errorf("the secret in %s changed since the plan: plan again", strings.Join(changed, ", "))
+	}
+	return nil
 }
 
 // needsPrepare reports whether the phase has files or variables to prepare.

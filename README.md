@@ -194,7 +194,7 @@ terraform:
 ```
 
 - **Formatos:** `hcl`, `json`, `yaml`, `env` (lido pelo `source` do shell) e `raw` (o conteúdo como está). O Firstlume faz o escape. No `hcl`, um valor com `${` ou `%{` continua texto, nunca vira expressão do Terraform.
-- **Fontes:** um literal, ou `{var: NOME}`, que lê uma variável `env` ou `terraform` das configurações. A fonte `{vault: caminho, field: campo}` vem com o Vault (marco F2 da spec).
+- **Fontes:** um literal; `{var: NOME}`, que lê uma variável `env` ou `terraform` das configurações; ou `{vault: caminho, field: campo}`, um campo de um segredo do Vault (veja abaixo).
 - **Por pastas:** o curinga só vale nas pastas do `path`, não no nome do arquivo, e não casa com pastas ocultas (`.terragrunt-cache`). Um padrão que não casa com nenhuma pasta falha o run, para um erro de digitação não passar despercebido.
 - **Quando:** os arquivos são escritos depois do checkout e antes do `init`, no passo **Prepare**, em toda fase. O apply recebe os mesmos valores do plan.
 - **Segurança:**
@@ -203,6 +203,40 @@ terraform:
   - o `path` não pode ter `..` nem apontar para `.git` ou `.firstlume`.
 - **O mesmo nome** em `env` ou `terraform` da declaração e nas configurações: vencem as configurações, e o log registra a troca, sem valores.
 - `GET /api/v1/orgs/{org}/stacks/{id}/declaration` mostra o que o último commit declara, com as referências e sem valores.
+
+#### Segredos do Vault
+
+O Firstlume não guarda os segredos: quem lê o Vault é o executor, dentro do pod do run, e os valores não passam pelo servidor nem pelo banco. Para isso, o Firstlume emite para cada fase um **JWT** (ES256, válido por 15 minutos) que diz qual stack está rodando, e o executor o troca por um token do Vault. O token é revogado ao fim da fase.
+
+1. **No Firstlume:**
+   - a conexão da organização: `PUT /api/v1/orgs/{org}/vault` com `{"address": "https://vault.example.com:8200"}` (opcionais: `ca_cert`, `namespace`, `auth_path`, padrão `jwt`, e `audience`, padrão `vault`);
+   - o papel, herdado como as outras configurações: `"vault_role": "infra-dev"` numa pasta ou no stack;
+   - `FIRSTLUME_PUBLIC_URL` (no Helm, `controlPlane.publicURL`; o padrão é o host do ingress): é o `iss` dos JWTs.
+2. **No Vault:** o método `jwt` confiando no Firstlume, com a chave pública ou com a descoberta:
+
+   ```bash
+   vault auth enable jwt
+   vault write auth/jwt/config bound_issuer=https://firstlume.example.com \
+     oidc_discovery_url=https://firstlume.example.com      # ou jwt_validation_pubkeys=@firstlume.pem
+   vault policy write infra-dev - <<'EOF'
+   path "secret/data/infra/dev/*" { capabilities = ["read"] }
+   EOF
+   vault write auth/jwt/role/infra-dev role_type=jwt user_claim=sub bound_audiences=vault \
+     bound_claims_type=glob bound_claims='{"stack_path": "infra/dev/*"}' \
+     token_policies=infra-dev token_ttl=15m
+   ```
+
+   A chave pública fica em `GET /api/v1/orgs/{org}/vault/public-key` (PEM) e em `/.well-known/jwks.json`.
+3. **No repositório:** `{vault: secret/infra/dev/${name}, field: ip}` em qualquer valor da declaração. O caminho é o mesmo do `vault kv get` (KV v1 e v2 são detectados), e outros engines também funcionam.
+
+O JWT traz `sub` (`stack:<id>`), `org`, `stack_id`, `stack_name`, `stack_path` (pastas e nome, como `infra/dev/machines`), `folder_ids`, `run_id`, `run_type` e `phase` (`plan`, `apply` ou `drift`). Com `bound_claims`, um stack de dev não lê segredos de prod, e um papel com `phase = apply` não serve para o plan. Prefira `folder_ids` a `stack_path` se renomear pastas puder mudar o acesso.
+
+- **Tudo o que vem do Vault é sensível:** mascarado no log, e os arquivos saem com `0600`.
+- **Plan e apply:** o apply relê o Vault e confere com o plan (por um hash com chave, sem guardar valores). Se um segredo mudou entre os dois, o apply falha com "the secret in <caminho>#<campo> changed since the plan: plan again".
+- **Erros** dizem o item da declaração, o caminho e o campo, nunca o valor: sem conexão, sem papel, login recusado, permissão negada, segredo ou campo ausente, Vault fora do ar.
+- **Testar sem rodar nada:** `POST /api/v1/orgs/{org}/stacks/{id}/vault/check` com `{"paths": ["secret/infra/dev/n01"]}` faz o login como o stack e diz, por caminho, se o papel pode ler, sem ler nenhum valor.
+
+Para experimentar localmente: com o server de dev rodando, `make dev-vault` sobe um Vault em modo dev, confiando no server, com segredos em `secret/infra/{dev,prod}` e os papéis `dev` e `prod`. Ponha o stack `environments/machines` do Gitea de dev numa pasta `dev` com `vault_role: dev`.
 
 ## Rodando localmente
 
@@ -319,7 +353,7 @@ deploy/docker/        Dockerfile
 1. ✅ Runs de plan/apply, logs, aprovação configurável, drift detection agendado (só reporta), UI web, agent com Kubernetes e chart Helm
 2. State backend HTTP próprio, por unit, com lock, versões e criptografia, no Postgres ou no Garage/S3 (✅ marcos S1 e S2), importação de state existente e modo "só state" para quem continua usando o CI atual (✅ marco S3); aba State na UI
 3. Terragrunt nativo: descoberta de units, grafo de dependências, um run por unit e agents com labels por rede/zona
-4. Arquivos e variáveis declarados no repositório e variáveis do tipo arquivo (✅ marco F1 da spec 0003); segredos vindos do Vault com JWT emitido pelo Firstlume por run, sem o Firstlume virar um segundo cofre; credenciais de registry
+4. Arquivos e variáveis declarados no repositório, variáveis do tipo arquivo e segredos do Vault com JWT emitido pelo Firstlume por fase, sem o Firstlume virar um segundo cofre (✅ marcos F1 e F2 da spec 0003); credenciais de registry
 5. Usuários, grupos e SSO; aprovadores por pessoa ou grupo; trilha de auditoria
 6. Integração Git (Gitea/Forgejo, GitHub, GitLab): plan em PR, commit status, apply no merge e gatilho por impacto
 7. Observabilidade: export via OpenTelemetry (métricas, eventos, logs e traces) e notificações (webhook, Slack, Rocket.Chat)

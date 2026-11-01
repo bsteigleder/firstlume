@@ -61,6 +61,10 @@ controlPlane:
     type: ClusterIP
     port: 8080
 
+  # How others (Vault, for run JWTs) reach the server, like
+  # https://firstlume.example.com. Defaults to the ingress host.
+  publicURL: ""
+
   ingress:
     enabled: false
     className: ""

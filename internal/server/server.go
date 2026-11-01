@@ -28,6 +28,9 @@ type Config struct {
 	StateMaxBytes int64
 	// UI is the built web UI served at /. Nil serves only the APIs.
 	UI fs.FS
+	// PublicURL is how others reach this server; it is the issuer of run
+	// JWTs (spec 0003). Defaults to http:// and Addr.
+	PublicURL string
 }
 
 type Server struct {
@@ -47,6 +50,14 @@ func New(cfg Config, st *store.Store, keys *secrets.Keys, log *slog.Logger) *Ser
 	if cfg.LogPollInterval == 0 {
 		cfg.LogPollInterval = time.Second
 	}
+	if cfg.PublicURL == "" {
+		host := cfg.Addr
+		if strings.HasPrefix(host, ":") {
+			host = "localhost" + host
+		}
+		cfg.PublicURL = "http://" + host
+	}
+	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
 	if cfg.StateMaxBytes == 0 {
 		cfg.StateMaxBytes = defaultStateMaxBytes
 	}
@@ -79,6 +90,9 @@ func (s *Server) Handler() http.Handler {
 		s.execRoutes(r)
 	})
 	r.Route("/state/v1", s.stateRoutes)
+	// For Vault to verify run JWTs (spec 0003, R3.4).
+	r.Get("/.well-known/openid-configuration", s.openIDConfiguration)
+	r.Get("/.well-known/jwks.json", s.jwks)
 	if s.cfg.UI != nil {
 		r.Handle("/*", uiHandler(s.cfg.UI))
 	}

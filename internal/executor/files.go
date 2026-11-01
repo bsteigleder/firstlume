@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,8 +46,9 @@ type outputFile struct {
 // stack's directory, and returns the declared variables' environment. Settings
 // win over the declaration for the same variable (D6). Secrets it writes are
 // added to masker.
-func prepare(dir string, decl *stackconfig.Declaration, vars []api.ExecVariable, masker *Masker, out io.Writer) (*prepared, error) {
-	r := &resolver{vars: vars}
+func prepare(ctx context.Context, dir string, decl *stackconfig.Declaration, vars []api.ExecVariable, vault *vaultSource,
+	masker *Masker, out io.Writer) (*prepared, error) {
+	r := &resolver{ctx: ctx, vars: vars, vault: vault}
 	var files []outputFile
 	if decl != nil {
 		if len(decl.Registries) > 0 {
@@ -152,7 +154,9 @@ func (d dirVars) expand(s string) string {
 
 // resolver turns declared values into plain ones.
 type resolver struct {
-	vars []api.ExecVariable
+	ctx   context.Context
+	vars  []api.ExecVariable
+	vault *vaultSource
 	// sensitive is set when the last resolve used a Vault secret or a sensitive variable.
 	sensitive bool
 }
@@ -201,8 +205,13 @@ func (r *resolver) walk(v *stackconfig.Value, d dirVars) (*stackconfig.Value, er
 		}
 		return &stackconfig.Value{Line: v.Line, Kind: stackconfig.Scalar, Tag: "!!str", Text: val.Value}, nil
 	case stackconfig.VaultRef:
-		return nil, fmt.Errorf("line %d: %s needs the organization's Vault connection, which comes with spec 0003, Marco F2; not supported yet",
-			v.Line, v.Ref())
+		path := d.expand(v.Path)
+		val, err := r.vault.read(r.ctx, path, v.Field)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: vault %s#%s: %w", v.Line, path, v.Field, err)
+		}
+		r.sensitive = true
+		return &stackconfig.Value{Line: v.Line, Kind: stackconfig.Scalar, Tag: "!!str", Text: val}, nil
 	}
 	return nil, fmt.Errorf("line %d: unsupported value", v.Line)
 }

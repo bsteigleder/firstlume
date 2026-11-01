@@ -101,6 +101,7 @@ type settingsRow struct {
 	requireApproval    *bool
 	driftInterval      *int
 	confirmDestructive *bool
+	vaultRole          *string
 }
 
 type variableRow struct {
@@ -123,7 +124,7 @@ func levelData(ctx context.Context, q querier, orgID string, levels []api.Level)
 	const where = `organization_id = $1 AND (folder_id = ANY($2::uuid[]) OR stack_id = $3::uuid OR (folder_id IS NULL AND stack_id IS NULL))`
 
 	settings := map[levelKey]settingsRow{}
-	rows, err := q.Query(ctx, `SELECT folder_id, stack_id, require_approval, drift_interval_minutes, confirm_destructive
+	rows, err := q.Query(ctx, `SELECT folder_id, stack_id, require_approval, drift_interval_minutes, confirm_destructive, vault_role
 		FROM level_settings WHERE `+where,
 		orgID, folders, stackID)
 	if err != nil {
@@ -132,7 +133,7 @@ func levelData(ctx context.Context, q querier, orgID string, levels []api.Level)
 	for rows.Next() {
 		var f, st *string
 		var r settingsRow
-		if err := rows.Scan(&f, &st, &r.requireApproval, &r.driftInterval, &r.confirmDestructive); err != nil {
+		if err := rows.Scan(&f, &st, &r.requireApproval, &r.driftInterval, &r.confirmDestructive, &r.vaultRole); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
@@ -175,6 +176,7 @@ func resolve(levels []api.Level, settings map[levelKey]settingsRow, vars map[lev
 		RequireApproval:      api.EffectiveBool{Value: defaultRequireApproval, Origin: def},
 		DriftIntervalMinutes: api.EffectiveInt{Value: defaultDriftIntervalMinutes, Origin: def},
 		ConfirmDestructive:   api.EffectiveBool{Value: defaultConfirmDestructive, Origin: def},
+		VaultRole:            api.EffectiveString{Origin: def},
 	}
 	for i := len(levels) - 1; i >= 0; i-- { // farthest first, so nearer levels overwrite
 		r := settings[keyOf(levels[i])]
@@ -186,6 +188,9 @@ func resolve(levels []api.Level, settings map[levelKey]settingsRow, vars map[lev
 		}
 		if r.confirmDestructive != nil {
 			eff.ConfirmDestructive = api.EffectiveBool{Value: *r.confirmDestructive, Origin: levels[i]}
+		}
+		if r.vaultRole != nil {
+			eff.VaultRole = api.EffectiveString{Value: *r.vaultRole, Origin: levels[i]}
 		}
 	}
 
@@ -265,6 +270,7 @@ func (s *Store) GetSettings(ctx context.Context, orgID string, at api.Level) (*a
 			RequireApproval:      own.requireApproval,
 			DriftIntervalMinutes: own.driftInterval,
 			ConfirmDestructive:   own.confirmDestructive,
+			VaultRole:            own.vaultRole,
 			Variables:            []api.Variable{},
 		},
 		Effective: eff,
@@ -292,11 +298,11 @@ func (s *Store) PutSettings(ctx context.Context, orgID string, at api.Level, in 
 		if _, err := tx.Exec(ctx, `DELETE FROM level_settings WHERE `+level, orgID, folderID, stackID); err != nil {
 			return err
 		}
-		if in.RequireApproval != nil || in.DriftIntervalMinutes != nil || in.ConfirmDestructive != nil {
+		if in.RequireApproval != nil || in.DriftIntervalMinutes != nil || in.ConfirmDestructive != nil || in.VaultRole != nil {
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO level_settings (organization_id, folder_id, stack_id, require_approval, drift_interval_minutes, confirm_destructive)
-				VALUES ($1, $2, $3, $4, $5, $6)`,
-				orgID, folderID, stackID, in.RequireApproval, in.DriftIntervalMinutes, in.ConfirmDestructive); err != nil {
+				INSERT INTO level_settings (organization_id, folder_id, stack_id, require_approval, drift_interval_minutes, confirm_destructive, vault_role)
+				VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				orgID, folderID, stackID, in.RequireApproval, in.DriftIntervalMinutes, in.ConfirmDestructive, in.VaultRole); err != nil {
 				return classify(err)
 			}
 		}

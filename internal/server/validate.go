@@ -20,6 +20,7 @@ var (
 	refRe        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$`)
 	envKeyRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,254}$`)
 	tfVarKeyRe   = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,254}$`)
+	vaultRoleRe  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 	scpLikeGitRe = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._/~-]+$`)
 )
 
@@ -156,6 +157,9 @@ func normalizeStackUpdate(req *api.UpdateStackRequest) error {
 func validateLevelSettings(s *api.LevelSettings) error {
 	if m := s.DriftIntervalMinutes; m != nil && *m != 0 && (*m < api.MinDriftIntervalMinutes || *m > api.MaxDriftIntervalMinutes) {
 		return fmt.Errorf("drift_interval_minutes must be 0 (off) or between 15 and 10080")
+	}
+	if r := s.VaultRole; r != nil && !vaultRoleRe.MatchString(*r) {
+		return fmt.Errorf("vault_role must be 1-128 letters, digits, '.', '_' or '-'")
 	}
 	if s.Variables == nil {
 		s.Variables = []api.Variable{}

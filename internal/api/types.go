@@ -335,8 +335,10 @@ type LevelSettings struct {
 	// DriftIntervalMinutes schedules drift checks; 0 turns them off. Nil inherits.
 	DriftIntervalMinutes *int `json:"drift_interval_minutes"`
 	// ConfirmDestructive makes approvers tick every resource a plan deletes or replaces. Nil inherits.
-	ConfirmDestructive *bool      `json:"confirm_destructive"`
-	Variables          []Variable `json:"variables"`
+	ConfirmDestructive *bool `json:"confirm_destructive"`
+	// VaultRole is the role runs log in to Vault with (spec 0003). Nil inherits.
+	VaultRole *string    `json:"vault_role,omitempty"`
+	Variables []Variable `json:"variables"`
 }
 
 type EffectiveBool struct {
@@ -347,6 +349,11 @@ type EffectiveBool struct {
 type EffectiveInt struct {
 	Value  int   `json:"value"`
 	Origin Level `json:"origin"`
+}
+
+type EffectiveString struct {
+	Value  string `json:"value"`
+	Origin Level  `json:"origin"`
 }
 
 type EffectiveVariable struct {
@@ -361,6 +368,7 @@ type EffectiveSettings struct {
 	RequireApproval      EffectiveBool       `json:"require_approval"`
 	DriftIntervalMinutes EffectiveInt        `json:"drift_interval_minutes"`
 	ConfirmDestructive   EffectiveBool       `json:"confirm_destructive"`
+	VaultRole            EffectiveString     `json:"vault_role"`
 	Variables            []EffectiveVariable `json:"variables"`
 }
 
@@ -452,6 +460,7 @@ type RunSettings struct {
 	RequireApproval      EffectiveBool       `json:"require_approval"`
 	ConfirmDestructive   EffectiveBool       `json:"confirm_destructive"`
 	DriftIntervalMinutes EffectiveInt        `json:"drift_interval_minutes"`
+	VaultRole            EffectiveString     `json:"vault_role"`
 	Variables            []EffectiveVariable `json:"variables"`
 }
 
@@ -589,6 +598,66 @@ type ExecSpec struct {
 	// Variables are the stack's effective variables. The apply phase gets
 	// exactly the ones its plan ran with.
 	Variables []ExecVariable `json:"variables"`
+	// Vault is set when the organization has a Vault connection (spec 0003).
+	Vault *ExecVault `json:"vault,omitempty"`
+}
+
+// VaultHashesArtifact holds the keyed hashes of the Vault values a plan
+// read; its apply compares them (spec 0003, R3.8).
+const VaultHashesArtifact = "vault-hashes"
+
+// ExecVault is how an executor logs in to Vault for one phase.
+type ExecVault struct {
+	Address   string `json:"address"`
+	CACert    string `json:"ca_cert,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	AuthPath  string `json:"auth_path"`
+	// Role is the stack's effective Vault role; empty when none is set.
+	Role string `json:"role,omitempty"`
+	// JWT identifies the stack and the phase to Vault.
+	JWT string `json:"jwt"`
+	// HashKey keys the hashes of the values a plan read, which its apply
+	// compares (R3.8). The same for both phases of a run.
+	HashKey string `json:"hash_key"`
+}
+
+// VaultConnection is an organization's Vault (spec 0003, R3.1).
+type VaultConnection struct {
+	Address   string    `json:"address"`
+	CACert    string    `json:"ca_cert,omitempty"`
+	Namespace string    `json:"namespace,omitempty"`
+	AuthPath  string    `json:"auth_path"`
+	Audience  string    `json:"audience"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type PutVaultConnectionRequest struct {
+	Address   string `json:"address"`
+	CACert    string `json:"ca_cert,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	// AuthPath defaults to jwt and Audience to vault.
+	AuthPath string `json:"auth_path,omitempty"`
+	Audience string `json:"audience,omitempty"`
+}
+
+// VaultCheckRequest asks whether a stack's role can read paths, without reading them.
+type VaultCheckRequest struct {
+	Phase Phase    `json:"phase"`
+	Paths []string `json:"paths"`
+}
+
+type VaultCheckResult struct {
+	Role  string           `json:"role"`
+	Paths []VaultPathCheck `json:"paths,omitempty"`
+	// Error is set when the login itself failed.
+	Error string `json:"error,omitempty"`
+}
+
+type VaultPathCheck struct {
+	Path    string `json:"path"`
+	CanRead bool   `json:"can_read"`
+	Error   string `json:"error,omitempty"`
 }
 
 type ExecVariable struct {

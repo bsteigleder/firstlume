@@ -530,7 +530,7 @@ func (s *Store) ExecSpec(ctx context.Context, runID string, phase api.Phase) (*a
 	// What the run was configured with, as shown on the run (secret values are already blank).
 	used, err := json.Marshal(api.RunSettings{
 		RequireApproval: eff.RequireApproval, ConfirmDestructive: eff.ConfirmDestructive,
-		DriftIntervalMinutes: eff.DriftIntervalMinutes, Variables: eff.Variables,
+		DriftIntervalMinutes: eff.DriftIntervalMinutes, VaultRole: eff.VaultRole, Variables: eff.Variables,
 	})
 	if err != nil {
 		return nil, err
