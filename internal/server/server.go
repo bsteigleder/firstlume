@@ -26,6 +26,9 @@ type Config struct {
 	LogPollInterval  time.Duration
 	// StateMaxBytes caps one state version (spec 0002, R3.6).
 	StateMaxBytes int64
+	// StateStorageAllowHTTP lets organizations use an http:// state storage,
+	// for one inside the same cluster (spec 0005, R5.3).
+	StateStorageAllowHTTP bool
 	// UI is the built web UI served at /. Nil serves only the APIs.
 	UI fs.FS
 	// PublicURL is how others reach this server; it is the issuer of run

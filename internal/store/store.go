@@ -41,6 +41,8 @@ type Store struct {
 	blobs Blobs
 	// keepVersions caps the state versions kept per unit; 0 keeps all.
 	keepVersions int
+	// storages caches the organizations' own state storages (spec 0005).
+	storages orgStorages
 	// signingKey caches the key run JWTs are signed with.
 	signingMu  sync.Mutex
 	signingKey *vault.SigningKey

@@ -144,6 +144,26 @@ curl -X POST -H "Authorization: Bearer $ADMIN" "$API/api/v1/orgs/$ORG/stacks/$ST
 
 Uma unit sem state ganha a versão 1. Uma unit que já tem state aparece como `same`, `newer`, `older` ou `conflict` (outro lineage) e só muda se for marcada com `-F replace=<unit>` (uma vez por unit). Nesse caso ganha uma versão nova, e o histórico fica. Se o state importado tiver o mesmo lineage e um serial que não passa do atual, o serial sobe, para que um plano salvo antes não seja aplicado em cima dele. Uma unit travada não pode receber importação.
 
+#### State no bucket da organização
+
+Por padrão, o state de todas as organizações fica no storage da instalação (Postgres ou o bucket do Helm). Uma organização pode guardar o dela num bucket S3 próprio ([spec 0005](docs/specs/0005-storage-de-state-por-organizacao.md)):
+
+```bash
+curl -X PUT -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" "$API/api/v1/orgs/$ORG/state-storage" -d '{
+  "kind": "s3", "endpoint": "https://s3.example.com", "bucket": "infra", "region": "us-east-1",
+  "folder": "firstlume", "access_key_id": "...", "secret_access_key": "..."
+}'
+```
+
+- O Firstlume testa o bucket antes de salvar (grava, lê e apaga um objeto) e diz o que falhou. `POST .../state-storage/check` testa sem salvar; sem corpo, testa o atual.
+- Ele usa só a pasta `folder` (padrão `firstlume`) e grava nela o `.firstlume`, que diz de qual organização ela é. Uma pasta de outra organização é recusada. O resto do bucket não é tocado, nem pela limpeza.
+- Dentro da pasta, os nomes do Firstlume: `<pastas>/<stack>/<unit>/v<número>-<id>.tfstate.enc`. Renomear não move nada: as versões novas vão para o caminho novo.
+- **Cifrado por padrão.** Com `"encrypt": false` e `"plaintext_acknowledged": true`, as versões novas vão como `.tfstate`, o JSON do Terraform, legível por `mc` ou `aws s3`, e por qualquer um que leia o bucket. O storage da instalação é sempre cifrado.
+- Trocar de storage (ou de modo) vale para as gravações seguintes; as versões antigas continuam lidas de onde estão. `{"kind": "installation"}` volta ao da instalação. O `GET` mostra o atual e os anteriores que ainda têm versões.
+- A chave secreta nunca volta pela API; enviada vazia, mantém a guardada.
+- Endpoint `http://` só com `controlPlane.state.allowHTTPOrgStorage: true` no Helm, para um storage dentro do cluster.
+- Se o bucket cair, o state responde 503 e o run falha no Init com o motivo; o servidor e as outras organizações seguem.
+
 #### Migrar uma pipeline que guarda o state num bundle
 
 1. Crie o stack no Firstlume apontando para a pasta do ambiente.
@@ -289,7 +309,7 @@ H="Authorization: Bearer $FIRSTLUME_ADMIN_TOKEN"
 O=127.0.0.1:8787/api/v1/orgs/default
 
 # 1. uma pasta (opcional: stacks também podem ficar na raiz)
-F=$(curl -s -H "$H" $O/folders -d '{"name": "Ambientes"}' | jq -r .id)
+F=$(curl -s -H "$H" $O/folders -d '{"name": "infra"}' | jq -r .id)
 
 # 2. variáveis e segredos da pasta, herdados pelos stacks abaixo dela
 curl -s -X PUT -H "$H" $O/folders/$F/settings -d '{

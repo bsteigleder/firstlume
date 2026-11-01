@@ -84,6 +84,8 @@ spec:
               value: {{ .keepVersions | quote }}
             - name: FIRSTLUME_STATE_STORAGE
               value: {{ .storage | quote }}
+            - name: FIRSTLUME_STATE_STORAGE_ALLOW_HTTP
+              value: {{ .allowHTTPOrgStorage | default false | quote }}
             {{- if eq .storage "s3" }}
             - name: FIRSTLUME_STATE_S3_ENDPOINT
               value: {{ required "controlPlane.state.s3.endpoint is required with storage: s3" .s3.endpoint | quote }}

@@ -10,6 +10,8 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
@@ -35,6 +37,9 @@ type Config struct {
 	// PathStyle addresses the bucket in the path (endpoint/bucket/key)
 	// instead of the host name; Garage and most self-hosted services need it.
 	PathStyle bool
+	// CACert is a PEM bundle trusted besides the system's, for endpoints with
+	// a certificate from a private CA.
+	CACert string
 }
 
 type Client struct {
@@ -59,8 +64,24 @@ func New(cfg Config) (*Client, error) {
 		cfg.Region = "garage"
 	}
 	cfg.Prefix = strings.Trim(cfg.Prefix, "/")
-	return &Client{cfg: cfg, base: u, http: &http.Client{Timeout: 2 * time.Minute}, now: time.Now}, nil
+	client := &http.Client{Timeout: 2 * time.Minute}
+	if strings.TrimSpace(cfg.CACert) != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM([]byte(cfg.CACert)) {
+			return nil, errors.New("S3 CA certificate: no PEM certificate found")
+		}
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+		client.Transport = t
+	}
+	return &Client{cfg: cfg, base: u, http: client, now: time.Now}, nil
 }
+
+// Config returns the client's configuration.
+func (c *Client) Config() Config { return c.cfg }
 
 // Error is an error response from the S3 service.
 type Error struct {

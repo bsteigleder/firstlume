@@ -208,23 +208,50 @@ func (s *Store) insertVersion(ctx context.Context, tx pgx.Tx, a *StateActor, uni
 		return 0, err
 	}
 	sum := sha256.Sum256(data)
-	sealed, err := s.keys.State().Encrypt(data)
-	if err != nil {
-		return 0, err
-	}
 	versionID, err := newUUID()
 	if err != nil {
 		return 0, err
 	}
+	// The organization's own storage, if it has one, gets the version under
+	// its names, encrypted or not as it chose (spec 0005); the installation's,
+	// under ids and always encrypted.
+	org, err := s.currentOrgStorage(ctx, tx, a.OrganizationID)
+	if err != nil {
+		return 0, err
+	}
+	var blobs Blobs = s.blobs
+	var storageID *string
+	encrypted := true
 	objectKey := a.OrganizationID + "/" + a.StackID + "/" + versionID
-	if err := s.blobs.Put(ctx, objectKey, sealed); err != nil {
+	if org != nil {
+		blobs, storageID, encrypted = storageBlobs{org.blobs}, &org.id, org.encrypt
+		var unitKey string
+		if err := tx.QueryRow(ctx, `SELECT key FROM state_units WHERE id = $1`, unitID).Scan(&unitKey); err != nil {
+			return 0, err
+		}
+		if objectKey, err = stateObjectPath(ctx, tx, a.StackID, unitKey, versionID, number, encrypted, org.blobs.Config().Prefix); err != nil {
+			return 0, err
+		}
+	}
+	stored := data
+	if encrypted {
+		if stored, err = s.keys.State().Encrypt(data); err != nil {
+			return 0, err
+		}
+	}
+	if err := blobs.Put(ctx, objectKey, stored); err != nil {
+		var se *StateStorageError
+		if errors.As(err, &se) {
+			return 0, err
+		}
 		return 0, fmt.Errorf("storing state object: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO state_versions (id, unit_id, number, serial, lineage, sha256, size, resources, object_key, run_id, phase, token_id, written_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		INSERT INTO state_versions (id, unit_id, number, serial, lineage, sha256, size, resources, object_key, run_id, phase, token_id, written_by,
+		                            storage_id, encrypted)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		versionID, unitID, number, *meta.Serial, meta.Lineage, sum[:], len(data), managed, objectKey,
-		nullable(a.RunID), nullable(string(a.Phase)), nullable(a.TokenID), a.Name); err != nil {
+		nullable(a.RunID), nullable(string(a.Phase)), nullable(a.TokenID), a.Name, storageID, encrypted); err != nil {
 		return 0, err
 	}
 	_, err = tx.Exec(ctx, `UPDATE state_units SET current_version = $2, updated_at = now() WHERE id = $1`, unitID, number)
