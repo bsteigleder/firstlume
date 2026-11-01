@@ -124,15 +124,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "firstlume.controlPlaneSecret" . }}
                   key: admin-token
-            {{- with .Values.controlPlane.publicUrl }}
-            - name: FIRSTLUME_PUBLIC_URL
-              value: {{ . | quote }}
-            {{- end }}
             - name: FIRSTLUME_ADMIN_TOKEN_LOGIN
               value: {{ .Values.controlPlane.auth.adminTokenLogin | quote }}
             {{- with .Values.controlPlane.auth.oidc }}
             {{- if .enabled }}
-            {{- $_ := required "controlPlane.publicUrl is required with controlPlane.auth.oidc.enabled" $.Values.controlPlane.publicUrl }}
+            {{- if not $public }}
+            {{- fail "controlPlane.publicURL (or an ingress host) is required with controlPlane.auth.oidc.enabled" }}
+            {{- end }}
             - name: FIRSTLUME_OIDC_PROVIDER_NAME
               value: {{ .providerName | quote }}
             - name: FIRSTLUME_OIDC_ISSUER

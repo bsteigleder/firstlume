@@ -57,11 +57,6 @@ controlPlane:
       accessKeyIdKey: access-key-id
       secretAccessKeyKey: secret-access-key
 
-  # Where browsers reach Firstlume, e.g. https://firstlume.example.com.
-  # Required with OIDC sign-in: the provider sends users back to
-  # <publicUrl>/auth/callback, which is what you register in its OAuth app.
-  publicUrl: ""
-
   # How people sign in (spec 0001, R7.11 to R7.14). The admin token always
   # works for the API.
   auth:
@@ -89,8 +84,10 @@ controlPlane:
     type: ClusterIP
     port: 8080
 
-  # How others (Vault, for run JWTs) reach the server, like
-  # https://firstlume.example.com. Defaults to the ingress host.
+  # How browsers and others reach the server, like
+  # https://firstlume.example.com. Defaults to the ingress host. Vault checks
+  # run JWTs against it, and with OIDC sign-in the provider sends users back
+  # to <publicURL>/auth/callback, which is what you register in its OAuth app.
   publicURL: ""
 
   ingress:

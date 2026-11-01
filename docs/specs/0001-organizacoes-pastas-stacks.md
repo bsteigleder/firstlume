@@ -259,7 +259,7 @@ Vem da primeira instalação real: lá o CI já faz login pelo Gitea e só aceit
 
   | Valor do Helm (em `controlPlane.`) | Variável | Exemplo / padrão |
   |---|---|---|
-  | `publicUrl` | `FIRSTLUME_PUBLIC_URL` | `https://firstlume.example.com`; obrigatório com OIDC |
+  | `publicURL` | `FIRSTLUME_PUBLIC_URL` | `https://firstlume.example.com`, o mesmo valor da spec 0003 (emissor dos JWT das runs); sem ele, vem do host do ingress; obrigatório com OIDC |
   | `auth.oidc.enabled` | (liga as abaixo) | `false` |
   | `auth.oidc.providerName` | `FIRSTLUME_OIDC_PROVIDER_NAME` | `Gitea`, texto do botão "Entrar com …" |
   | `auth.oidc.issuer` | `FIRSTLUME_OIDC_ISSUER` | `https://gitea.example.com`, o `issuer` do discovery. O Gitea responde sem a barra final; o servidor aceita a barra diferente |
@@ -270,7 +270,7 @@ Vem da primeira instalação real: lá o CI já faz login pelo Gitea e só aceit
   | `auth.oidc.allowedGroups` | `FIRSTLUME_OIDC_ALLOWED_GROUPS` | lista separada por vírgula; vazia = todos |
   | `auth.adminTokenLogin` | `FIRSTLUME_ADMIN_TOKEN_LOGIN` | `true` (R7.5) |
 
-  - O endereço de retorno é sempre `<publicUrl>/auth/callback`. É o que se cadastra no app OAuth do provedor, e o servidor recusa subir com OIDC ligado e sem `publicUrl`.
+  - O endereço de retorno é sempre `<publicURL>/auth/callback`. É o que se cadastra no app OAuth do provedor, e o servidor recusa subir com OIDC ligado e sem `publicURL` (nem host de ingress).
   - O client secret só entra por Secret existente, nunca em texto nos values. Assim ele pode vir de um cofre (Vault, via operador) e o ArgoCD não guarda segredo.
   - Na subida, o servidor lê o `/.well-known/openid-configuration` do emissor. Se falhar, ele **sobe mesmo assim**, com o botão do provedor desligado e o token admin funcionando, e tenta de novo a cada minuto. Um provedor fora do ar não pode derrubar o Firstlume.
 - **R7.13** **App OAuth no Gitea:** é um app confidencial, criado por um admin do Gitea (ou por organização). O guia de instalação documenta o passo a passo e o retorno a cadastrar. O `make dev-gitea` cria esse app sozinho (seção 8).
@@ -527,7 +527,7 @@ Neste marco a autenticação ainda é só o token admin. Os stacks usam uma cone
   - com a lista configurada e um token sem o claim `groups` (o Gitea omite o claim de quem não é de nenhuma organização), o login é recusado como "fora da lista" e o log diz que o claim faltou;
   - com a lista vazia, qualquer usuário autenticado entra.
 - [ ] **CA3.12** Com o emissor fora do ar na subida, o servidor sobe, o `/readyz` responde 200, o token admin funciona e o botão do provedor fica desligado. Quando o emissor volta, o botão aparece sem reiniciar (R7.12).
-- [ ] **CA3.13** O servidor não sobe com OIDC ligado e sem `publicUrl`, com uma mensagem que diz qual valor falta. O client secret não aparece em log nem em `helm template` (só a referência ao Secret).
+- [ ] **CA3.13** O servidor não sobe com OIDC ligado e sem `publicURL` (nem host de ingress), com uma mensagem que diz qual valor falta. O client secret não aparece em log nem em `helm template` (só a referência ao Secret).
 
 ### Critérios gerais, para todos os marcos
 

@@ -193,7 +193,7 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
             <div className="login-unset">
               <strong>Sign-in isn’t set up yet</strong>
               <p className="muted">An administrator turns on Gitea sign-in when installing Firstlume, in the Helm values:</p>
-              <pre className="mono">{"controlPlane:\n  publicUrl: https://firstlume.example.com\n  auth:\n    oidc:\n      enabled: true\n      issuer: https://gitea.example.com"}</pre>
+              <pre className="mono">{"controlPlane:\n  publicURL: https://firstlume.example.com\n  auth:\n    oidc:\n      enabled: true\n      issuer: https://gitea.example.com"}</pre>
             </div>
           )}
         </section>
