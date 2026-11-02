@@ -414,7 +414,7 @@ func TestCheckBackends(t *testing.T) {
 	writeBackend(t, filepath.Join(work, "edge", "dns"), "s3")
 	out.Reset()
 	if _, err := checkBackends(work, plans, stateURL, &out); err != nil ||
-		!strings.Contains(out.String(), "http (Firstlume): 2 unit(s)") || !strings.Contains(out.String(), "s3: 1 unit(s)") {
+		!strings.Contains(out.String(), "http (First Lume): 2 unit(s)") || !strings.Contains(out.String(), "s3: 1 unit(s)") {
 		t.Fatalf("two units in Firstlume, one in s3: %v\n%s", err, out.String())
 	}
 }

@@ -152,7 +152,7 @@ export function RegistryDialog({ draft, levelName, role, onSave, onClose }: {
                 </label>
               </div>
               <span className="hint">
-                Read by each run with the stack’s Vault role{role ? ` (${role} here)` : ""}. Firstlume never stores it.
+                Read by each run with the stack’s Vault role{role ? ` (${role} here)` : ""}. First Lume never stores it.
               </span>
             </>
           ) : (

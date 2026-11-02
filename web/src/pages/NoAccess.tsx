@@ -31,7 +31,7 @@ export function NoAccessPage({ onCheck }: { onCheck: () => Promise<void> }) {
     <div className="welcome">
       <header className="welcome-bar">
         <Logo />
-        <strong>Firstlume</strong>
+        <strong>First Lume</strong>
         <span className="no-access-who">
           <Avatar user={me.user} size={28} />
           {login} · via Gitea

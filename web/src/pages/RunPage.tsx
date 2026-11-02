@@ -404,7 +404,7 @@ const actionOrder: ChangeAction[] = ["delete", "replace", "update", "create"];
 const actionInfo: Record<ChangeAction, { label: string; group: string; driftGroup: string; tone: string }> = {
   delete: { label: "Delete", group: "Will be deleted", driftGroup: "Exists only in the real infrastructure", tone: "bad" },
   replace: { label: "Replace", group: "Will be replaced (deleted and created again)", driftGroup: "Would be replaced to match the code", tone: "rep" },
-  update: { label: "Update", group: "Will be updated in place", driftGroup: "Changed outside Firstlume", tone: "warn" },
+  update: { label: "Update", group: "Will be updated in place", driftGroup: "Changed outside First Lume", tone: "warn" },
   create: { label: "Create", group: "Will be created", driftGroup: "Missing from the real infrastructure", tone: "ok" },
 };
 
@@ -688,7 +688,7 @@ function StateCard({ run }: { run: Run }) {
 }
 
 function BackendBadge({ backend }: { backend: string }) {
-  if (backend === "firstlume") return <span className="badge ok">Firstlume</span>;
+  if (backend === "firstlume") return <span className="badge ok">First Lume</span>;
   if (backend === "local") return <span className="badge bad">local</span>;
   return <span className="badge idle">{backend === "http" ? "http · another server" : backend}</span>;
 }
@@ -701,10 +701,10 @@ function backendNote(backend: string, single: boolean): string {
       return "On the runner’s disk, which is gone when the run ends. The plan stops here (see the Plan log).";
     case "http":
       return single
-        ? "backend “http” with an address that isn’t this Firstlume. Firstlume doesn’t read this state."
-        : "backend “http” on another server. Firstlume doesn’t read, lock or version this state.";
+        ? "backend “http” with an address that isn’t this First Lume. First Lume doesn’t read this state."
+        : "backend “http” on another server. First Lume doesn’t read, lock or version this state.";
   }
-  return "Firstlume doesn’t read, lock or version this state.";
+  return "First Lume doesn’t read, lock or version this state.";
 }
 
 function ConfigCard({ run, stack }: { run: Run; stack: Stack }) {
