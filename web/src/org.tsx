@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
 import { api, signOut, type ActiveRun, type Folder, type Me, type OrgAPI, type Organization, type Stack, type StackSummary, type Tree, type User } from "./api";
-import { ChevronDownIcon, ChevronRightIcon, CloseIcon, FolderIcon, FolderPlusIcon, GearIcon, PlusIcon, SearchIcon, TrashIcon } from "./icons";
+import { ChevronDownIcon, ChevronRightIcon, CloseIcon, FolderIcon, FolderPlusIcon, GearIcon, Logo, PlusIcon, SearchIcon, TrashIcon } from "./icons";
 import { DeleteFolderDialog, FolderNameDialog, NewStackDialog } from "./pages/dialogs";
 import { MoveStackDialog, StackGrip, useStackDrop } from "./pages/MoveStack";
 import { errorMessage, ErrorBanner, Initials, StatusBadge, timeAgo, useData } from "./ui";
@@ -345,6 +345,10 @@ function Sidebar() {
 
   return (
     <aside className="sidebar">
+      <div className="sidebar-brand">
+        <Logo size={24} />
+        <strong>Firstlume</strong>
+      </div>
       <div className="org-switch">
         <button className="org-button" aria-expanded={switcher} onClick={() => setSwitcher((s) => !s)}>
           <span className="org-mark">{org.name.charAt(0).toUpperCase()}</span>

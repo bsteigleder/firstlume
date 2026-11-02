@@ -1,38 +1,57 @@
 :root {
   /* Follows the OS theme unless the viewer picked one (data-theme, set by theme.tsx). */
   color-scheme: light dark;
-  --bg: light-dark(#f6f5f1, #111214);
-  --surface: light-dark(#ffffff, #18191c);
-  --surface-2: light-dark(#f1f0eb, #202125);
-  --surface-3: light-dark(#fafaf8, #1c1d20);
-  --border: light-dark(#e4e3de, #2c2d32);
-  --border-strong: light-dark(#cfcec7, #45464d);
-  --text: light-dark(#1b1b18, #ececea);
-  --text-2: light-dark(#3d3c37, #c9c9c4);
-  --muted: light-dark(#6b6a63, #9a9a93);
-  --accent: light-dark(#e89a1c, #f5a524);
-  --accent-strong: light-dark(#c97f06, #ffb84d);
-  --accent-soft: light-dark(#fcf1dc, #33280f);
-  --accent-ink: #1b1405;
-  --link: light-dark(#8f5300, #f5b544);
-  --success: light-dark(#1a6b3c, #4cc27b);
-  --success-soft: light-dark(#e3f2e8, #16301f);
-  --danger: light-dark(#a61b12, #ff7b70);
-  --danger-strong: light-dark(#c0352b, #e5534b);
-  --danger-soft: light-dark(#fce8e6, #3a1a17);
-  --attention: light-dark(#7a4300, #f5b544);
-  --attention-soft: light-dark(#fcefd6, #3a2a0d);
-  --attention-edge: light-dark(#e8b860, #8a6420);
-  --running: light-dark(#1f4fa8, #7aa5ff);
-  --running-soft: light-dark(#e5edfb, #1a2640);
+  --bg: light-dark(#fbf9f3, #0b0c1c);
+  --surface: light-dark(#ffffff, #13132b);
+  --surface-2: light-dark(#f3f0e8, #191736);
+  --surface-3: light-dark(#fdfcf8, #100f26);
+  --border: light-dark(#e6e3e2, #2a2750);
+  --border-strong: light-dark(#85829c, #716c9c);
+  --text: light-dark(#14132b, #f4f1e8);
+  --text-2: light-dark(#3a3857, #cfcce0);
+  --muted: light-dark(#5f5c7a, #a5a2bf);
+  --accent: light-dark(#2e2968, #ffc94d);
+  --accent-strong: light-dark(#1e1b44, #ffda80);
+  --accent-soft: light-dark(#ece9f7, #2c2554);
+  --accent-ink: light-dark(#fff8e1, #090a1a);
+  --link: light-dark(#4f3fa8, #bdb5f7);
+  --success: light-dark(#14693b, #4fcb82);
+  --success-soft: light-dark(#e2f3e8, #12301f);
+  --danger: light-dark(#b3141a, #ff6b6b);
+  --danger-strong: light-dark(#be1a1f, #d32f2f);
+  --danger-soft: light-dark(#fce7e7, #3a1418);
+  --attention: light-dark(#7a4a00, #ffa733);
+  --attention-soft: light-dark(#fcefd6, #37280c);
+  --attention-edge: light-dark(#b87a12, #a8741f);
+  --running: light-dark(#0b5e9e, #62bef5);
+  --running-soft: light-dark(#e1f0fa, #0f2e47);
   --replace: light-dark(#7b1f75, #e58ae0);
   --replace-soft: light-dark(#f6e3f5, #351733);
-  --vault: light-dark(#4a3a8c, #b9a8ff);
-  --vault-soft: light-dark(#e8e4f6, #241d3d);
-  --log-bg: light-dark(#16171b, #0b0c0e);
-  --log-text: #d9dae0;
-  --log-step: #f5b544;
-  --log-error: #ff8a80;
+  --vault: light-dark(#5b2e8c, #c9a6f5);
+  --vault-soft: light-dark(#efe6f9, #2a1e48);
+  /* White text on a saturated fill: danger buttons and avatars. */
+  --on-color: #ffffff;
+  /* Tooltips and toasts: dark over the page in both themes. */
+  --inverse: light-dark(#14132b, #2a2650);
+  --inverse-text: #f4f1e8;
+  --inverse-muted: light-dark(#b7b4ce, #c4c1d8);
+  --inverse-accent: #ffc94d;
+  --inverse-border: light-dark(#4a466f, #5a5683);
+  --inverse-hover: light-dark(#2a2750, #38335f);
+  --log-bg: light-dark(#0e0e24, #070814);
+  --log-border: #2a2750;
+  --log-title: #f4f1e8;
+  --log-text: #dedceb;
+  --log-meta: #a5a2bf;
+  --log-dim: #918ead;
+  --log-step: #ffc94d;
+  --log-live: #62bef5;
+  --log-error: #ff7a7a;
+  --shadow-rgb: 9 10 26;
+  /* The logo's coral and rose appear only in the logo and this glow, never as status. */
+  --horizon-coral: light-dark(rgb(240 112 62 / 0.28), rgb(240 112 62 / 0.4));
+  --horizon-rose: light-dark(rgb(196 71 110 / 0.16), rgb(196 71 110 / 0.28));
+  --horizon-rim: #ffc94d;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --radius: 10px;
 }
@@ -184,7 +203,7 @@ button.primary:hover:not(:disabled) {
 button.danger {
   background: var(--danger-strong);
   border-color: var(--danger-strong);
-  color: #fff;
+  color: var(--on-color);
   font-weight: 600;
 }
 
@@ -268,10 +287,10 @@ a.small-btn:hover {
   white-space: nowrap;
   padding: 6px 10px;
   border-radius: 6px;
-  background: #1b1b18;
-  color: #f2f2ef;
+  background: var(--inverse);
+  color: var(--inverse-text);
   font: 500 12px/1.3 Inter, system-ui, sans-serif;
-  box-shadow: 0 6px 16px rgba(20, 20, 18, 0.18);
+  box-shadow: 0 6px 16px rgb(var(--shadow-rgb) / 0.18);
   pointer-events: none;
 }
 
@@ -540,7 +559,7 @@ a.badge.plain:hover {
 
 .avatar {
   border-radius: 50%;
-  color: #fff;
+  color: var(--on-color);
   font-weight: 600;
   display: inline-flex;
   align-items: center;
@@ -556,6 +575,9 @@ a.badge.plain:hover {
 }
 
 .sidebar {
+  /* Night in both themes: every token below resolves to its dark value in here. */
+  color-scheme: dark;
+  color: var(--text);
   flex: 0 0 270px;
   background: var(--surface);
   border-right: 1px solid var(--border);
@@ -582,6 +604,14 @@ a.badge.plain:hover {
   container-type: inline-size;
 }
 
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 6px;
+  font-size: 15px;
+}
+
 .org-switch {
   position: relative;
 }
@@ -599,8 +629,8 @@ a.badge.plain:hover {
   width: 28px;
   height: 28px;
   border-radius: 7px;
-  background: #1b1b18;
-  color: #f5b544;
+  background: var(--inverse);
+  color: var(--inverse-accent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -798,7 +828,7 @@ a.badge.plain:hover {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(20, 20, 18, 0.16);
+  box-shadow: 0 12px 32px rgb(var(--shadow-rgb) / 0.16);
   padding: 6px;
   display: flex;
   flex-direction: column;
@@ -891,7 +921,7 @@ a.badge.plain:hover {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgba(20, 20, 18, 0.38);
+  background: rgb(var(--shadow-rgb) / 0.38);
 }
 
 .drawer {
@@ -903,7 +933,7 @@ a.badge.plain:hover {
   background: var(--surface);
   display: flex;
   flex-direction: column;
-  box-shadow: -12px 0 32px rgba(20, 20, 18, 0.18);
+  box-shadow: -12px 0 32px rgb(var(--shadow-rgb) / 0.18);
 }
 
 .drawer-header,
@@ -953,8 +983,8 @@ a.badge.plain:hover {
 }
 
 .queue-row.attention {
-  border-left-color: var(--accent);
-  background: var(--accent-soft);
+  border-left-color: var(--attention-edge);
+  background: var(--attention-soft);
 }
 
 .queue-main {
@@ -990,7 +1020,7 @@ a.badge.plain:hover {
   overflow-y: auto;
   background: var(--surface);
   border-radius: 14px;
-  box-shadow: 0 24px 60px rgba(20, 20, 18, 0.25);
+  box-shadow: 0 24px 60px rgb(var(--shadow-rgb) / 0.25);
 }
 
 .modal.wide {
@@ -1355,7 +1385,7 @@ a.plain:hover {
 }
 
 .banner-attention {
-  background: var(--accent-soft);
+  background: var(--attention-soft);
   border: 1px solid var(--attention-edge);
 }
 
@@ -1583,7 +1613,7 @@ a.banner:hover {
 
 .step.waiting {
   border-color: var(--attention-edge);
-  background: var(--accent-soft);
+  background: var(--attention-soft);
 }
 
 .step.failed {
@@ -1692,22 +1722,22 @@ a.banner:hover {
   align-items: center;
   gap: 10px;
   padding: 8px 14px;
-  border-bottom: 1px solid #2a2b31;
+  border-bottom: 1px solid var(--log-border);
 }
 
 .log-title {
-  color: #f2f2f0;
+  color: var(--log-title);
   font-size: 13px;
   font-weight: 600;
 }
 
 .log-meta {
-  color: #9a9aa3;
+  color: var(--log-meta);
   font-size: 12px;
 }
 
 .live {
-  color: #7aa5ff;
+  color: var(--log-live);
 }
 
 .log-error-msg {
@@ -1733,7 +1763,7 @@ a.banner:hover {
 }
 
 .log-line.dim {
-  color: #8a8b92;
+  color: var(--log-dim);
 }
 
 .log-step {
@@ -1834,7 +1864,7 @@ a.banner:hover {
 }
 
 .edge-warn {
-  border-left-color: var(--accent);
+  border-left-color: var(--attention-edge);
 }
 
 .edge-ok {
@@ -2196,10 +2226,27 @@ button.change-head:disabled {
 }
 
 .login {
+  position: relative;
+  overflow: hidden;
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 16px;
+}
+
+/* The planet's edge from the logo, rising from the bottom of the page. */
+.login::before {
+  content: "";
+  position: absolute;
+  top: calc(100% - 156px);
+  left: 50%;
+  width: 2600px;
+  height: 2600px;
+  margin-left: -1300px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  box-shadow: 0 -1.5px 0 var(--horizon-rim), 0 -14px 60px var(--horizon-coral), 0 -50px 140px var(--horizon-rose);
+  pointer-events: none;
 }
 
 .login-theme {
@@ -2209,6 +2256,7 @@ button.change-head:disabled {
 }
 
 .login-main {
+  position: relative;
   width: 100%;
   max-width: 400px;
   display: flex;
@@ -2257,8 +2305,8 @@ a.login-provider {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--text);
-  color: var(--surface);
+  background: var(--accent);
+  color: var(--accent-ink);
   text-decoration: none;
 }
 
@@ -2825,7 +2873,7 @@ textarea:focus-visible {
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   background: var(--surface);
-  box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+  box-shadow: 0 4px 14px rgb(var(--shadow-rgb) / 0.18);
   color: var(--text-2);
   font-size: 11.5px;
   overflow-wrap: anywhere;
@@ -3092,12 +3140,12 @@ tr:hover .grip,
   width: 220px;
   padding: 8px 10px;
   border-radius: 6px;
-  background: #1b1b18;
-  color: #f2f2ef;
+  background: var(--inverse);
+  color: var(--inverse-text);
   font-size: 12px;
   font-weight: 400;
   line-height: 1.4;
-  box-shadow: 0 6px 16px rgba(20, 20, 18, 0.18);
+  box-shadow: 0 6px 16px rgb(var(--shadow-rgb) / 0.18);
   pointer-events: none;
 }
 
@@ -3194,23 +3242,23 @@ tr:hover .grip,
   box-sizing: border-box;
   padding: 10px 12px 10px 16px;
   border-radius: 10px;
-  background: #1b1b18;
-  color: #f2f2ef;
+  background: var(--inverse);
+  color: var(--inverse-text);
   font-size: 13.5px;
-  box-shadow: 0 12px 28px rgba(20, 20, 18, 0.3);
+  box-shadow: 0 12px 28px rgb(var(--shadow-rgb) / 0.3);
 }
 
 .toast-undo {
   padding: 5px 10px;
-  border-color: #55544d;
+  border-color: var(--inverse-border);
   background: transparent;
-  color: #f5b544;
+  color: var(--inverse-accent);
   font-size: 13px;
   font-weight: 600;
 }
 
 .toast-undo:hover:not(:disabled) {
-  background: #2c2d32;
+  background: var(--inverse-hover);
 }
 .tree-root.drop-ok .row-actions { display: none; }
 
