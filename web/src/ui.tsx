@@ -196,7 +196,7 @@ export function Initials({ name, size = 24 }: { name?: string; size?: number }) 
   let h = 0;
   for (const c of n) h = (h * 31 + c.charCodeAt(0)) % 360;
   return (
-    <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.42, background: `hsl(${h} 32% 42%)` }} aria-hidden>
+    <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.42, background: `hsl(${h} 32% 34%)` }} aria-hidden>
       {text}
     </span>
   );
