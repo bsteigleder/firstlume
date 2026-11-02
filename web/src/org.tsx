@@ -347,7 +347,7 @@ function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-brand">
         <Logo size={24} />
-        <strong>Firstlume</strong>
+        <strong>First Lume</strong>
       </div>
       <div className="org-switch">
         <button className="org-button" aria-expanded={switcher} onClick={() => setSwitcher((s) => !s)}>

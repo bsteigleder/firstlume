@@ -47,12 +47,12 @@ export function Members() {
         setNotice({
           tone: "success",
           title: `${r.member.name || r.member.login} now has access.`,
-          text: `They already use Firstlume, so ${org.name} appears right away.`,
+          text: `They already use First Lume, so ${org.name} appears right away.`,
         });
       } else if (r.invite) {
         setNotice({
           tone: "attention",
-          title: `${r.invite.login} hasn’t signed in to Firstlume yet.`,
+          title: `${r.invite.login} hasn’t signed in to First Lume yet.`,
           text: "The invitation is pending and takes effect on their first sign-in.",
         });
       }
@@ -175,7 +175,7 @@ export function Members() {
           <h2 className="section-title">
             Pending invitations <span className="muted members-count">{list.data.invites.length}</span>
           </h2>
-          <p className="muted">Firstlume can’t tell whether a username exists in Gitea. If someone still has no access after signing in, check the spelling.</p>
+          <p className="muted">First Lume can’t tell whether a username exists in Gitea. If someone still has no access after signing in, check the spelling.</p>
           <div className="table-scroll">
             <table className="table plain-table">
               <thead>

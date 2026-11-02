@@ -140,7 +140,7 @@ function GitConnectionSection() {
         {conn && <span className="badge ok">Connected{repos !== null ? ` · ${repos} repositories` : ""}</span>}
       </div>
       <p className="muted">
-        Firstlume lists the account’s repositories, finds <span className="mono">.firstlume</span> folders and clones with a service token, not
+        First Lume lists the account’s repositories, finds <span className="mono">.firstlume</span> folders and clones with a service token, not
         anyone’s personal login, so scheduled runs keep working when people leave.
       </p>
       {conn !== undefined && (
@@ -234,8 +234,8 @@ function VaultSection() {
           {conn && <span className="badge ok">Connected</span>}
         </div>
         <p className="muted">
-          Runs read secrets straight from Vault, inside their own pod: values never pass through Firstlume. Each phase logs in with a short-lived token
-          Firstlume signs for its stack, and the stack’s Vault role (a setting, inherited like the others) decides what it may read.
+          Runs read secrets straight from Vault, inside their own pod: values never pass through First Lume. Each phase logs in with a short-lived token
+          First Lume signs for its stack, and the stack’s Vault role (a setting, inherited like the others) decides what it may read.
         </p>
         {conn !== undefined && (
           <div className="grid-2">
@@ -286,10 +286,10 @@ function VaultSection() {
       </form>
 
       <div className="card form-card">
-        <h3>Make Vault trust Firstlume</h3>
+        <h3>Make Vault trust First Lume</h3>
         <p className="muted">
-          Once, in Vault: enable the <span className="mono">jwt</span> auth method with Firstlume as the issuer and its public key, or its discovery URL
-          when Vault can reach Firstlume.
+          Once, in Vault: enable the <span className="mono">jwt</span> auth method with First Lume as the issuer and its public key, or its discovery URL
+          when Vault can reach First Lume.
         </p>
         <div className="grid-2">
           <div className="field">
@@ -490,7 +490,7 @@ export function CreateOrgPage({ welcome }: { welcome?: boolean }) {
     <div className="welcome">
       <header className="welcome-bar">
         <Logo />
-        <strong>Firstlume</strong>
+        <strong>First Lume</strong>
       </header>
       <main className="welcome-main">
         <h1>{welcome ? (firstName ? `Welcome, ${firstName}` : "Welcome") : "Create organization"}</h1>

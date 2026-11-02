@@ -293,7 +293,7 @@ function Source({ stack, onSaved }: { stack: Stack; onSaved: () => Promise<void>
         <div>
           <h2 className="danger-text">Delete stack</h2>
           <p className="muted">
-            Removes the stack, its runs and its settings from Firstlume. It does <strong>not</strong> destroy the infrastructure: run a destroy first if
+            Removes the stack, its runs and its settings from First Lume. It does <strong>not</strong> destroy the infrastructure: run a destroy first if
             you want it gone.
           </p>
           {del.error && <div className="form-error">{del.error}</div>}

@@ -129,7 +129,7 @@ export function StackResources({ stack }: { stack: Stack }) {
             <strong>
               {drift.resources} resource{drift.resources === 1 ? "" : "s"}
             </strong>{" "}
-            changed outside Firstlume, found by <RunLink id={drift.run_id} label="drift check" /> {timeAgo(drift.at)}.
+            changed outside First Lume, found by <RunLink id={drift.run_id} label="drift check" /> {timeAgo(drift.at)}.
           </span>
           <button className="small-btn" aria-pressed={onlyDrift} onClick={() => setOnlyDrift(!onlyDrift)}>
             {onlyDrift ? "Show all" : "Show only drifted"}
@@ -277,7 +277,7 @@ function Row({ r, unitKey, selected, onPick }: { r: StateResource; unitKey: stri
               {last.run_id.slice(0, 8)} · {timeAgo(last.at)}
             </span>
           )}
-          {!last && !data && !r.drift && <span className="muted small">before Firstlume</span>}
+          {!last && !data && !r.drift && <span className="muted small">before First Lume</span>}
         </span>
       </button>
       {selected && (
@@ -369,7 +369,7 @@ function Row({ r, unitKey, selected, onPick }: { r: StateResource; unitKey: stri
                 </span>
               ))
             ) : (
-              <span className="muted">{data ? "Data sources are read on every run." : "No apply in Firstlume changed it yet."}</span>
+              <span className="muted">{data ? "Data sources are read on every run." : "No apply in First Lume changed it yet."}</span>
             )}
           </div>
         </div>
@@ -459,7 +459,7 @@ function OutsideUnits({ outside }: { outside: NonNullable<Resources["outside"]> 
   return (
     <section id="res-outside" className="card res-outside res-outside-units">
       <div className="res-outside-head">
-        <h2>Firstlume can’t list these resources</h2>
+        <h2>First Lume can’t list these resources</h2>
         <p>
           {single ? <>The last run ({run}) found</> : <>{run} found</>}{" "}
           {found.map(([b, n], i) => (
@@ -469,7 +469,7 @@ function OutsideUnits({ outside }: { outside: NonNullable<Resources["outside"]> 
               {!single && ` in ${n} unit${n === 1 ? "" : "s"}`}
             </span>
           ))}
-          , so {single ? "the" : "their"} state lives there and Firstlume never reads it. Switch the code to{" "}
+          , so {single ? "the" : "their"} state lives there and First Lume never reads it. Switch the code to{" "}
           <span className="mono">backend "http" {"{}"}</span> and import the current state to see{" "}
           {single ? "the resources" : "them"} here.
         </p>
@@ -511,9 +511,9 @@ function BackendName({ backend }: { backend: string }) {
 function StateOutside() {
   return (
     <section className="card res-outside">
-      <h2>Firstlume can’t list these resources</h2>
+      <h2>First Lume can’t list these resources</h2>
       <p>
-        An apply ran, but no state was written to Firstlume: the code keeps it in another backend. Switch it to{" "}
+        An apply ran, but no state was written to First Lume: the code keeps it in another backend. Switch it to{" "}
         <span className="mono">backend "http" {"{}"}</span> and import the current state to see the resources here.
       </p>
     </section>

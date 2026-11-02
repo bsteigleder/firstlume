@@ -42,7 +42,7 @@ func stateURL(apiURL string, s *api.ExecSpec) string {
 	return strings.TrimRight(apiURL, "/") + "/state/v1/stacks/" + s.StackID
 }
 
-const backendHelp = `Declare where the state lives. For Firstlume's state backend:
+const backendHelp = `Declare where the state lives. For First Lume's state backend:
   Terraform:  terraform { backend "http" {} }
   Terragrunt (root.hcl):
     remote_state {
@@ -109,7 +109,7 @@ func checkBackends(workDir, plansJSON, stateURL string, out io.Writer) ([]api.Un
 		label := t
 		switch t {
 		case api.BackendFirstlume:
-			label = "http (Firstlume)"
+			label = "http (First Lume)"
 		case "http":
 			label = "http (another server)"
 		}

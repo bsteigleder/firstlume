@@ -90,7 +90,7 @@ type Tone = "error" | "attention" | "success";
 function loginMessage(search: string, provider: string): { tone: Tone; title: string; text: string; hint?: string } | null {
   const q = new URLSearchParams(search);
   if (q.has("signed_out")) {
-    return { tone: "success", title: "You’re signed out of Firstlume.", text: `Your ${provider} session stays open.` };
+    return { tone: "success", title: "You’re signed out of First Lume.", text: `Your ${provider} session stays open.` };
   }
   switch (q.get("login_error")) {
     case null:
@@ -99,7 +99,7 @@ function loginMessage(search: string, provider: string): { tone: Tone; title: st
       return {
         tone: "error",
         title: `Your ${provider} account can’t sign in here.`,
-        text: `Firstlume is open to members of certain ${provider} organizations or teams. Ask an administrator to add you.`,
+        text: `First Lume is open to members of certain ${provider} organizations or teams. Ask an administrator to add you.`,
         hint: `Signed in with another ${provider} account? Sign out of ${provider} first.`,
       };
     case "state":
@@ -155,7 +155,7 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
           <span className="login-logo">
             <Logo size={72} />
           </span>
-          <h1>Sign in to Firstlume</h1>
+          <h1>Sign in to First Lume</h1>
           <p className="muted">{oidc ? "Use your Git account. You will come back here signed in." : "Use the admin token."}</p>
         </div>
         {message && (
@@ -175,7 +175,7 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
                 <button className="login-provider" disabled>
                   Continue with {oidc.name}
                 </button>
-                <p className="hint">{oidc.name} isn’t answering. Firstlume checks again every minute.</p>
+                <p className="hint">{oidc.name} isn’t answering. First Lume checks again every minute.</p>
               </>
             ))}
           {oidc?.available && message?.hint && <p className="hint">{message.hint}</p>}
@@ -196,7 +196,7 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
           {!oidc && !tokenLogin && (
             <div className="login-unset">
               <strong>Sign-in isn’t set up yet</strong>
-              <p className="muted">An administrator turns on Gitea sign-in when installing Firstlume, in the Helm values:</p>
+              <p className="muted">An administrator turns on Gitea sign-in when installing First Lume, in the Helm values:</p>
               <pre className="mono">{"controlPlane:\n  publicURL: https://firstlume.example.com\n  auth:\n    oidc:\n      enabled: true\n      issuer: https://gitea.example.com"}</pre>
             </div>
           )}

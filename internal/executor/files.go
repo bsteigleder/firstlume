@@ -357,7 +357,7 @@ func writeFiles(root string, files []outputFile) error {
 	for _, f := range files {
 		target := filepath.Join(root, filepath.FromSlash(f.rel))
 		if _, err := os.Lstat(target); err == nil {
-			return fmt.Errorf("%s (%s) already exists in the repository: Firstlume doesn't replace versioned files", f.rel, f.origin)
+			return fmt.Errorf("%s (%s) already exists in the repository: First Lume doesn't replace versioned files", f.rel, f.origin)
 		}
 		if err := insideRoot(realRoot, filepath.Dir(target)); err != nil {
 			return fmt.Errorf("%s (%s): %w", f.rel, f.origin, err)
