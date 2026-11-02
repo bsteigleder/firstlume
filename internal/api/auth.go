@@ -21,10 +21,47 @@ type Me struct {
 	// Kind is "user" for a session, "admin-token" for the installation token.
 	Kind string `json:"kind"`
 	User *User  `json:"user,omitempty"`
-	// Organizations the user is a member of. Until Marco 3b every signed-in
-	// user can still open all of them (D8); this list drives the first-access
-	// screen (R7.7). Empty for the admin token.
+	// InstallationAdmin sees every organization and can create them: the admin
+	// token, or a user in one of the admin groups (R7.15).
+	InstallationAdmin bool `json:"installation_admin"`
+	// Organizations the user is a member of. Empty for the admin token.
 	Organizations []Organization `json:"organizations"`
+}
+
+// Member is someone in an organization (R7.16).
+type Member struct {
+	UserID    string    `json:"user_id"`
+	Login     string    `json:"login"`
+	Name      string    `json:"name"`
+	AvatarURL string    `json:"avatar_url"`
+	Since     time.Time `json:"since"`
+}
+
+// Invite is a pending invitation for someone who never signed in (R7.18).
+type Invite struct {
+	ID        string    `json:"id"`
+	Login     string    `json:"login"`
+	InvitedBy string    `json:"invited_by"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// MemberList is GET /orgs/{org}/members.
+type MemberList struct {
+	Members []Member `json:"members"`
+	Invites []Invite `json:"invites"`
+}
+
+// InviteRequest is POST /orgs/{org}/members: the login at the provider.
+type InviteRequest struct {
+	Login string `json:"login"`
+}
+
+// InviteResult holds Member when the person has access now, or Invite when
+// the invitation waits for their first sign-in.
+type InviteResult struct {
+	Member *Member `json:"member,omitempty"`
+	Invite *Invite `json:"invite,omitempty"`
 }
 
 // AuthConfig is GET /auth/config: what the login screen offers (R7.14).

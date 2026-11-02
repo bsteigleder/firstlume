@@ -150,6 +150,8 @@ spec:
               value: {{ .groupsClaim | quote }}
             - name: FIRSTLUME_OIDC_ALLOWED_GROUPS
               value: {{ join "," .allowedGroups | quote }}
+            - name: FIRSTLUME_OIDC_ADMIN_GROUPS
+              value: {{ join "," .adminGroups | quote }}
             {{- end }}
             {{- end }}
             {{- if .Values.agent.enabled }}

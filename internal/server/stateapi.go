@@ -251,7 +251,7 @@ func (s *Server) deleteState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "type the stack's name to confirm deleting its state")
 		return
 	}
-	if err := s.store.DeleteState(r.Context(), orgID(r), st.ID, adminIdentity); err != nil {
+	if err := s.store.DeleteState(r.Context(), orgID(r), st.ID, actorName(r)); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "the state can't be deleted while a run is active or a unit is locked")
 			return

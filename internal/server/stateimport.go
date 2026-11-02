@@ -43,7 +43,7 @@ func (s *Server) createStateToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, "expires_at must be in the future")
 		return
 	}
-	out, err := s.store.CreateStateToken(r.Context(), orgID(r), id(r), req, adminIdentity)
+	out, err := s.store.CreateStateToken(r.Context(), orgID(r), id(r), req, actorName(r))
 	if errors.Is(err, store.ErrDuplicate) {
 		writeError(w, http.StatusConflict, "the stack already has a state token with this name")
 		return
@@ -61,7 +61,7 @@ func (s *Server) revokeStateToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "state token not found")
 		return
 	}
-	if err := s.store.RevokeStateToken(r.Context(), orgID(r), id(r), token, adminIdentity); err != nil {
+	if err := s.store.RevokeStateToken(r.Context(), orgID(r), id(r), token, actorName(r)); err != nil {
 		s.storeError(w, r, err, "state token")
 		return
 	}
@@ -106,7 +106,7 @@ func (s *Server) importState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, res)
 		return
 	}
-	units, err := s.store.ImportState(r.Context(), orgID(r), id(r), items, replace, dryRun, adminIdentity)
+	units, err := s.store.ImportState(r.Context(), orgID(r), id(r), items, replace, dryRun, actorName(r))
 	var conflict *store.StateConflictError
 	switch {
 	case errors.As(err, &conflict):

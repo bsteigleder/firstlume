@@ -232,7 +232,8 @@ Esta é a regra central da spec.
   - Quem cria uma organização vira administrador dela.
   - Outras pessoas entram por **convite pelo usuário do Gitea**, feito por um administrador. O convidado ganha acesso no próximo login.
   - Remover um membro tira o acesso imediatamente, e as sessões dele naquela organização deixam de valer.
-- **R7.7** **Primeiro acesso:** quem faz login e não pertence a nenhuma organização cai na tela "Bem-vindo, vamos criar a sua primeira organização", com nome e endereço. Depois de criar, segue para os próximos passos: conectar uma conta do Gitea, conferir o agent e criar o primeiro stack. Qualquer usuário logado pode criar organizações.
+  - Quem cria organizações e como o convite funciona mudou na emenda de 2026-11-01 (R7.15 a R7.18).
+- **R7.7** **Primeiro acesso (alterada pela emenda de 2026-11-01):** um **administrador da instalação** (R7.15) sem nenhuma organização cai na tela "Bem-vindo, vamos criar a sua primeira organização", com nome e endereço. Depois de criar, segue para os próximos passos: conectar uma conta do Gitea, conferir o agent e criar o primeiro stack. Quem não é administrador da instalação não cria organizações e cai na tela "sem acesso" (R7.17).
 - **R7.8** **Papéis nesta spec: só administrador.** Todo usuário com acesso a uma organização é **administrador** dela e pode fazer tudo nela: pastas, stacks, variáveis e segredos em qualquer nível, runs, aprovação, conexão Git e agents. O token admin da instalação também é administrador de todas as organizações. **Não há** distinção entre quem pode rodar e quem pode aprovar nesta versão.
 - **R7.10** **Mapa de papéis (próxima spec, fora desta):** os perfis definidos no **provedor de identidade** (IdP) vão decidir:
   - quem pode entrar;
@@ -255,7 +256,7 @@ Vem da primeira instalação real: lá o CI já faz login pelo Gitea e só aceit
   - **Fora da lista:** o login é recusado, e a tela explica que é preciso ser membro de um dos grupos, sem listar quais. Nenhum usuário é criado.
   - **Lista configurada, mas o token não traz o claim:** o login é recusado como "fora da lista" (falha fechada). O Gitea omite o claim de quem não pertence a nenhuma organização, então esse é o caso comum. O servidor registra no log que o claim não veio e lembra do scope `groups`, para o caso de ninguém conseguir entrar.
   - **Quando é verificada:** a cada login. Quem sai do grupo no Gitea perde a entrada no próximo login, e a sessão aberta vale até expirar (12 h, R7.3). Revogar na hora é por "remover membro" (R7.6).
-  - A lista decide só **quem entra**. Ela não dá acesso a nenhuma organização do Firstlume: isso continua sendo convite (R7.6) ou criar a própria (R7.7).
+  - A lista decide só **quem entra**. Ela não dá acesso a nenhuma organização do Firstlume: isso é convite (R7.18) ou ser administrador da instalação (R7.15).
 - **R7.12** **Provedor OIDC na instalação:** valores do Helm e variáveis de ambiente.
 
   | Valor do Helm (em `controlPlane.`) | Variável | Exemplo / padrão |
@@ -269,6 +270,7 @@ Vem da primeira instalação real: lá o CI já faz login pelo Gitea e só aceit
   | `auth.oidc.scopes` | `FIRSTLUME_OIDC_SCOPES` | `openid profile email groups` |
   | `auth.oidc.groupsClaim` | `FIRSTLUME_OIDC_GROUPS_CLAIM` | `groups` |
   | `auth.oidc.allowedGroups` | `FIRSTLUME_OIDC_ALLOWED_GROUPS` | lista separada por vírgula; vazia = todos |
+  | `auth.oidc.adminGroups` | `FIRSTLUME_OIDC_ADMIN_GROUPS` | lista separada por vírgula; vazia = ninguém vira administrador da instalação pelo login (R7.15) |
   | `auth.adminTokenLogin` | `FIRSTLUME_ADMIN_TOKEN_LOGIN` | `true` (R7.5) |
 
   - O endereço de retorno é sempre `<publicURL>/auth/callback`. É o que se cadastra no app OAuth do provedor, e o servidor recusa subir com OIDC ligado e sem `publicURL` (nem host de ingress).
@@ -280,6 +282,41 @@ Vem da primeira instalação real: lá o CI já faz login pelo Gitea e só aceit
   - mostra "Usar token admin" quando `adminTokenLogin` está ligado;
   - sem nenhum dos dois, explica que o login não está configurado e como configurar;
   - um erro do provedor (login recusado pela R7.11, `state` inválido, provedor fora) volta para a tela de login com uma mensagem clara, nunca uma página em branco ou um JSON.
+
+#### Emenda de 2026-11-01: quem vê o quê
+
+Quem faz login e não é administrador não vê nenhuma organização, só as que recebeu por convite. A entrega é o Marco 3b, e o login só deve ser ligado numa instalação real depois dele.
+
+- **R7.15** **Administrador da instalação:** é quem pertence a um grupo de `auth.oidc.adminGroups`, com o mesmo formato da R7.11 (`acme` ou `acme:infra`).
+  - **O que pode:** vê todas as organizações, é administrador de todas, cria organizações e convida pessoas, igual ao token admin (R7.5), mas com o próprio login registrado como autor.
+  - **Não vira membro:** o acesso vem do grupo, e não de uma linha em `organization_members`. Por isso não aparece na lista de membros de cada organização.
+  - **Quando é verificado:** a cada login, porque os grupos são relidos nesse momento (R7.2). Quem sai do grupo no Gitea perde o papel no próximo login, e a sessão aberta vale até expirar (12 h, R7.3).
+  - **Relação com a lista de entrada:** quem está num grupo de `adminGroups` entra mesmo que `allowedGroups` não cite esse grupo, para a configuração não trancar o administrador do lado de fora.
+  - **Lista vazia:** ninguém vira administrador pelo login. Criar organizações e fazer o primeiro convite ficam só com o token admin.
+- **R7.16** **Quem vê o quê:**
+
+  | Quem | Organizações que vê | Cria organização |
+  |---|---|---|
+  | Token admin | todas | sim |
+  | Administrador da instalação | todas | sim |
+  | Outro usuário logado | só aquelas em que é membro | não (403) |
+
+  - Uma organização em que a pessoa não é membro responde **404** em todas as rotas, inclusive stacks, runs e state, para não revelar que ela existe.
+  - A verificação fica num ponto só, na resolução da organização, antes de qualquer rota aninhada.
+  - Dentro de uma organização, todo membro continua sendo administrador dela (R7.8). Papéis mais finos continuam na spec de papéis (R7.10).
+- **R7.17** **Tela "sem acesso":** quem faz login, não é administrador da instalação e não é membro de nenhuma organização vê uma tela que:
+  - diz que a conta não tem acesso a nenhuma organização ainda e que é preciso pedir um convite a um administrador;
+  - mostra o login da pessoa em destaque e com botão de copiar, porque é esse o dado usado no convite;
+  - não tem botão de criar organização nem cita nomes de organizações ou de administradores;
+  - tem "Verificar de novo" e "Sair".
+
+  Quem é removido da sua última organização cai nessa tela na próxima requisição.
+- **R7.18** **Convite:** quem convida é um membro da organização ou um administrador da instalação, informando o **login do Gitea**.
+  - **Quem já entrou alguma vez:** vira membro na hora, sem precisar de novo login.
+  - **Quem nunca entrou:** o convite fica pendente e vira membro no primeiro login com esse usuário. O login é comparado sem diferenciar maiúsculas.
+  - **Pendentes:** aparecem na lista de membros, podem ser cancelados e expiram em 30 dias. O Firstlume não confere se o login existe no Gitea: um erro de digitação aparece como um convite que nunca é aceito.
+  - **Remover:** vale na hora, como na R7.6, e não cancela as runs que a pessoa já iniciou. Um membro pode remover a si mesmo, com confirmação na tela.
+  - **Organização sem membros:** é permitida. Ela continua acessível para administradores da instalação e para o token admin, como as organizações criadas antes desta emenda.
 
 ### 4.8 Agents
 
@@ -373,10 +410,16 @@ As rotas ficam aninhadas na organização, pelo slug. Autenticação: sessão (c
 GET    /auth/login                 → redireciona ao Gitea
 GET    /auth/callback              → volta do Gitea, cria a sessão
 POST   /auth/logout
-GET    /api/v1/me                  → usuário, organizações e papéis
+GET    /api/v1/me                  → usuário, organizações e installation_admin
 
-GET    /api/v1/orgs                POST /api/v1/orgs
+GET    /api/v1/orgs                → só as que a pessoa pode ver (R7.16)
+POST   /api/v1/orgs                → só administrador da instalação ou token admin
 GET    /api/v1/orgs/{org}          PATCH, DELETE (vazia)
+
+GET    /api/v1/orgs/{org}/members                    → membros e convites pendentes
+POST   /api/v1/orgs/{org}/members                    {login} → membro na hora ou convite pendente (R7.18)
+DELETE /api/v1/orgs/{org}/members/{user_id}          → remove o membro
+DELETE /api/v1/orgs/{org}/invites/{id}               → cancela o convite pendente
 
 GET    /api/v1/orgs/{org}/tree                       → pastas e stacks (para navegação)
 POST   /api/v1/orgs/{org}/folders                    {name, parent_id|null}
@@ -412,7 +455,9 @@ Somem as rotas `/api/v1/templates` e `/api/v1/environments`. As APIs do agent (`
 ## 6. UI
 
 - **Login:** botão "Entrar com Gitea", e "Usar token admin" se estiver habilitado.
-- **Seletor de organização** no topo do menu, com a opção "Criar organização".
+- **Sem acesso:** tela para quem não tem nenhuma organização e não é administrador da instalação (R7.17).
+- **Seletor de organização** no topo do menu, com a opção "Criar organização" só para administradores da instalação e para o token admin.
+- **Membros:** nas configurações da organização, lista de membros e convites pendentes, com convidar, cancelar e remover (R7.18).
 - **Navegação:**
   - árvore de pastas e stacks no menu lateral, expansível;
   - página de **pasta** com breadcrumb (`Acme / Ambientes / prod`), mostrando subpastas e stacks, cada stack com status do último run e do drift;
@@ -507,15 +552,15 @@ Neste marco a autenticação ainda é só o token admin. Os stacks usam uma cone
 **Emenda de 2026-10-31:** o marco é entregue em duas partes, para que a primeira instalação possa trocar o token admin por login de pessoas o quanto antes.
 
 - **Marco 3a, login:** CA3.1, CA3.2, CA3.3, CA3.4, CA3.6, CA3.8, CA3.9, CA3.11, CA3.12 e CA3.13, mais a tela de primeiro acesso (primeiro item da CA3.5). Até o 3b, todo usuário logado vê todas as organizações, como o token admin, e a tela avisa isso.
-- **Marco 3b, membros:** o resto da CA3.5 (convite, usuário de fora, remover membro), a CA3.7 e a CA3.10.
+- **Marco 3b, membros:** o resto da CA3.5 (convite, usuário de fora, remover membro), a CA3.7, a CA3.10 e as CA3.14 a CA3.18 (emenda de 2026-11-01).
 
 - [ ] **CA3.1** "Entrar com Gitea" leva ao Gitea e volta ao Firstlume logado, mostrando nome e avatar.
 - [ ] **CA3.2** Um `state` inválido ou reutilizado no callback é recusado. O fluxo usa PKCE.
 - [ ] **CA3.3** O cookie de sessão é `HttpOnly` e `SameSite=Lax`, e é `Secure` atrás de HTTPS. "Sair" invalida a sessão no servidor: reutilizar o cookie antigo dá 401.
 - [ ] **CA3.4** Uma requisição que altera dados com cookie de sessão e `Origin` de outro site é recusada (403).
 - [ ] **CA3.5** Acesso:
-  - um usuário sem organização, no primeiro login, cai na tela de criar a primeira organização e vira administrador dela;
-  - um usuário convidado pelo login do Gitea vê a organização no próximo login;
+  - um administrador da instalação sem organização, no primeiro login, cai na tela de criar a primeira organização e vira membro dela (emenda de 2026-11-01);
+  - um usuário convidado pelo login do Gitea vê a organização na hora, se já entrou alguma vez, ou no primeiro login (R7.18);
   - um usuário de fora não vê a organização e recebe 404 nas rotas dela;
   - um membro removido perde o acesso na hora (403/404, mesmo com sessão aberta).
 - [ ] **CA3.6** O login usa só configuração OIDC: emissor, client ID e client secret. Um teste com um provedor OIDC falso, diferente do Gitea, faz login sem mudança de código (R7.2a).
@@ -530,6 +575,24 @@ Neste marco a autenticação ainda é só o token admin. Os stacks usam uma cone
   - com a lista vazia, qualquer usuário autenticado entra.
 - [ ] **CA3.12** Com o emissor fora do ar na subida, o servidor sobe, o `/readyz` responde 200, o token admin funciona e o botão do provedor fica desligado. Quando o emissor volta, o botão aparece sem reiniciar (R7.12).
 - [ ] **CA3.13** O servidor não sobe com OIDC ligado e sem `publicURL` (nem host de ingress), com uma mensagem que diz qual valor falta. O client secret não aparece em log nem em `helm template` (só a referência ao Secret).
+- [ ] **CA3.14** Administrador da instalação (R7.15), com o provedor OIDC falso:
+  - com `adminGroups: [acme:infra]`, quem está nesse time vê todas as organizações e cria organizações, e quem não está não;
+  - quem sai do grupo mantém o papel até o fim da sessão e perde no próximo login;
+  - com `adminGroups` preenchido e `allowedGroups` sem esse grupo, o administrador entra;
+  - com `adminGroups` vazio, nenhum usuário logado cria organização, e o token admin cria.
+- [ ] **CA3.15** Quem vê o quê (R7.16), com duas organizações e um usuário comum membro de só uma:
+  - `GET /orgs` e `/me` trazem só a organização dele;
+  - todas as rotas da outra organização respondem 404, com uma amostra por grupo de rota (árvore, stack, run, logs, state, configurações, Git, Vault, agents);
+  - `POST /orgs` responde 403;
+  - o token admin continua vendo e alterando as duas.
+- [ ] **CA3.16** Convite (R7.18):
+  - convidar alguém que já entrou dá acesso sem novo login;
+  - convidar quem nunca entrou deixa o convite pendente, e o primeiro login com esse usuário, mesmo com maiúsculas diferentes, vira membro;
+  - um convite cancelado ou com mais de 30 dias não dá acesso;
+  - convidar quem já é membro não cria duplicata e responde com uma mensagem clara;
+  - um usuário de fora não consegue convidar (404).
+- [ ] **CA3.17** Remover: o membro removido recebe 404 na próxima requisição, mesmo com a sessão aberta, e quem fica sem nenhuma organização vê a tela "sem acesso" (R7.17).
+- [ ] **CA3.18** Tela "sem acesso" (R7.17): mostra o login da pessoa, não tem botão de criar organização nem cita outras organizações, e "Verificar de novo" leva para a organização quando o convite já chegou. O aviso "todos veem todas as organizações" da D8 sai da interface. O Helm passa `adminGroups`, e `helm lint` e `helm template` passam com e sem ele.
 
 ### Critérios gerais, para todos os marcos
 
@@ -544,13 +607,14 @@ Neste marco a autenticação ainda é só o token admin. Os stacks usam uma cone
 | # | Pergunta | Proposta |
 |---|---|---|
 | D1 | Quem tem acesso a uma organização? | **Decidido:** organizações são criadas do zero; quem cria é admin; os outros entram por convite pelo usuário do Gitea (R7.6). Todos são administradores nesta versão (R7.8). |
-| D2 | Quem pode criar organizações? | **Decidido:** qualquer usuário logado (R7.7). |
+| D2 | Quem pode criar organizações? | **Alterado em 2026-11-01:** só administradores da instalação e o token admin (R7.15, R7.16). Antes era qualquer usuário logado. |
 | D5 | Login pelo Gitea ou direto no IdP? | Gitea agora, como pedido. Na spec de papéis, avaliar o IdP direto, porque é lá que os perfis estão (R7.10). |
 | D3 | Nome do item | **Stack**. O nome de cada um, e de cada pasta, é livre. |
 | D4 | Uma pasta pode **remover** uma variável herdada? | Não nesta spec, só sobrescrever (R6.8). |
 | D6 | Quem pode entrar quando há uma lista de grupos? | **Decidido (emenda):** só quem pertence a um grupo da lista, verificado a cada login (R7.11), como o CI da primeira instalação faz. |
-| D7 | Alguém vira administrador da instalação pelo login, como o "admin" do CI? | **Decidido (emenda):** não nesta spec. O token admin já cobre emergência e automação, e todos são administradores das próprias organizações (R7.8). Fica para a spec de papéis. |
-| D8 | Até o Marco 3b, o que um usuário logado vê? | **Decidido (emenda):** todas as organizações, como o token admin, com um aviso na tela. Com a R7.11 limitando quem entra, o risco fica no mesmo grupo de pessoas que hoje recebe o token admin. |
+| D7 | Alguém vira administrador da instalação pelo login, como o "admin" do CI? | **Alterado em 2026-11-01:** sim, por um grupo do Gitea em `adminGroups` (R7.15). Sem isso, toda criação de organização dependeria do token e não registraria quem fez. |
+| D8 | Até o Marco 3b, o que um usuário logado vê? | **Decidido (emenda):** todas as organizações, como o token admin, com um aviso na tela. Com a R7.11 limitando quem entra, o risco fica no mesmo grupo de pessoas que hoje recebe o token admin. **Em 2026-11-01:** vale só até o 3b e é motivo para não ligar o login numa instalação real antes dele. |
+| D9 | Quem não é administrador vê alguma organização sem convite, ou pode criar a sua? | **Decidido (2026-11-01):** não vê nenhuma e não cria. Só o convite dá acesso (R7.16, R7.17). |
 
 ## 11. Próximas specs (ordem sugerida)
 

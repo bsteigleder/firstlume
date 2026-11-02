@@ -85,6 +85,7 @@ fi
 save FIRSTLUME_PUBLIC_URL "$PUBLIC_URL"
 save FIRSTLUME_OIDC_ISSUER "$GITEA"
 save FIRSTLUME_OIDC_ALLOWED_GROUPS "${FIRSTLUME_OIDC_ALLOWED_GROUPS:-$ORG}"
+save FIRSTLUME_OIDC_ADMIN_GROUPS "${FIRSTLUME_OIDC_ADMIN_GROUPS:-$ORG:infra}"
 
 # Content of acme/infra. Rewritten on every run and committed only when it
 # changed, so existing setups pick up new examples.
@@ -270,3 +271,4 @@ echo "Gitea ready at $GITEA: organization $ORG, bot $BOT (token in .env as FIRST
 echo "Sign in to Gitea as $ADMIN with the password in .env (FIRSTLUME_DEV_GITEA_ADMIN_PASSWORD)."
 echo "Sign-in with Gitea is on for the dev server: only members of ${FIRSTLUME_OIDC_ALLOWED_GROUPS:-$ORG} get in;"
 echo "\"outsider\" (password FIRSTLUME_DEV_GITEA_OUTSIDER_PASSWORD) shows the refusal."
+echo "Members of ${FIRSTLUME_OIDC_ADMIN_GROUPS:-$ORG:infra} see every organization; everyone else needs an invitation."

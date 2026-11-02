@@ -389,7 +389,7 @@ deploy/docker/        Dockerfile
 
 ## Limitações conhecidas
 
-- **Login pelo Gitea (OIDC) ou token admin, todos administradores.** Por enquanto quem entra vê todas as organizações. Membros, convites, papéis e aprovadores por pessoa ou grupo entram depois.
+- **Login pelo Gitea (OIDC) ou token admin, com um papel só por organização.** Quem está num grupo de `auth.oidc.adminGroups` vê todas as organizações; os outros só veem aquelas para as quais foram convidados, e todo membro é administrador da organização. Papéis mais finos e aprovadores por pessoa ou grupo entram depois.
 - **Cancelar um run em execução não é suportado**, de propósito: interromper um apply pode corromper o state.
 - **As ferramentas são baixadas a cada run** (releases oficiais, com checksum SHA256 verificado). O executor precisa de acesso de saída à internet, ou de um mirror (ainda não configurável).
 - **Licença do Terraform:** as versões 1.6 em diante são BSL. Para oferecer a plataforma comercialmente, use `engine: opentofu` ou Terraform ≤ 1.5.7.

@@ -15,10 +15,11 @@ func TestAuthConfig(t *testing.T) {
 		"FIRSTLUME_OIDC_CLIENT_ID":      "firstlume",
 		"FIRSTLUME_OIDC_CLIENT_SECRET":  secret,
 		"FIRSTLUME_OIDC_ALLOWED_GROUPS": "acme, acme:infra",
+		"FIRSTLUME_OIDC_ADMIN_GROUPS":   "acme:admins",
 	}
 	set := func(t *testing.T, env map[string]string, drop string) {
 		for _, k := range []string{"FIRSTLUME_PUBLIC_URL", "FIRSTLUME_OIDC_ISSUER", "FIRSTLUME_OIDC_CLIENT_ID",
-			"FIRSTLUME_OIDC_CLIENT_SECRET", "FIRSTLUME_OIDC_ALLOWED_GROUPS", "FIRSTLUME_OIDC_SCOPES", "FIRSTLUME_ADMIN_TOKEN_LOGIN"} {
+			"FIRSTLUME_OIDC_CLIENT_SECRET", "FIRSTLUME_OIDC_ALLOWED_GROUPS", "FIRSTLUME_OIDC_ADMIN_GROUPS", "FIRSTLUME_OIDC_SCOPES", "FIRSTLUME_ADMIN_TOKEN_LOGIN"} {
 			t.Setenv(k, "")
 		}
 		for k, v := range env {
@@ -38,7 +39,7 @@ func TestAuthConfig(t *testing.T) {
 			t.Fatalf("cfg = %+v", cfg)
 		}
 		o := cfg.OIDC
-		if strings.Join(o.AllowedGroups, "|") != "acme|acme:infra" || strings.Join(o.Scopes, " ") != "openid profile email groups" ||
+		if strings.Join(o.AllowedGroups, "|") != "acme|acme:infra" || strings.Join(o.AdminGroups, "|") != "acme:admins" || strings.Join(o.Scopes, " ") != "openid profile email groups" ||
 			o.GroupsClaim != "groups" || o.ProviderName != "Gitea" {
 			t.Fatalf("oidc = %+v", o)
 		}

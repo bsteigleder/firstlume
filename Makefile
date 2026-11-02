@@ -103,7 +103,8 @@ helm-lint:
 	  --set controlPlane.state.s3.existingSecret=state-s3 > /dev/null
 	helm template test $(CHART) --set controlPlane.database.url=postgres://x --set controlPlane.publicURL=https://fl.example.com \
 	  --set controlPlane.auth.oidc.enabled=true --set controlPlane.auth.oidc.issuer=https://gitea.example.com \
-	  --set controlPlane.auth.oidc.clientId=firstlume --set controlPlane.auth.oidc.existingSecret=firstlume-oidc > /dev/null
+	  --set controlPlane.auth.oidc.clientId=firstlume --set controlPlane.auth.oidc.existingSecret=firstlume-oidc \
+	  --set 'controlPlane.auth.oidc.adminGroups={acme:infra}' | grep -q 'value: "acme:infra"'
 	@# Runs in their own namespace: the agent's Role and RoleBinding, the executor
 	@# ServiceAccount and the ClusterRoleBinding subject all move there.
 	test "$$(helm template test $(CHART) -n fl --set controlPlane.database.url=postgres://x \

@@ -4,6 +4,7 @@ import { api, authConfig, loginURL, setToken, setUnauthorizedHandler, type AuthC
 import { Logo } from "./icons";
 import { lastOrg, OrgShell } from "./org";
 import { FolderPage } from "./pages/FolderPage";
+import { NoAccessPage } from "./pages/NoAccess";
 import { RunPage } from "./pages/RunPage";
 import { CreateOrgPage, FolderSettingsPage, OrgSettingsPage } from "./pages/SettingsPages";
 import { StackPage } from "./pages/StackPage";
@@ -65,17 +66,19 @@ export function App() {
 }
 
 /**
- * Opens the last organization used, or the first one. A user who belongs to
- * none lands on the welcome screen to create one (R7.7); until members come
- * (Marco 3b) they can still open the existing ones from there (D8).
+ * Opens the last organization used, or the first one the caller can see. With
+ * none, an installation administrator lands on the welcome screen to create one
+ * (R7.7) and anyone else on the screen that asks for an invitation (R7.17).
  */
 function OrgIndex() {
-  const { me } = useSession();
-  const orgs = useData(api.listOrgs, []);
+  const { me, reload } = useSession();
+  const orgs = useData(api.listOrgs, [], { poll: true, pollMs: 15000 });
   if (orgs.error) return <ErrorBanner error={orgs.error} />;
   if (!orgs.data) return null;
-  const firstAccess = me.kind === "user" && me.organizations.length === 0;
-  if (orgs.data.length === 0 || firstAccess) return <CreateOrgPage welcome existing={orgs.data} />;
+  if (orgs.data.length === 0) {
+    if (me.installation_admin) return <CreateOrgPage welcome />;
+    return <NoAccessPage onCheck={() => Promise.all([orgs.reload(), reload()]).then(() => undefined)} />;
+  }
   const remembered = lastOrg();
   const target = orgs.data.find((o) => o.slug === remembered) ?? orgs.data[0];
   return <Navigate to={`/o/${target.slug}`} replace />;

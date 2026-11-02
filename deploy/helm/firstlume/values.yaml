@@ -81,8 +81,14 @@ controlPlane:
       # Claim with the user's groups. Gitea sends orgs ("acme") and teams
       # ("acme:infra") with the groups scope.
       groupsClaim: groups
-      # When not empty, only members of one of these groups can sign in.
+      # When not empty, only members of one of these groups (or of an admin
+      # group) can sign in. Signing in gives access to no organization: that
+      # takes an invitation.
       allowedGroups: []
+      # Members of these groups are installation administrators: they see every
+      # organization, create organizations and invite people. Empty leaves that
+      # to the admin token.
+      adminGroups: []
 
   service:
     type: ClusterIP

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -119,10 +120,13 @@ func (s *Store) ConsumeLoginAttempt(ctx context.Context, state string) (*LoginAt
 	return &a, nil
 }
 
-// PurgeAuth deletes logins never finished and sessions that ended more than a
-// day ago.
+// PurgeAuth deletes logins never finished, expired invitations and sessions
+// that ended more than a day ago.
 func (s *Store) PurgeAuth(ctx context.Context) error {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM login_attempts WHERE expires_at <= now()`); err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, `DELETE FROM organization_invites WHERE expires_at <= now()`); err != nil {
 		return err
 	}
 	_, err := s.pool.Exec(ctx, `
@@ -169,4 +173,145 @@ func (s *Store) UserOrganizations(ctx context.Context, userID string) ([]api.Org
 		out = append(out, *o)
 	}
 	return out, rows.Err()
+}
+
+// IsMember reports whether the user belongs to the organization (R7.16).
+func (s *Store) IsMember(ctx context.Context, orgID, userID string) (bool, error) {
+	var member bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM organization_members WHERE organization_id = $1 AND user_id = $2)`,
+		orgID, userID).Scan(&member)
+	return member, err
+}
+
+// AcceptInvites turns the live invitations for login into memberships. Each
+// one works once, and expired ones give nothing (R7.18).
+func (s *Store) AcceptInvites(ctx context.Context, userID, login string) error {
+	_, err := s.pool.Exec(ctx, `
+		WITH taken AS (
+			DELETE FROM organization_invites WHERE lower(login) = lower($2) AND expires_at > now()
+			RETURNING organization_id
+		)
+		INSERT INTO organization_members (organization_id, user_id)
+		SELECT organization_id, $1 FROM taken
+		ON CONFLICT DO NOTHING`, userID, login)
+	return err
+}
+
+// ListMembers returns the organization's members and live invitations.
+func (s *Store) ListMembers(ctx context.Context, orgID string) (*api.MemberList, error) {
+	out := &api.MemberList{Members: []api.Member{}, Invites: []api.Invite{}}
+	rows, err := s.pool.Query(ctx, `
+		SELECT u.id, u.login, u.name, u.avatar_url, m.created_at
+		FROM organization_members m JOIN users u ON u.id = m.user_id
+		WHERE m.organization_id = $1 ORDER BY m.created_at, lower(u.login)`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m api.Member
+		if err := rows.Scan(&m.UserID, &m.Login, &m.Name, &m.AvatarURL, &m.Since); err != nil {
+			return nil, err
+		}
+		out.Members = append(out.Members, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows, err = s.pool.Query(ctx, `
+		SELECT `+inviteColumns+` FROM organization_invites
+		WHERE organization_id = $1 AND expires_at > now() ORDER BY created_at, lower(login)`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		i, err := scanInvite(rows)
+		if err != nil {
+			return nil, err
+		}
+		out.Invites = append(out.Invites, *i)
+	}
+	return out, rows.Err()
+}
+
+const inviteColumns = `id, login, invited_by, created_at, expires_at`
+
+func scanInvite(row pgx.Row) (*api.Invite, error) {
+	var i api.Invite
+	if err := row.Scan(&i.ID, &i.Login, &i.InvitedBy, &i.CreatedAt, &i.ExpiresAt); err != nil {
+		return nil, notFound(err)
+	}
+	return &i, nil
+}
+
+// Invite gives login access to the organization: a known user becomes a member
+// at once, anyone else gets a pending invitation, renewed if there is one
+// already. ErrDuplicate means they are a member already (R7.18).
+func (s *Store) Invite(ctx context.Context, orgID, login, invitedBy string, ttl time.Duration) (*api.InviteResult, error) {
+	out := &api.InviteResult{}
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var m api.Member
+		// Providers can reuse a login across issuers: the latest sign-in wins.
+		err := tx.QueryRow(ctx, `
+			SELECT id, login, name, avatar_url FROM users WHERE lower(login) = lower($1)
+			ORDER BY last_login_at DESC LIMIT 1`, login).Scan(&m.UserID, &m.Login, &m.Name, &m.AvatarURL)
+		if errors.Is(err, pgx.ErrNoRows) {
+			out.Invite, err = scanInvite(tx.QueryRow(ctx, `
+				INSERT INTO organization_invites (organization_id, login, invited_by, expires_at)
+				VALUES ($1, $2, $3, now() + $4::interval)
+				ON CONFLICT (organization_id, lower(login)) DO UPDATE SET
+					login = EXCLUDED.login, invited_by = EXCLUDED.invited_by, created_at = now(), expires_at = EXCLUDED.expires_at
+				RETURNING `+inviteColumns, orgID, login, invitedBy, ttl.String()))
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO organization_members (organization_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, orgID, m.UserID)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrDuplicate
+		}
+		if err := tx.QueryRow(ctx, `
+			SELECT created_at FROM organization_members WHERE organization_id = $1 AND user_id = $2`,
+			orgID, m.UserID).Scan(&m.Since); err != nil {
+			return err
+		}
+		out.Member = &m
+		return nil
+	})
+	if err != nil {
+		return nil, classify(err)
+	}
+	return out, nil
+}
+
+// RemoveMember takes the user out of the organization. Access ends at their
+// next request, even with a session open (R7.6).
+func (s *Store) RemoveMember(ctx context.Context, orgID, userID string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM organization_members WHERE organization_id = $1 AND user_id = $2`, orgID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CancelInvite deletes a pending invitation.
+func (s *Store) CancelInvite(ctx context.Context, orgID, inviteID string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM organization_invites WHERE organization_id = $1 AND id = $2`, orgID, inviteID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
