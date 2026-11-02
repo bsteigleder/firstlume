@@ -1,10 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router";
-import { api as rootAPI, settingsPath, type CreateAgentResponse, type GitConnection, type Organization, type VaultConnection } from "../api";
+import { Navigate, useNavigate, useParams } from "react-router";
+import { api as rootAPI, settingsPath, type CreateAgentResponse, type GitConnection, type VaultConnection } from "../api";
 import { Logo } from "../icons";
 import { PageTitle, rememberOrg, useCrumbs, useOrg } from "../org";
 import { useSession } from "../session";
 import { Empty, ErrorBanner, slugify, timeAgo, useAction, useData } from "../ui";
+import { Members } from "./Members";
 import { SettingsEditor } from "./SettingsEditor";
 import { declaredVaultPaths, VaultAccessCheck } from "./VaultParts";
 
@@ -47,13 +48,7 @@ export function OrgSettingsPage() {
         <GitConnectionSection />
         <VaultSection />
         <Agents />
-        <section id="members" className="card">
-          <h2 className="section-title">Members</h2>
-          <p className="muted">
-            Sign-in with Gitea and invitations by Gitea username come with the login milestone. For now Firstlume is used with the admin token, which can
-            do everything.
-          </p>
-        </section>
+        <Members />
       </div>
     </div>
   );
@@ -462,11 +457,10 @@ function Agents() {
 
 /** Creates an organization; with `welcome`, it is the first screen of a user without any. */
 /**
- * Creates an organization. As the welcome screen (first access, R7.7) it
- * greets a signed-in user and, until members arrive (D8), lists the
- * organizations that already exist.
+ * Creates an organization, for installation administrators only (R7.16). As the
+ * welcome screen (first access, R7.7) it greets a signed-in user.
  */
-export function CreateOrgPage({ welcome, existing = [] }: { welcome?: boolean; existing?: Organization[] }) {
+export function CreateOrgPage({ welcome }: { welcome?: boolean }) {
   const navigate = useNavigate();
   const { me, reload } = useSession();
   const user = me.user;
@@ -476,6 +470,8 @@ export function CreateOrgPage({ welcome, existing = [] }: { welcome?: boolean; e
   const [slugTouched, setSlugTouched] = useState(false);
   const { busy, error, run } = useAction();
   const address = slugTouched ? slug : slugify(name);
+
+  if (!me.installation_admin) return <Navigate to="/" replace />;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -529,23 +525,6 @@ export function CreateOrgPage({ welcome, existing = [] }: { welcome?: boolean; e
           </div>
         </form>
         {welcome && <p className="hint">Next you’ll create your first stack from a repository with a .firstlume folder.</p>}
-        {welcome && existing.length > 0 && (
-          <section className="card welcome-existing" aria-labelledby="existing-orgs">
-            <h2 id="existing-orgs">Or open an existing organization</h2>
-            <p className="muted small">Everyone who signs in sees every organization for now. Members and invitations come next.</p>
-            <ul>
-              {existing.map((o) => (
-                <li key={o.slug}>
-                  <Link to={`/o/${o.slug}`} onClick={() => rememberOrg(o.slug)}>
-                    {o.name}
-                  </Link>{" "}
-                  <span className="mono muted small">{o.slug}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
       </main>
     </div>
   );

@@ -51,8 +51,11 @@ type OIDCConfig struct {
 	Scopes       []string
 	// GroupsClaim names the claim holding the user's groups (R7.11).
 	GroupsClaim string
-	// AllowedGroups, when not empty, lets in only members of one of them.
+	// AllowedGroups, when not empty, lets in only members of one of them, or
+	// of an admin group.
 	AllowedGroups []string
+	// AdminGroups make their members installation administrators (R7.15).
+	AdminGroups []string
 }
 
 const (
@@ -78,6 +81,18 @@ type principalKey struct{}
 func principalFrom(ctx context.Context) principal {
 	p, _ := ctx.Value(principalKey{}).(principal)
 	return p
+}
+
+// installationAdmin says whether the caller sees every organization and can
+// create them: the admin token, or a user in an admin group. Groups are read at
+// sign-in, so leaving one takes effect on the next login (R7.15).
+func (s *Server) installationAdmin(p principal) bool {
+	if p.user == nil {
+		return true
+	}
+	return s.oidc != nil && slices.ContainsFunc(p.user.Groups, func(g string) bool {
+		return slices.Contains(s.oidc.cfg.AdminGroups, g)
+	})
 }
 
 // oidcClient reads the provider's discovery document lazily, so a provider
@@ -281,7 +296,10 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 	if login == "" {
 		login = idt.Subject
 	}
-	if allowed := s.oidc.cfg.AllowedGroups; len(allowed) > 0 {
+	if len(s.oidc.cfg.AllowedGroups) > 0 {
+		// An admin group always gets in, so a list that forgets it can't lock
+		// the administrators out (R7.15).
+		allowed := slices.Concat(s.oidc.cfg.AllowedGroups, s.oidc.cfg.AdminGroups)
 		if !hasGroups {
 			// Gitea leaves the claim out for someone in no organization, so
 			// this is usually just "not a member". If nobody gets in, the
@@ -305,6 +323,10 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 		Groups: groups,
 	})
 	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.store.AcceptInvites(ctx, u.ID, u.Login); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
@@ -338,8 +360,7 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireUser lets in the admin token (Authorization: Bearer) or a session
-// cookie. Until Marco 3b a signed-in user can do what the admin token does
-// (D8).
+// cookie. What a user can then see is decided by requireOrg (R7.16).
 func (s *Server) requireUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tok := bearer(r); tok != "" {
@@ -381,7 +402,7 @@ func (s *Server) requireUser(next http.Handler) http.Handler {
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	p := principalFrom(r.Context())
 	if p.user == nil {
-		writeJSON(w, http.StatusOK, api.Me{Kind: adminIdentity, Organizations: []api.Organization{}})
+		writeJSON(w, http.StatusOK, api.Me{Kind: adminIdentity, InstallationAdmin: true, Organizations: []api.Organization{}})
 		return
 	}
 	orgs, err := s.store.UserOrganizations(r.Context(), p.user.ID)
@@ -389,7 +410,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, api.Me{Kind: "user", User: p.user, Organizations: orgs})
+	writeJSON(w, http.StatusOK, api.Me{Kind: "user", User: p.user, InstallationAdmin: s.installationAdmin(p), Organizations: orgs})
 }
 
 func (s *Server) purgeAuth(ctx context.Context) {

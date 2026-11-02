@@ -174,10 +174,12 @@ func (s *Store) ScheduleDriftRuns(ctx context.Context) (int64, error) {
 	return queued, nil
 }
 
-// ListActiveRuns returns an organization's active runs: those awaiting
-// approval first, then the most recent. With failedWithin > 0 it also returns
-// the runs that failed within that window, after the active ones.
-func (s *Store) ListActiveRuns(ctx context.Context, orgID string, failedWithin time.Duration) ([]api.ActiveRun, error) {
+// ListActiveRuns returns an organization's active runs: those of the person
+// asking first (started by login, or a commit by email; R10.5), then within
+// each group those awaiting approval and the most recent. With failedWithin > 0
+// it also returns the runs that failed within that window, after the active
+// ones. Empty login and email put no run first.
+func (s *Store) ListActiveRuns(ctx context.Context, orgID string, failedWithin time.Duration, login, email string) ([]api.ActiveRun, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+runColumns+`, st.name,
 		       coalesce((SELECT array_agg(f.name ORDER BY array_position(pf.path, f.id)) FROM folders f
@@ -188,8 +190,10 @@ func (s *Store) ListActiveRuns(ctx context.Context, orgID string, failedWithin t
 		WHERE r.organization_id = $1
 		  AND (r.status IN `+activeStatuses+`
 		       OR ($2 > 0 AND r.status = 'failed' AND r.finished_at > now() - make_interval(secs => $2)))
-		ORDER BY r.status = 'awaiting_approval' DESC, r.status = 'failed', coalesce(r.finished_at, r.created_at) DESC`,
-		orgID, failedWithin.Seconds())
+		ORDER BY r.status = 'failed',
+		         (($3 <> '' AND r.created_by = $3) OR ($4 <> '' AND lower(coalesce(r.commit_author_email, '')) = lower($4))) DESC,
+		         r.status = 'awaiting_approval' DESC, coalesce(r.finished_at, r.created_at) DESC`,
+		orgID, failedWithin.Seconds(), login, email)
 	if err != nil {
 		return nil, err
 	}

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 
@@ -73,19 +75,37 @@ func (s *Server) userRoutes(r chi.Router) {
 
 		s.gitRoutes(r)
 
+		r.Get("/members", s.listMembers)
+		r.Post("/members", s.inviteMember)
+		r.With(s.requireID).Delete("/members/{id}", s.removeMember)
+		r.With(s.requireID).Delete("/invites/{id}", s.cancelInvite)
+
 		r.Get("/agents", s.listAgents)
 		r.Post("/agents", s.createAgent)
 		r.With(s.requireID).Delete("/agents/{id}", s.deleteAgent)
 	})
 }
 
-// requireOrg resolves the organization slug in the URL.
+// requireOrg resolves the organization slug in the URL and refuses anyone who
+// can't see it. They get the same 404 as for an address that doesn't exist, so
+// the answer doesn't reveal which organizations do (R7.16).
 func (s *Server) requireOrg(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		org, err := s.store.GetOrganizationBySlug(r.Context(), chi.URLParam(r, "org"))
 		if err != nil {
 			s.storeError(w, r, err, "organization")
 			return
+		}
+		if p := principalFrom(r.Context()); !s.installationAdmin(p) {
+			member, err := s.store.IsMember(r.Context(), org.ID, p.user.ID)
+			if err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			if !member {
+				s.storeError(w, r, store.ErrNotFound, "organization")
+				return
+			}
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxOrg, org)))
 	})
@@ -113,7 +133,13 @@ func id(r *http.Request) string { return chi.URLParam(r, "id") }
 // --- organizations ---
 
 func (s *Server) listOrganizations(w http.ResponseWriter, r *http.Request) {
-	out, err := s.store.ListOrganizations(r.Context())
+	var out []api.Organization
+	var err error
+	if p := principalFrom(r.Context()); s.installationAdmin(p) {
+		out, err = s.store.ListOrganizations(r.Context())
+	} else {
+		out, err = s.store.UserOrganizations(r.Context(), p.user.ID)
+	}
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -122,6 +148,10 @@ func (s *Server) listOrganizations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createOrganization(w http.ResponseWriter, r *http.Request) {
+	if !s.installationAdmin(principalFrom(r.Context())) {
+		writeError(w, http.StatusForbidden, "only installation administrators can create organizations")
+		return
+	}
 	var req api.CreateOrganizationRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -138,7 +168,7 @@ func (s *Server) createOrganization(w http.ResponseWriter, r *http.Request) {
 	req.Name = name
 	var o *api.Organization
 	if u := principalFrom(r.Context()).user; u != nil {
-		// The creator becomes its administrator (R7.7).
+		// The creator becomes a member (R7.7).
 		o, err = s.store.CreateOrganizationBy(r.Context(), req, u.ID)
 	} else {
 		o, err = s.store.CreateOrganization(r.Context(), req)
@@ -197,6 +227,58 @@ func (s *Server) tree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// --- members ---
+
+// inviteTTL is how long an invitation waits for a first sign-in (R7.18).
+const inviteTTL = 30 * 24 * time.Hour
+
+func (s *Server) listMembers(w http.ResponseWriter, r *http.Request) {
+	out, err := s.store.ListMembers(r.Context(), orgID(r))
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) inviteMember(w http.ResponseWriter, r *http.Request) {
+	var req api.InviteRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	login := strings.TrimPrefix(strings.TrimSpace(req.Login), "@")
+	if login == "" || len(login) > 255 || strings.ContainsFunc(login, unicode.IsSpace) {
+		writeError(w, http.StatusUnprocessableEntity, "login must be a username, without spaces")
+		return
+	}
+	out, err := s.store.Invite(r.Context(), orgID(r), login, actorName(r), inviteTTL)
+	if errors.Is(err, store.ErrDuplicate) {
+		writeError(w, http.StatusConflict, fmt.Sprintf("%s is already a member of this organization", login))
+		return
+	}
+	if err != nil {
+		s.storeError(w, r, err, "member")
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.RemoveMember(r.Context(), orgID(r), id(r)); err != nil {
+		s.storeError(w, r, err, "member")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) cancelInvite(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.CancelInvite(r.Context(), orgID(r), id(r)); err != nil {
+		s.storeError(w, r, err, "invitation")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- folders ---
@@ -399,7 +481,7 @@ func (s *Server) moveStack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteStack(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteStack(r.Context(), orgID(r), id(r), adminIdentity); err != nil {
+	if err := s.store.DeleteStack(r.Context(), orgID(r), id(r), actorName(r)); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			writeError(w, http.StatusConflict, "a stack with a run in progress cannot be deleted")
 			return
@@ -448,7 +530,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	run, err := s.store.CreateRun(r.Context(), orgID(r), id(r), req.Type, req.Ref, adminIdentity)
+	run, err := s.store.CreateRun(r.Context(), orgID(r), id(r), req.Type, req.Ref, actorName(r))
 	if err != nil {
 		s.storeError(w, r, err, "stack")
 		return
@@ -471,7 +553,11 @@ func (s *Server) listActiveRuns(w http.ResponseWriter, r *http.Request) {
 		}
 		failedWithin = d
 	}
-	out, err := s.store.ListActiveRuns(r.Context(), orgID(r), failedWithin)
+	var login, email string
+	if u := principalFrom(r.Context()).user; u != nil {
+		login, email = u.Login, u.Email
+	}
+	out, err := s.store.ListActiveRuns(r.Context(), orgID(r), failedWithin, login, email)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -497,7 +583,7 @@ func (s *Server) approveRun(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
 		return
 	}
-	run, err := s.store.ApproveRun(r.Context(), orgID(r), id(r), adminIdentity, req.Acknowledged)
+	run, err := s.store.ApproveRun(r.Context(), orgID(r), id(r), actorName(r), req.Acknowledged)
 	if err != nil {
 		s.storeError(w, r, err, "run")
 		return

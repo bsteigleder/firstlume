@@ -199,6 +199,7 @@ func authConfig() (server.AuthConfig, error) {
 		Scopes:        listEnv("FIRSTLUME_OIDC_SCOPES", "openid profile email groups"),
 		GroupsClaim:   env("FIRSTLUME_OIDC_GROUPS_CLAIM", "groups"),
 		AllowedGroups: listEnv("FIRSTLUME_OIDC_ALLOWED_GROUPS", ""),
+		AdminGroups:   listEnv("FIRSTLUME_OIDC_ADMIN_GROUPS", ""),
 	}
 	return cfg, nil
 }

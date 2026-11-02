@@ -443,8 +443,33 @@ export interface User {
 export interface Me {
   kind: "user" | "admin-token";
   user?: User;
+  /** Sees every organization and can create them: the admin token, or a user in an admin group. */
+  installation_admin: boolean;
   /** The user's organizations; empty for the admin token. */
   organizations: Organization[];
+}
+
+/** Someone in an organization. */
+export interface Member {
+  user_id: string;
+  login: string;
+  name: string;
+  avatar_url: string;
+  since: string;
+}
+
+/** An invitation waiting for someone's first sign-in. */
+export interface Invite {
+  id: string;
+  login: string;
+  invited_by: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface MemberList {
+  members: Member[];
+  invites: Invite[];
 }
 
 /** What the login screen offers (R7.14). */
@@ -542,6 +567,12 @@ export const api = {
       /** Renames the organization; a new slug changes its address and the old one keeps working. */
       update: (name: string, slug: string) => request<Organization>("PATCH", p, { name, slug }),
       tree: () => request<Tree>("GET", `${p}/tree`),
+
+      members: () => request<MemberList>("GET", `${p}/members`),
+      /** Gives access now to someone who already signed in; otherwise the invitation waits for their first sign-in. */
+      invite: (login: string) => request<{ member?: Member; invite?: Invite }>("POST", `${p}/members`, { login }),
+      removeMember: (userID: string) => request<void>("DELETE", `${p}/members/${userID}`),
+      cancelInvite: (id: string) => request<void>("DELETE", `${p}/invites/${id}`),
 
       createFolder: (parentID: string, name: string) => request<Folder>("POST", `${p}/folders`, { parent_id: parentID, name }),
       renameFolder: (id: string, name: string) => request<Folder>("PATCH", `${p}/folders/${id}`, { name }),

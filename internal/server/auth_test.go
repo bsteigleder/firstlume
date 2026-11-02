@@ -333,12 +333,13 @@ func TestLoginStateIsSingleUse(t *testing.T) {
 }
 
 // CA3.4 and R7.7: a session request from another origin is refused; from the
-// public origin it works, and the creator becomes a member.
+// public origin an installation administrator creates an organization and
+// becomes a member.
 func TestSessionOriginCheckAndFirstOrganization(t *testing.T) {
 	f := newFakeIdP(t)
-	h := newHarnessWith(t, Config{Auth: f.config()})
+	h := newHarnessWith(t, Config{Auth: adminsConfig(f, []string{"admins"})})
 	b := newBrowser(t, h)
-	b.login(f, person(nil))
+	b.login(f, person([]string{"admins"}))
 
 	me, _ := b.me()
 	if len(me.Organizations) != 0 {
@@ -466,7 +467,7 @@ func TestAdminTokenWithLogin(t *testing.T) {
 	h := newHarnessWith(t, Config{Auth: f.config()})
 	var me api.Me
 	h.call("GET", "/api/v1/me", nil, http.StatusOK, &me)
-	if me.Kind != adminIdentity || me.User != nil {
+	if me.Kind != adminIdentity || me.User != nil || !me.InstallationAdmin {
 		t.Fatalf("me with the admin token = %+v", me)
 	}
 	req, _ := http.NewRequest("GET", h.url+"/api/v1/orgs", nil)

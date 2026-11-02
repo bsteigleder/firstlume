@@ -93,6 +93,28 @@ export function lastOrg(): string | null {
   }
 }
 
+/** What the API answers for an organization the caller can't see. */
+const orgNotFound = "organization not found";
+
+function OrgNotFound() {
+  const { me } = useSession();
+  return (
+    <div className="page-center">
+      <h1>Organization not found</h1>
+      <p className="muted">
+        It doesn’t exist, or you haven’t been invited to it.
+        {me.user && (
+          <>
+            {" "}
+            If you need access, ask one of its administrators to invite <span className="mono">{me.user.login}</span>.
+          </>
+        )}
+      </p>
+      <Link to="/">Back to your organizations</Link>
+    </div>
+  );
+}
+
 export function OrgShell() {
   const { org: slug = "" } = useParams();
   const orgAPI = useMemo(() => api.org(slug), [slug]);
@@ -127,6 +149,9 @@ export function OrgShell() {
     [tree.data],
   );
 
+  // The same answer for an address that doesn't exist, one they were never
+  // invited to, and one they were just removed from (R7.16).
+  if (org.error === orgNotFound || tree.error === orgNotFound) return <OrgNotFound />;
   if (org.error && !org.data) {
     return (
       <div className="page-center">
@@ -161,7 +186,6 @@ export function OrgShell() {
         <Sidebar />
         <div className="main-col">
           <Header crumbs={crumbs} onOpenRuns={() => setDrawer(true)} />
-          <EveryoneSeesAll />
           <main className="content">
             <Outlet />
           </main>
@@ -241,24 +265,13 @@ function Header({ crumbs, onOpenRuns }: { crumbs: Crumb[]; onOpenRuns: () => voi
   );
 }
 
-/** Until members and invitations (Marco 3b), a signed-in user sees every organization (D8). */
-function EveryoneSeesAll() {
-  const { me } = useSession();
-  if (me.kind !== "user") return null;
-  return (
-    <div role="note" className="seen-by-all">
-      Everyone who signs in sees every organization for now. Members and invitations come next.
-    </div>
-  );
-}
-
 /** Ends the session, then shows the login screen ("signed out" only for a user). */
-async function signOutAndLeave(me: Me) {
+export async function signOutAndLeave(me: Me) {
   await signOut();
   window.location.assign(me.kind === "user" ? "/?signed_out=1" : "/");
 }
 
-function Avatar({ user, size }: { user?: User; size: number }) {
+export function Avatar({ user, size }: { user?: User; size: number }) {
   const [broken, setBroken] = useState(false);
   if (user?.avatar_url && !broken) {
     return <img className="avatar" src={user.avatar_url} alt="" width={size} height={size} onError={() => setBroken(true)} />;
@@ -299,6 +312,7 @@ function AccountMenu() {
             <span className="account-id">
               <strong>{user ? user.name || user.login : "Admin token"}</strong>
               <span className="mono muted small">{user ? `${user.login} · signed in with Gitea` : "for automation and emergencies"}</span>
+              {user && me.installation_admin && <span className="badge warn fit">Installation admin</span>}
             </span>
           </div>
           {user && user.groups.length > 0 && (
@@ -512,6 +526,7 @@ function FolderRow({ folder: f, depth, query, path, isOpen, setOpen }: {
 
 function OrgSwitcher({ onClose }: { onClose: () => void }) {
   const { org } = useOrg();
+  const { me } = useSession();
   const orgs = useData(api.listOrgs, []);
   const navigate = useNavigate();
   const [q, setQ] = useState("");
@@ -523,10 +538,12 @@ function OrgSwitcher({ onClose }: { onClose: () => void }) {
   const list = (orgs.data ?? []).filter((o) => !q || `${o.name} ${o.slug}`.toLowerCase().includes(q.toLowerCase()));
   return (
     <div className="menu org-menu" role="menu">
-      <label className="search small-search">
-        <SearchIcon size={13} />
-        <input type="search" placeholder="Find organization" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
-      </label>
+      {(me.installation_admin || (orgs.data?.length ?? 0) > 5) && (
+        <label className="search small-search">
+          <SearchIcon size={13} />
+          <input type="search" placeholder="Find organization" value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
+        </label>
+      )}
       {list.map((o) => (
         <button key={o.id} role="menuitem" className={`menu-item${o.id === org.id ? " current" : ""}`}
           onClick={() => {
@@ -538,13 +555,18 @@ function OrgSwitcher({ onClose }: { onClose: () => void }) {
             <strong>{o.name}</strong>
             <span className="mono">{o.slug}</span>
           </span>
+          {me.user && me.installation_admin && me.organizations.some((m) => m.id === o.id) && <span className="muted small">Member</span>}
           {o.id === org.id && <span aria-hidden>✓</span>}
         </button>
       ))}
-      <div className="menu-sep" />
-      <button role="menuitem" className="menu-item" onClick={() => navigate("/new-org")}>
-        <PlusIcon /> Create organization
-      </button>
+      {me.installation_admin && (
+        <>
+          <div className="menu-sep" />
+          <button role="menuitem" className="menu-item" onClick={() => navigate("/new-org")}>
+            <PlusIcon /> Create organization
+          </button>
+        </>
+      )}
     </div>
   );
 }

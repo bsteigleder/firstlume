@@ -2348,29 +2348,6 @@ a.login-provider:hover {
   white-space: pre-wrap;
 }
 
-.welcome-existing {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 18px 20px;
-}
-
-.welcome-existing h2 {
-  font-size: 15px;
-}
-
-.welcome-existing p {
-  margin: 0;
-}
-
-.welcome-existing ul {
-  margin: 0;
-  padding-left: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 /* Account menu in the top bar. */
 .account {
   position: relative;
@@ -2442,14 +2419,6 @@ img.avatar {
   font-size: 12px;
   font-weight: 400;
   padding: 2px 8px;
-}
-
-.seen-by-all {
-  padding: 9px 24px;
-  background: var(--attention-soft);
-  border-bottom: 1px solid var(--attention-edge);
-  color: var(--attention);
-  font-size: 13px;
 }
 
 .page-center {
@@ -3247,4 +3216,86 @@ tr:hover .grip,
 
 .move-table {
   min-width: 480px;
+}
+
+.no-access-who {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.no-access-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.no-access-username {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.no-access-username h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.no-access-check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+}
+
+.members-form {
+  align-items: flex-end;
+}
+
+.members-login {
+  flex: 1;
+  min-width: 0;
+}
+
+.members-count {
+  font-weight: 500;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.member-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.member-id {
+  display: flex;
+  flex-direction: column;
+}
+
+.member-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  background: var(--danger-soft);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.member-confirm > span {
+  flex: 1;
+  min-width: 260px;
 }
