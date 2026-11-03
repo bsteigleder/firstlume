@@ -4,10 +4,12 @@ import type { DiscoverResponse, GitConnection, GitRepo } from "../api";
 import { SearchIcon } from "../icons";
 import { useOrg } from "../org";
 import { ErrorBanner, useAction, useData } from "../ui";
+import { ImportPlan, useImportPlan } from "./ImportState";
 
 /**
  * New stack from the organization's Git connection: repository → branch →
- * one of the .firstlume folders found → name (spec 0001, 4.5 and 6).
+ * one of the .firstlume folders found → name, and the states to import when
+ * the infrastructure already exists (spec 0001, 4.5 and 6; spec 0002 R9.7).
  */
 export function NewStackWizard({ folderID, conn, onClose, onManual }: {
   folderID: string;
@@ -21,15 +23,27 @@ export function NewStackWizard({ folderID, conn, onClose, onManual }: {
   const [branch, setBranch] = useState("");
   const [path, setPath] = useState<string | null>(null);
   const [name, setName] = useState("");
+  const [exists, setExists] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const plan = useImportPlan((files) => api.identifyForNewStack(files, repo?.full_name ?? "", branch, path ?? "."));
   const create = useAction();
-  const step = !repo ? 1 : !branch ? 2 : path === null ? 3 : 4;
+  const step = !repo ? 1 : !branch ? 2 : path === null ? 3 : importing ? 5 : 4;
 
   async function submit() {
     if (!repo || path === null) return;
     await create.run(async () => {
       const st = await api.createStack({ folder_id: folderID, name, git_repository: repo.full_name, repository: "", ref: branch, path, git_token: "" });
+      if (importing) {
+        try {
+          await api.importState(st.id, plan.files, plan.placements, [], false);
+        } catch (e) {
+          // Nothing was imported: don't leave an empty stack behind (R9.7).
+          await api.deleteStack(st.id).catch(() => undefined);
+          throw e;
+        }
+      }
       await reloadTree();
-      navigate(link(`s/${st.id}`));
+      navigate(link(`s/${st.id}`), importing ? { state: { imported: plan.summary } } : undefined);
       onClose();
     });
   }
@@ -39,6 +53,7 @@ export function NewStackWizard({ folderID, conn, onClose, onManual }: {
     { n: 2, label: "Branch", value: step > 2 ? branch : undefined },
     { n: 3, label: "Infrastructure", value: step > 3 ? path ?? undefined : undefined },
     { n: 4, label: "Name", value: undefined },
+    ...(exists ? [{ n: 5, label: "Import", value: undefined }] : []),
   ];
 
   return (
@@ -57,7 +72,7 @@ export function NewStackWizard({ folderID, conn, onClose, onManual }: {
       </ol>
 
       {step === 1 && <PickRepo conn={conn} onPick={(r) => (setRepo(r), setBranch(r.default_branch), setPath(null))} />}
-      {step >= 2 && repo && step !== 4 && (
+      {step >= 2 && step < 4 && repo && (
         <PickStack
           repo={repo}
           branch={branch}
@@ -73,7 +88,8 @@ export function NewStackWizard({ folderID, conn, onClose, onManual }: {
           className="wizard-body"
           onSubmit={(e) => {
             e.preventDefault();
-            void submit();
+            if (exists) setImporting(true);
+            else void submit();
           }}
         >
           <div className="notice">
@@ -84,16 +100,55 @@ export function NewStackWizard({ folderID, conn, onClose, onManual }: {
             <input value={name} onChange={(e) => setName(e.target.value)} autoFocus required />
             <span className="hint">Suggested from the folder. Must be unique in {folderLabel(folderID)}.</span>
           </label>
+          <fieldset className="start-from">
+            <legend>Does this infrastructure already exist?</legend>
+            <label className={`found${exists ? "" : " selected"}`}>
+              <input type="radio" name="start-from" checked={!exists} onChange={() => setExists(false)} />
+              <span className="grow">
+                <span className="start-title">No, start empty</span>
+                <span className="muted small">The first apply creates everything.</span>
+              </span>
+            </label>
+            <label className={`found${exists ? " selected" : ""}`}>
+              <input type="radio" name="start-from" checked={exists} onChange={() => setExists(true)} />
+              <span className="grow">
+                <span className="start-title">Yes, and it has a Terraform state</span>
+                <span className="muted small">
+                  Another pipeline or someone’s machine manages it today. Upload its <span className="mono">.tfstate</span> files, or a <span className="mono">tar.gz</span>,
+                  in any folder layout. Nothing is recreated.
+                </span>
+              </span>
+            </label>
+          </fieldset>
           {create.error && <div className="form-error">{create.error}</div>}
           <div className="form-actions">
             <button type="button" onClick={() => setPath(null)}>
               Back
             </button>
             <button className="primary" disabled={create.busy || !name.trim()}>
-              {create.busy ? "Creating…" : "Create stack"}
+              {exists ? "Continue to import" : create.busy ? "Creating…" : "Create stack"}
             </button>
           </div>
         </form>
+      )}
+      {step === 5 && repo && (
+        <div className="wizard-body">
+          <p className="muted small">
+            <strong className="ink">{name}</strong> in {folderLabel(folderID)}, from <span className="mono">{repo.full_name}</span> · <span className="mono">{path}</span> @{" "}
+            <span className="mono">{branch}</span>
+          </p>
+          <ImportPlan plan={plan} rootLabel={path ?? "."} onPickAnotherFolder={() => (setImporting(false), setPath(null))} />
+          {create.error && <div className="form-error">{create.error}</div>}
+          <div className="form-actions">
+            <button type="button" onClick={() => setImporting(false)}>
+              Back
+            </button>
+            <span className="muted small grow-right">{plan.hint}</span>
+            <button className="primary" disabled={create.busy || !plan.ready} onClick={() => void submit()}>
+              {create.busy ? "Creating…" : plan.ready ? `Create stack and import ${plan.summary.states} state${plan.summary.states === 1 ? "" : "s"}` : "Create stack and import"}
+            </button>
+          </div>
+        </div>
       )}
       {step < 4 && (
         <div className="wizard-footer">

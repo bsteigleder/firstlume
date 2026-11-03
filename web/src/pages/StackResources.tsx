@@ -16,7 +16,7 @@ const actionTone: Record<ChangeAction, string> = { create: "ok", update: "warn",
 // Above this many resources the units start collapsed.
 const openLimit = 150;
 
-export function StackResources({ stack }: { stack: Stack }) {
+export function StackResources({ stack, onImport }: { stack: Stack; onImport: () => void }) {
   const { api } = useOrg();
   const res = useData(() => api.resources(stack.id), [api, stack.id], { poll: true, pollMs: 15000 });
   const [q, setQ] = useState("");
@@ -33,7 +33,7 @@ export function StackResources({ stack }: { stack: Stack }) {
 
   if (units.length === 0) {
     if (outside) return <OutsideUnits outside={outside} />;
-    return state_outside ? <StateOutside /> : <NoResources />;
+    return state_outside ? <StateOutside /> : <NoResources onImport={onImport} />;
   }
 
   const all = units.flatMap((u) => u.resources);
@@ -435,7 +435,7 @@ function RunLink({ id, label }: { id: string; label?: string }) {
   );
 }
 
-function NoResources() {
+function NoResources({ onImport }: { onImport: () => void }) {
   return (
     <section className="card res-empty">
       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden>
@@ -444,6 +444,13 @@ function NoResources() {
       </svg>
       <h2>No resources yet</h2>
       <p>Resources show up here after the first apply writes the state. A plan alone doesn’t create them.</p>
+      <p className="muted small">
+        Already have a state somewhere else?{" "}
+        <button type="button" className="link" onClick={onImport}>
+          Import it
+        </button>
+        .
+      </p>
     </section>
   );
 }

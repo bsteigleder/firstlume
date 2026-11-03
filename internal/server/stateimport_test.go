@@ -6,10 +6,12 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -494,5 +496,179 @@ resource "terraform_data" "slow" {
 	}
 	if plan := b.must("plan", "-input=false", "-detailed-exitcode"); !strings.Contains(plan, "No changes") {
 		t.Fatalf("the last apply's state should be current:\n%s", plan)
+	}
+}
+
+// upload sends a multipart request with several files and decodes the result.
+func (h *harness) upload(path string, files map[string][]byte, fields map[string]string, want int, out any) {
+	h.t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	for name, value := range fields {
+		must(h.t, mw.WriteField(name, value))
+	}
+	for name, data := range files {
+		fw, err := mw.CreateFormFile("file", name)
+		must(h.t, err)
+		_, err = fw.Write(data)
+		must(h.t, err)
+	}
+	must(h.t, mw.Close())
+	req, _ := http.NewRequest("POST", h.url+"/api/v1/orgs/"+h.org+path, &body)
+	req.Header.Set("Authorization", "Bearer "+testAdminToken)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != want {
+		h.t.Fatalf("POST %s: status %d, want %d: %s", path, resp.StatusCode, want, raw)
+	}
+	if out != nil {
+		must(h.t, json.Unmarshal(raw, out))
+	}
+}
+
+func oneResourceState(serial int, lineage, typ, name, id string) []byte {
+	return fmt.Appendf(nil, `{"version":4,"serial":%d,"lineage":%q,"resources":[{"mode":"managed","type":%q,"name":%q,"instances":[{"attributes":{"id":%q,"password":"s3cr3t-value"}}]}]}`,
+		serial, lineage, typ, name, id)
+}
+
+// TestIdentifyAndPlaceStates covers CAS5.1 to CAS5.6 through the API.
+func TestIdentifyAndPlaceStates(t *testing.T) {
+	h := newHarnessWith(t, Config{StateMaxBytes: 64 << 10})
+	fg := &fakeGitea{token: "gitea-s3rvice-token", extra: map[string]string{
+		"live/.firstlume/config.yaml": "version: 1\nengine: terraform\nengine_version: 1.15.6\nterragrunt_version: 1.1.6\nrun_all: true\n",
+		"live/root.hcl":               "",
+		"live/network/terragrunt.hcl": "terraform {\n  source = \"../../modules//net\"\n}\n",
+		"live/vault/terragrunt.hcl":   "terraform {\n  source = \"../../modules//vault\"\n}\n",
+		"live/east/terragrunt.hcl":    "terraform {\n  source = \"../../modules//region\"\n}\ninputs = {\n  name = \"acme-eu-1\"\n}\n",
+		"live/west/terragrunt.hcl":    "terraform {\n  source = \"../../modules//region\"\n}\ninputs = {\n  name = \"acme-us-2\"\n}\n",
+		"modules/net/main.tf":         "resource \"aws_vpc\" \"main\" {}\n",
+		"modules/vault/main.tf":       "resource \"vault_mount\" \"kv\" {}\n",
+		"modules/region/main.tf":      "resource \"aws_s3_bucket\" \"logs\" {}\n",
+	}}
+	gs := httptest.NewServer(fg)
+	defer gs.Close()
+	fg.url = gs.URL
+	h.call("PUT", "/git/connection", api.PutGitConnectionRequest{URL: gs.URL, Account: "acme", Token: fg.token}, http.StatusOK, nil)
+
+	bundle := tarGz(t,
+		tarEntry{name: "elsewhere/live/network/terraform.tfstate", body: oneResourceState(4, "lin-net", "aws_vpc", "main", "vpc-1")},
+		tarEntry{name: "elsewhere/live/network/terraform.tfstate.backup", body: oneResourceState(3, "lin-net", "aws_vpc", "main", "vpc-1")},
+	)
+	files := map[string][]byte{
+		"bundle.tar.gz":        bundle,
+		"vault-old.tfstate":    oneResourceState(9, "lin-vault", "vault_mount", "kv", "kv"),
+		"region.tfstate":       oneResourceState(2, "lin-region", "aws_s3_bucket", "logs", "acme-us-2-logs"),
+		"mystery.tfstate":      oneResourceState(1, "lin-mystery", "aws_iam_role", "r", "role-1"),
+		"east-or-west.tfstate": oneResourceState(1, "lin-tie", "aws_s3_bucket", "logs", "acme-logs"),
+	}
+	form := map[string]string{"git_repository": "acme/infra", "ref": "main", "path": "live"}
+
+	var res api.StateIdentifyResult
+	h.upload("/state/identify", files, form, http.StatusOK, &res)
+	if res.CodeNote != "" || strings.Join(res.Units, ",") != "east,network,vault,west" || len(res.Problems) != 0 || len(res.Ignored) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	got := map[string]api.IdentifiedState{}
+	for _, s := range res.States {
+		got[s.Source] = s
+	}
+	check := func(source, unit, reason string) {
+		t.Helper()
+		if s := got[source]; !s.Placed || s.Unit != unit || s.Reason != reason {
+			t.Fatalf("%s: %+v", source, s)
+		}
+	}
+	check("elsewhere/live/network/terraform.tfstate", "network", "path")
+	check("vault-old.tfstate", "vault", "resources")
+	check("region.tfstate", "west", "values")
+	if s := got["mystery.tfstate"]; s.Placed || s.Why != "no_match" {
+		t.Fatalf("%+v", s)
+	}
+	if s := got["east-or-west.tfstate"]; s.Placed || s.Why != "tie" || strings.Join(s.Candidates, ",") != "east,west" {
+		t.Fatalf("%+v", s)
+	}
+	// No attribute value comes back (CAS5.4).
+	raw, _ := json.Marshal(res)
+	for _, secret := range []string{"s3cr3t-value", "acme-us-2-logs", "vpc-1"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("%q in the answer: %s", secret, raw)
+		}
+	}
+
+	// Nothing was written by identifying; the stack comes with the import.
+	st := h.stack("", "live", "live")
+	if units := h.units(st.ID); len(units) != 0 {
+		t.Fatalf("%+v", units)
+	}
+
+	place := func(p ...api.StatePlacement) map[string]string {
+		data, _ := json.Marshal(p)
+		return map[string]string{"placement": string(data)}
+	}
+	importPath := "/stacks/" + st.ID + "/state/import"
+	all := []api.StatePlacement{
+		{Source: "elsewhere/live/network/terraform.tfstate", Unit: "network"},
+		{Source: "vault-old.tfstate", Unit: "vault"},
+		{Source: "region.tfstate", Unit: "west"},
+		{Source: "east-or-west.tfstate", Unit: "east"},
+		{Source: "mystery.tfstate", Skip: true},
+	}
+
+	// A state with no placement, and two on one unit, refuse it all.
+	var bad api.StateImportResult
+	h.upload(importPath, files, place(all[:4]...), http.StatusUnprocessableEntity, &bad)
+	if len(bad.Problems) != 1 || bad.Problems[0].Path != "mystery.tfstate" {
+		t.Fatalf("%+v", bad)
+	}
+	h.upload(importPath, files, place(all[0], all[1], all[2], api.StatePlacement{Source: "east-or-west.tfstate", Unit: "west"}, all[4]), http.StatusUnprocessableEntity, &bad)
+	if len(bad.Problems) != 1 || !strings.Contains(bad.Problems[0].Error, "the same unit") {
+		t.Fatalf("%+v", bad)
+	}
+	if units := h.units(st.ID); len(units) != 0 {
+		t.Fatalf("%+v", units)
+	}
+
+	var done api.StateImportResult
+	h.upload(importPath, files, place(all...), http.StatusOK, &done)
+	if units := h.units(st.ID); len(units) != 4 || units["west"].Key != "west" || units["network"].Key != "network" {
+		t.Fatalf("%+v", units)
+	}
+
+	// In the stack itself its own lineages place the states (R9.9), a newer
+	// copy waits to be marked (CAS5.6), and the old form still works.
+	var again api.StateIdentifyResult
+	newer := map[string][]byte{"renamed.tfstate": oneResourceState(30, "lin-vault", "vault_mount", "kv", "kv")}
+	h.upload("/stacks/"+st.ID+"/state/identify", newer, nil, http.StatusOK, &again)
+	if len(again.States) != 1 || again.States[0].Unit != "vault" || again.States[0].Reason != "lineage" || again.CodeNote == "" {
+		t.Fatalf("%+v", again)
+	}
+	var dry api.StateImportResult
+	h.upload(importPath+"?dry_run=true", newer, place(api.StatePlacement{Source: "renamed.tfstate", Unit: "vault"}), http.StatusOK, &dry)
+	if len(dry.Units) != 1 || dry.Units[0].Status != "newer" || dry.Units[0].Action != "skip" {
+		t.Fatalf("%+v", dry)
+	}
+
+	// A new stack elsewhere hears that another stack already has this state (R9.13).
+	var other api.StateIdentifyResult
+	h.upload("/state/identify", newer, form, http.StatusOK, &other)
+	if len(other.States) != 1 || len(other.States[0].AlreadyIn) != 1 || other.States[0].AlreadyIn[0].Stack != "live" || other.States[0].AlreadyIn[0].Unit != "vault" {
+		t.Fatalf("%+v", other)
+	}
+
+	// A refused bundle lists why, and a repository of another account isn't read.
+	var refused api.StateIdentifyResult
+	h.upload("/state/identify", map[string][]byte{"x.tar.gz": tarGz(t, tarEntry{name: "../x/terraform.tfstate", body: []byte("{}")})}, form, http.StatusOK, &refused)
+	if len(refused.Problems) != 1 || len(refused.States) != 0 {
+		t.Fatalf("%+v", refused)
+	}
+	var foreign api.StateIdentifyResult
+	h.upload("/state/identify", newer, map[string]string{"git_repository": "someone-else/infra", "ref": "main", "path": "live"}, http.StatusOK, &foreign)
+	if foreign.CodeNote == "" || len(foreign.Units) != 0 {
+		t.Fatalf("%+v", foreign)
 	}
 }

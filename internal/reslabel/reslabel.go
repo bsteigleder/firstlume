@@ -133,6 +133,21 @@ func any_(v any) bool {
 	return false
 }
 
+// identifierAttrs are the attributes that say which real resource this is.
+var identifierAttrs = []string{"id", "arn", "name", "bucket", "identifier", "cluster_name", "hostname", "fqdn", "domain", "zone", "namespace"}
+
+// Identifiers are the values of identifierAttrs, for telling states apart (spec
+// 0002, R9.12). They aren't labels: nothing shows or stores them.
+func (a Attrs) Identifiers() []string {
+	var out []string
+	for _, name := range identifierAttrs {
+		if v := a.str(name); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func (a Attrs) str(name string) string {
 	if a.hidden[name] {
 		return ""

@@ -74,8 +74,9 @@ const importMaxFiles = 10000
 // importState imports a tar.gz bundle, or a single state, into the stack's
 // units. The request is multipart: "file", and optionally "prefix" (removed
 // from the bundle's paths), "unit" (the key for a single state) and one
-// "replace" per existing unit to overwrite. With ?dry_run=true nothing is
-// written. Any problem with the upload rejects all of it (R9.5).
+// "replace" per existing unit to overwrite. Or several "file" parts and a
+// "placement" saying where each state goes (R9.8, R9.11). With ?dry_run=true
+// nothing is written. Any problem with the upload rejects all of it (R9.5).
 func (s *Server) importState(w http.ResponseWriter, r *http.Request) {
 	dryRun := r.URL.Query().Get("dry_run") == "true"
 	form, err := readImportForm(w, r, 4*s.cfg.StateMaxBytes)
@@ -85,7 +86,15 @@ func (s *Server) importState(w http.ResponseWriter, r *http.Request) {
 	}
 	res := api.StateImportResult{DryRun: dryRun, Units: []api.StateImportUnit{}}
 	var items []store.StateImport
-	items, res.Ignored, res.Problems = readImport(form.file, form.prefix, form.unit, s.cfg.StateMaxBytes, 4*s.cfg.StateMaxBytes)
+	switch {
+	case form.placement != "":
+		items, res.Ignored, res.Problems = readPlaced(form, s.cfg.StateMaxBytes, 4*s.cfg.StateMaxBytes)
+	case len(form.files) > 1:
+		writeError(w, http.StatusBadRequest, "several files need a \"placement\" saying where each state goes")
+		return
+	default:
+		items, res.Ignored, res.Problems = readImport(form.files[0].data, form.prefix, form.unit, s.cfg.StateMaxBytes, 4*s.cfg.StateMaxBytes)
+	}
 	replace := map[string]bool{}
 	for _, raw := range form.replace {
 		key, err := stateKey(raw)
@@ -120,6 +129,10 @@ func (s *Server) importState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+func isLooseState(data []byte) bool {
+	return bytes.HasPrefix(bytes.TrimSpace(data), []byte("{"))
+}
+
 func hasImport(items []store.StateImport, key string) bool {
 	for _, it := range items {
 		if it.Key == key {
@@ -129,26 +142,41 @@ func hasImport(items []store.StateImport, key string) bool {
 	return false
 }
 
-type importForm struct {
-	file         []byte
-	prefix, unit string
-	replace      []string
-	sawFile      bool
+type importFile struct {
+	name string
+	data []byte
 }
 
+type importForm struct {
+	files         []importFile
+	prefix, unit  string
+	replace       []string
+	placement     string
+	gitRepository string
+	ref, path     string
+}
+
+// importFieldMax bounds a form field; placementMax the one listing every state.
+const (
+	importFieldMax = 4 << 10
+	placementMax   = 1 << 20
+)
+
 // readImportForm reads the multipart request in memory: the server's root
-// filesystem is read-only, so nothing may spill to temporary files.
+// filesystem is read-only, so nothing may spill to temporary files. maxBytes
+// bounds all the files together.
 func readImportForm(w http.ResponseWriter, r *http.Request, maxBytes int64) (*importForm, error) {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if mt != "multipart/form-data" {
 		return nil, errors.New("send a multipart/form-data request with the bundle in the field \"file\"")
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+1<<20)
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+2*placementMax)
 	mr, err := r.MultipartReader()
 	if err != nil {
 		return nil, err
 	}
 	var f importForm
+	remaining := maxBytes
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -157,29 +185,44 @@ func readImportForm(w http.ResponseWriter, r *http.Request, maxBytes int64) (*im
 		if err != nil {
 			return nil, fmt.Errorf("reading the upload: %w", err)
 		}
-		limit := int64(4 << 10)
-		if part.FormName() == "file" {
-			limit = maxBytes
+		limit := int64(importFieldMax)
+		switch part.FormName() {
+		case "file":
+			limit = remaining
+		case "placement":
+			limit = placementMax
 		}
 		data, err := io.ReadAll(io.LimitReader(part, limit+1))
 		if err != nil {
 			return nil, fmt.Errorf("reading the upload: %w", err)
 		}
 		if int64(len(data)) > limit {
+			if part.FormName() == "file" {
+				return nil, fmt.Errorf("the files are larger than the limit of %d bytes", maxBytes)
+			}
 			return nil, fmt.Errorf("the field %q is larger than the limit of %d bytes", part.FormName(), limit)
 		}
 		switch part.FormName() {
 		case "file":
-			f.file, f.sawFile = data, true
+			f.files = append(f.files, importFile{name: path.Base(part.FileName()), data: data})
+			remaining -= int64(len(data))
 		case "prefix":
 			f.prefix = string(data)
 		case "unit":
 			f.unit = string(data)
 		case "replace":
 			f.replace = append(f.replace, string(data))
+		case "placement":
+			f.placement = string(data)
+		case "git_repository":
+			f.gitRepository = string(data)
+		case "ref":
+			f.ref = string(data)
+		case "path":
+			f.path = string(data)
 		}
 	}
-	if !f.sawFile {
+	if len(f.files) == 0 {
 		return nil, errors.New("the field \"file\" is missing")
 	}
 	return &f, nil
@@ -195,7 +238,7 @@ func readImport(data []byte, prefix, unit string, maxState, maxTotal int64) (ite
 	problem := func(p, format string, args ...any) {
 		problems = append(problems, api.StateImportProblem{Path: p, Error: fmt.Sprintf(format, args...)})
 	}
-	if bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
+	if isLooseState(data) {
 		key, err := stateKey(unit)
 		switch {
 		case err != nil:
@@ -211,14 +254,56 @@ func readImport(data []byte, prefix, unit string, maxState, maxTotal int64) (ite
 		}
 		return items, nil, problems
 	}
+	found, ignored, problems := scanBundle(data, false, maxState, maxTotal)
+	prefix = strings.Trim(path.Clean("/"+strings.TrimSpace(prefix)), "/")
+	seen := map[string]string{}
+	for _, b := range found {
+		dir := b.dir
+		if prefix != "" {
+			switch {
+			case dir == prefix:
+				dir = "."
+			case strings.HasPrefix(dir, prefix+"/"):
+				dir = strings.TrimPrefix(dir, prefix+"/")
+			default:
+				problem(b.name, "outside the prefix %q", prefix)
+				continue
+			}
+		}
+		key, err := stateKey(dir)
+		if err != nil {
+			problem(b.name, "%v", err)
+			continue
+		}
+		if other, ok := seen[key]; ok {
+			problem(b.name, "the same unit as %s", other)
+			continue
+		}
+		seen[key] = b.name
+		items = append(items, store.StateImport{Key: key, Data: b.data})
+	}
+	return items, ignored, problems
+}
+
+// bundleState is one state found in a bundle.
+type bundleState struct {
+	name, dir string
+	data      []byte
+}
+
+// scanBundle lists the valid states of a tar.gz bundle. A state's dir is the
+// folder of its unit: a state in <unit>/.terragrunt-cache belongs to <unit>.
+// With anyName every *.tfstate is a state, and not only terraform.tfstate.
+func scanBundle(data []byte, anyName bool, maxState, maxTotal int64) (found []bundleState, ignored []string, problems []api.StateImportProblem) {
+	problem := func(p, format string, args ...any) {
+		problems = append(problems, api.StateImportProblem{Path: p, Error: fmt.Sprintf(format, args...)})
+	}
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		problem("file", "not a tar.gz bundle nor a Terraform state")
 		return nil, nil, problems
 	}
-	prefix = strings.Trim(path.Clean("/"+strings.TrimSpace(prefix)), "/")
 	tr := tar.NewReader(io.LimitReader(gz, maxTotal))
-	seen := map[string]string{}
 	for files := 0; ; files++ {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -255,7 +340,8 @@ func readImport(data []byte, prefix, unit string, maxState, maxTotal int64) (ite
 			strings.Contains("/"+clean+"/", "/.terraform/"):
 			ignored = append(ignored, name)
 			continue
-		case base != "terraform.tfstate":
+		case base == "terraform.tfstate", anyName && strings.HasSuffix(base, ".tfstate"):
+		default:
 			problem(name, "not a state: only <unit path>/terraform.tfstate files are imported")
 			continue
 		}
@@ -267,22 +353,6 @@ func readImport(data []byte, prefix, unit string, maxState, maxTotal int64) (ite
 			if dir == "" {
 				dir = "."
 			}
-		}
-		if prefix != "" {
-			switch {
-			case dir == prefix:
-				dir = "."
-			case strings.HasPrefix(dir, prefix+"/"):
-				dir = strings.TrimPrefix(dir, prefix+"/")
-			default:
-				problem(name, "outside the prefix %q", prefix)
-				continue
-			}
-		}
-		key, err := stateKey(dir)
-		if err != nil {
-			problem(name, "%v", err)
-			continue
 		}
 		if hdr.Size > maxState {
 			problem(name, "state larger than the limit of %d bytes", maxState)
@@ -297,12 +367,7 @@ func readImport(data []byte, prefix, unit string, maxState, maxTotal int64) (ite
 			problem(name, "%v", err)
 			continue
 		}
-		if other, ok := seen[key]; ok {
-			problem(name, "the same unit as %s", other)
-			continue
-		}
-		seen[key] = name
-		items = append(items, store.StateImport{Key: key, Data: content})
+		found = append(found, bundleState{name: name, dir: dir, data: content})
 	}
-	return items, ignored, problems
+	return found, ignored, problems
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, NavLink, useNavigate, useParams } from "react-router";
+import { Link, NavLink, useLocation, useNavigate, useParams } from "react-router";
 import { settingsPath, type Stack } from "../api";
 import { ExternalIcon, PlayIcon } from "../icons";
 import { PageTitle, useCrumbs, useOrg } from "../org";
@@ -18,6 +18,7 @@ import {
   useData,
 } from "../ui";
 import { RenameStackDialog } from "./dialogs";
+import { ImportedNotice, ImportStateDialog, type ImportSummary } from "./ImportState";
 import { MoveButton } from "./MoveStack";
 import { RunDialog } from "./RunDialog";
 import { SettingsEditor } from "./SettingsEditor";
@@ -31,6 +32,12 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
   const units = useData(() => api.stateUnits(stackId), [api, stackId], { poll: true, pollMs: 15000 });
   const [running, setRunning] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [planOnly, setPlanOnly] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const imported = (location.state as { imported?: ImportSummary } | null)?.imported;
+  const showImported = (summary: ImportSummary | null) => navigate(location.pathname, { replace: true, state: summary ? { imported: summary } : null });
   const chain = folderChain(stack.data?.folder_id);
 
   useCrumbs([
@@ -72,7 +79,8 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
           <>
             <button onClick={() => setRenaming(true)}>Rename</button>
             <MoveButton stack={s} />
-            <button className="primary" onClick={() => setRunning(true)}>
+            <button onClick={() => setImporting(true)}>Import state…</button>
+            <button className="primary" onClick={() => (setPlanOnly(false), setRunning(true))}>
               <PlayIcon /> Run…
             </button>
           </>
@@ -95,8 +103,10 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
         </NavLink>
       </div>
 
+      {imported && <ImportedNotice summary={imported} onRunPlan={() => (setPlanOnly(true), setRunning(true))} onDismiss={() => showImported(null)} />}
+
       {tab === "runs" && <Runs stack={s} />}
-      {tab === "resources" && <StackResources stack={s} />}
+      {tab === "resources" && <StackResources stack={s} onImport={() => setImporting(true)} />}
       {tab === "settings" && <SettingsEditor level={{ kind: "stack", id: s.id, name: s.name }} path={settingsPath({ kind: "stack", id: s.id })} />}
       {tab === "source" && (
         <Source
@@ -107,8 +117,19 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
           }}
         />
       )}
-      {running && <RunDialog stack={s} onClose={() => setRunning(false)} />}
+      {running && <RunDialog stack={s} again={planOnly ? { type: "plan", ref: s.ref } : undefined} onClose={() => setRunning(false)} />}
       {renaming && <RenameStackDialog stack={s} onClose={() => setRenaming(false)} onSaved={stack.reload} />}
+      {importing && (
+        <ImportStateDialog
+          stack={s}
+          onClose={() => setImporting(false)}
+          onDone={(summary) => {
+            setImporting(false);
+            showImported(summary);
+            void units.reload();
+          }}
+        />
+      )}
     </div>
   );
 }

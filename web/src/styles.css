@@ -3347,3 +3347,168 @@ tr:hover .grip,
   flex: 1;
   min-width: 260px;
 }
+
+/* ---------- importing existing states (canvas boards 49 to 52) ---------- */
+
+.start-from {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.start-from legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.start-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.import-plan,
+.import-section,
+.import-unplaced,
+.import-done {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.import-done {
+  margin-bottom: 16px;
+}
+
+.import-drop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+
+.import-drop.dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.import-drop .grow,
+.import-question .grow,
+.import-nothing .grow {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.import-nothing .grow {
+  display: block;
+}
+
+.import-nothing,
+.import-question {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.import-unplaced h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.import-table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+
+.import-table table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.import-table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 8px 12px;
+  background: var(--surface-3);
+}
+
+.import-table td {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.import-table .num {
+  text-align: right;
+}
+
+.import-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.import-empty .import-node {
+  color: var(--muted);
+}
+
+.import-how {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.import-how .mono {
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.import-also {
+  color: var(--attention);
+}
+
+.import-change {
+  white-space: nowrap;
+}
+
+.import-compare {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.import-ignored {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.import-ignored summary {
+  cursor: pointer;
+  color: var(--link);
+}
+
+.grow-right {
+  flex: 1;
+  text-align: right;
+  align-self: center;
+}

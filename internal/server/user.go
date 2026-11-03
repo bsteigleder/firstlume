@@ -51,6 +51,8 @@ func (s *Server) userRoutes(r chi.Router) {
 		r.With(s.requireID).Get("/stacks/{id}/resources", s.stackResources)
 		r.With(s.requireID).Delete("/stacks/{id}/state", s.deleteState)
 		r.With(s.requireID).Post("/stacks/{id}/state/import", s.importState)
+		r.With(s.requireID).Post("/stacks/{id}/state/identify", s.identifyStackState)
+		r.Post("/state/identify", s.identifyNewStackState)
 		r.With(s.requireID).Get("/stacks/{id}/declaration", s.getDeclaration)
 		r.With(s.requireID).Post("/stacks/{id}/vault/check", s.vaultCheck)
 		r.Get("/vault", s.getVaultConnection)

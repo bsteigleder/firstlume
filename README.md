@@ -142,6 +142,20 @@ curl -X POST -H "Authorization: Bearer $ADMIN" "$API/api/v1/orgs/$ORG/stacks/$ST
   -F file=@prod.tar.gz -F prefix=environments/prod
 ```
 
+Pela tela, o novo stack pergunta se a infraestrutura já existe, e todo stack tem o botão **Import state…**. Ali o envio aceita vários arquivos (`tar.gz` e `.tfstate` soltos, em qualquer organização de pastas) e o Firstlume deduz onde cada state vai, nesta ordem: lineage que já está numa unit do stack, caminho no arquivo, recursos do state comparados com o código da pasta e, entre pastas com o mesmo código, os identificadores do state comparados com os valores que só uma delas tem. O que ele não decidir fica para você escolher, e nada é gravado antes da confirmação. A dedução não é prova: o plan depois da importação deve dar "No changes".
+
+Pela API, são dois passos:
+
+```bash
+# Diz onde cada state vai. Não grava nada e não devolve valores de atributos.
+curl -X POST -H "Authorization: Bearer $ADMIN" "$API/api/v1/orgs/$ORG/stacks/$STACK/state/identify" \
+  -F file=@old-states.tar.gz -F file=@vault.tfstate
+# Importa, dizendo onde cada um vai. "source" é o nome que a identificação deu.
+curl -X POST -H "Authorization: Bearer $ADMIN" "$API/api/v1/orgs/$ORG/stacks/$STACK/state/import" \
+  -F file=@old-states.tar.gz -F file=@vault.tfstate \
+  -F 'placement=[{"source":"ci/net/terraform.tfstate","unit":"net"},{"source":"vault.tfstate","unit":"vault"}]'
+```
+
 Uma unit sem state ganha a versão 1. Uma unit que já tem state aparece como `same`, `newer`, `older` ou `conflict` (outro lineage) e só muda se for marcada com `-F replace=<unit>` (uma vez por unit). Nesse caso ganha uma versão nova, e o histórico fica. Se o state importado tiver o mesmo lineage e um serial que não passa do atual, o serial sobe, para que um plano salvo antes não seja aplicado em cima dele. Uma unit travada não pode receber importação.
 
 #### State no bucket da organização
