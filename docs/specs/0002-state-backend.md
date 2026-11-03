@@ -168,6 +168,7 @@ O endereço de uma unit é `<URL da API>/state/v1/stacks/<id do stack>/<chave da
 
 - **R6.1** Excluir um stack com state no Firstlume é recusado (409) enquanto alguma unit tiver recursos. A mensagem manda rodar destroy ou excluir o state.
 - **R6.2** "Excluir state" fica na aba State, só para admin, e pede para digitar o nome do stack. Os objetos ficam guardados por **30 dias** e depois são apagados.
+- **R6.3** (emenda de 2026-11-02, quadro 55 do canvas) O diálogo de excluir stack diz quantos recursos o state ainda gerencia, oferece exportar o state (R8.9), sem obrigar, e exclui o stack e o state **na mesma transação**, depois de digitar o nome do stack. Pela API, é o `DELETE` do stack com `{"delete_state": true, "confirm": "<nome>"}`. Sem esse corpo, R6.1 continua valendo. Run ativa ou unit travada recusam a exclusão (409) em qualquer caso.
 
 ### 4.7 Tokens de state (modo "só state")
 
@@ -201,6 +202,11 @@ O desenho das telas vem antes da implementação, como na spec 0001. A aba tem o
   - mostra o que a última checagem de drift encontrou, até um apply terminar depois dela;
   - cada recurso tem um ícone: o logo do serviço (EKS, RDS, Cloudflare, PostgreSQL…) quando o tipo é conhecido, senão um desenho da categoria na cor do provider; data sources aparecem tracejados;
   - uma unit cujo state não pode ser lido aparece com o motivo, sem esconder as outras; as units que a última run encontrou com o state em outro backend (R2.3) aparecem no fim, com o backend e essa run (quadro 29 do canvas); se nenhuma run gravou os backends (runs antigas), a aba deduz como antes: sem state no Firstlume depois de um apply, o código guarda o state em outro backend.
+- **R8.9** **Exportar** (emenda de 2026-11-02, quadro 54 do canvas): botão na página do stack que baixa o state **atual**, em claro, sem travar nada.
+  - O stack inteiro vem em `.tar.gz` com um `<unit>/terraform.tfstate` por unit, o mesmo formato que a importação lê (R9). Uma unit só vem como `.tfstate`.
+  - É tudo ou nada: se uma unit não puder ser lida, nada é baixado.
+  - Avisa que o arquivo tem segredos em texto puro e fica registrado nos eventos, por unit (R8.7). Enquanto só existir um papel (spec 0001), todo membro da organização pode exportar.
+  - Escolher uma versão antiga continua em R8.5.
 
 ### 4.9 Importação
 
@@ -248,6 +254,7 @@ Rotas de usuário, todas sob `/api/v1/orgs/{org}/stacks/{id}/state`:
 | `DELETE /state/units/{chave}/lock` | Destrava à força |
 | `POST /state/import?dry_run=true\|false` | Multipart: arquivo, prefixo e units a substituir; ou vários arquivos e `placement` (JSON com `source`, `unit` ou `skip`) |
 | `POST /state/identify` | Multipart: arquivos. Diz onde cada state vai (R9.9), sem gravar nada. Para um stack novo, fica em `/orgs/{org}/state/identify`, com repositório, branch e pasta |
+| `GET /state/export` | O state atual em claro: o stack inteiro em `.tar.gz`, ou uma unit com `?unit=<chave>` (R8.9; registrado) |
 | `DELETE /state` | Exclui o state (R6.2) |
 | `GET\|POST\|DELETE /state/tokens` | Tokens de state |
 | `GET /state/events` | Registro de eventos |
@@ -330,6 +337,9 @@ Testes: `internal/server/stateimport_test.go` (bundles montados no teste, tokens
 - [x] **CAS4.5** A tela da run mostra o backend usado por unit (R2.3).
 - [x] **CAS4.6** A aba Resources lista os recursos de cada unit com endereço, tipo e provider; nenhum valor de atributo aparece na resposta da API (R8.8).
 - [x] **CAS4.7** Um recurso criado por uma run mostra essa run como última mudança; um drift aberto marca os recursos afetados até o próximo apply.
+- [x] **CAS4.8** Um stack que já fez apply sem gravar state no Firstlume mostra o aviso de state em outro backend.
+- [x] **CAS4.9** Exportar um stack de várias units e importar o arquivo em outro stack recria as mesmas units com o mesmo conteúdo. Uma unit sozinha vem como `.tfstate`. Stack sem state dá 404, e cada unit exportada aparece nos eventos com quem e quando (R8.9).
+- [x] **CAS4.10** Excluir um stack com recursos: sem corpo ou com o nome errado é recusado, e o stack e o state continuam; com o nome certo, os dois saem juntos. Com run ativa ou unit travada, é recusado nos dois casos (R6.3).
 
 ### Marco S5: importar pela tela (emenda R9.7 a R9.16)
 
@@ -342,7 +352,6 @@ Testes: `internal/stateid/stateid_test.go` e `TestIdentifyAndPlaceStates`, no Po
 - [x] **CAS5.5** Criar o stack importando grava as units escolhidas e deixa de fora as marcadas; se a importação falhar, o stack não fica.
 - [x] **CAS5.6** Num stack que já tem state, "Import state…" mostra igual, mais novo, mais velho e conflito, e só substitui o que for marcado.
 - [x] **CAS5.7** O plan depois da importação dá "No changes" num stack real, com Terragrunt e agent (`environments/tg` no Gitea de dev). Falta repetir num stack da empresa.
-- [x] **CAS4.8** Um stack que já fez apply sem gravar state no Firstlume mostra o aviso de state em outro backend.
 
 ### Critérios gerais
 

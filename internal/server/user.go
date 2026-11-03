@@ -53,6 +53,7 @@ func (s *Server) userRoutes(r chi.Router) {
 		r.With(s.requireID).Post("/stacks/{id}/state/import", s.importState)
 		r.With(s.requireID).Post("/stacks/{id}/state/identify", s.identifyStackState)
 		r.Post("/state/identify", s.identifyNewStackState)
+		r.With(s.requireID).Get("/stacks/{id}/state/export", s.exportState)
 		r.With(s.requireID).Get("/stacks/{id}/declaration", s.getDeclaration)
 		r.With(s.requireID).Post("/stacks/{id}/vault/check", s.vaultCheck)
 		r.Get("/vault", s.getVaultConnection)
@@ -482,10 +483,27 @@ func (s *Server) moveStack(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// deleteStack takes an optional body: with delete_state and the stack's name,
+// the state goes with the stack even if it still manages resources (R6.3).
 func (s *Server) deleteStack(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteStack(r.Context(), orgID(r), id(r), actorName(r)); err != nil {
+	var req api.DeleteStackRequest
+	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.DeleteState {
+		st, err := s.store.GetStack(r.Context(), orgID(r), id(r))
+		if err != nil {
+			s.storeError(w, r, err, "stack")
+			return
+		}
+		if req.Confirm != st.Name {
+			writeError(w, http.StatusUnprocessableEntity, "type the stack's name to confirm deleting its state")
+			return
+		}
+	}
+	if err := s.store.DeleteStack(r.Context(), orgID(r), id(r), actorName(r), req.DeleteState); err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, http.StatusConflict, "a stack with a run in progress cannot be deleted")
+			writeError(w, http.StatusConflict, "a stack with a run in progress or a locked unit cannot be deleted")
 			return
 		}
 		if errors.Is(err, store.ErrStateNotEmpty) {

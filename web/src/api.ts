@@ -596,19 +596,33 @@ async function answer<T>(res: Response): Promise<T> {
     onUnauthorized();
     throw new ApiError(401, "invalid or missing token");
   }
-  if (!res.ok) {
-    let msg = res.statusText;
-    try {
-      const body = await res.json();
-      msg = body.error ?? msg;
-      if (body.problems?.length) msg += `: ${body.problems[0].path}: ${body.problems[0].error}`;
-    } catch {
-      // non-JSON error body
-    }
-    throw new ApiError(res.status, msg);
-  }
+  await throwIfFailed(res);
   if (res.status === 204) return undefined as T;
   return (res.headers.get("Content-Type") ?? "").includes("json") ? res.json() : ((await res.text()) as T);
+}
+
+async function throwIfFailed(res: Response) {
+  if (res.ok) return;
+  let msg = res.statusText;
+  try {
+    const body = await res.json();
+    msg = body.error ?? msg;
+    if (body.problems?.length) msg += `: ${body.problems[0].path}: ${body.problems[0].error}`;
+  } catch {
+    // non-JSON error body
+  }
+  throw new ApiError(res.status, msg);
+}
+
+/** Fetches a whole file: it resolves only once every byte has arrived. */
+async function download(path: string): Promise<Blob> {
+  const res = await fetch(`/api/v1${path}`, { headers: authHeaders() });
+  if (res.status === 401) {
+    onUnauthorized();
+    throw new ApiError(401, "invalid or missing token");
+  }
+  await throwIfFailed(res);
+  return res.blob();
 }
 
 function filesForm(files: File[], fields: Record<string, string> = {}): FormData {
@@ -666,7 +680,9 @@ export const api = {
       },
       getStack: (id: string) => request<Stack>("GET", `${p}/stacks/${id}`),
       updateStack: (id: string, req: UpdateStackRequest) => request<Stack>("PATCH", `${p}/stacks/${id}`, req),
-      deleteStack: (id: string) => request<void>("DELETE", `${p}/stacks/${id}`),
+      /** `confirmName` deletes the state with the stack, even if it still manages resources. */
+      deleteStack: (id: string, confirmName?: string) =>
+        request<void>("DELETE", `${p}/stacks/${id}`, confirmName === undefined ? undefined : { delete_state: true, confirm: confirmName }),
       getStateStorage: () => request<StateStorageSettings>("GET", `${p}/state-storage`),
       /** folderID "" is the organization's top level. */
       previewMove: (id: string, folderID: string) =>
@@ -676,6 +692,9 @@ export const api = {
       createRun: (stackID: string, type: RunType, ref = "") => request<Run>("POST", `${p}/stacks/${stackID}/runs`, { type, ref }),
       stateUnits: (stackID: string) => request<StateUnit[]>("GET", `${p}/stacks/${stackID}/state`),
       resources: (stackID: string) => request<StackResources>("GET", `${p}/stacks/${stackID}/resources`),
+      /** The whole stack as a bundle, or one unit ("" is the root) as a plain state. */
+      exportState: (stackID: string, unit?: string) =>
+        download(`${p}/stacks/${stackID}/state/export${unit === undefined ? "" : `?unit=${encodeURIComponent(unit)}`}`),
 
       activeRuns: () => request<ActiveRun[]>("GET", `${p}/runs?active=true&failed_within=1h`),
       getRun: (id: string) => request<Run>("GET", `${p}/runs/${id}`),

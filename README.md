@@ -76,7 +76,8 @@ remote_state {
 - **Versões.** Cada gravação vira uma versão imutável, cifrada com uma chave própria. Gravações que perderiam state (serial menor, lineage de outra infraestrutura) são recusadas.
 - **As travas de um run** são soltas quando a fase termina, de qualquer jeito que termine.
 - **Código com outro backend** (por exemplo `s3`) continua funcionando: as variáveis do Firstlume são ignoradas. Código **sem backend** falha no Init, porque o state ficaria no disco do runner e se perderia.
-- **Um stack com recursos no state não pode ser excluído.** Rode um destroy ou exclua o state antes (`DELETE /api/v1/orgs/{org}/stacks/{id}/state`). O state excluído fica guardado por 30 dias.
+- **Exportar.** O botão **Export state…** do stack baixa o state atual em claro: o stack inteiro em `.tar.gz`, no formato que a importação lê, ou uma unit em `.tfstate` (`GET /api/v1/orgs/{org}/stacks/{id}/state/export`, com `?unit=<chave>` para uma unit). O arquivo tem segredos em texto puro, e cada exportação fica registrada.
+- **Um stack com recursos no state só é excluído junto com o state.** O diálogo de excluir oferece exportar antes e pede o nome do stack (pela API, `DELETE .../stacks/{id}` com `{"delete_state": true, "confirm": "<nome>"}`). Sem isso, rode um destroy ou exclua o state antes (`DELETE .../stacks/{id}/state`). A infraestrutura continua de pé, e o state excluído fica guardado por 30 dias.
 
 #### Onde o state fica
 
