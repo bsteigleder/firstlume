@@ -927,6 +927,8 @@ func TestPlanReview(t *testing.T) {
 type fakeGitea struct {
 	token string
 	url   string
+	// extra are more files in the repository infra.
+	extra map[string]string
 }
 
 func (f *fakeGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -947,6 +949,9 @@ func (f *fakeGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"environments/prod/.firstlume/config.yaml": "version: 1\nengine: terraform\nengine_version: 1.15.6\n",
 		"environments/edge/.firstlume/config.yaml": "version: 1\nengine: opentofu\nengine_version: 1.10.2\n",
 		"legacy/vpn/.firstlume/config.yaml":        "version: 1\nengine: terraform\nengine_version: latest\n",
+	}
+	for name, content := range f.extra {
+		files[name] = content
 	}
 	switch p := strings.TrimPrefix(r.URL.Path, "/api/v1"); {
 	case p == "/orgs/acme":
@@ -971,8 +976,10 @@ func (f *fakeGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p == "/repos/acme/infra/git/trees/c0ffee":
 		var tree []map[string]string
 		for f := range files {
-			dir := strings.TrimSuffix(f, "/config.yaml")
-			tree = append(tree, map[string]string{"path": dir, "type": "tree"}, map[string]string{"path": f, "type": "blob"})
+			tree = append(tree, map[string]string{"path": f, "type": "blob"})
+			if dir, ok := strings.CutSuffix(f, "/config.yaml"); ok {
+				tree = append(tree, map[string]string{"path": dir, "type": "tree"})
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"tree": tree, "truncated": false, "total_count": len(tree)})
 	case strings.HasPrefix(p, "/repos/acme/infra/raw/"):

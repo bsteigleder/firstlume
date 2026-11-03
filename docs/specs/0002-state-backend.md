@@ -214,6 +214,25 @@ O desenho das telas vem antes da implementação, como na spec 0001. A aba tem o
 - **R9.5** Arquivos que não são state, caminhos com `..`, links e tamanhos acima do limite são recusados e listados na simulação. Nada é gravado.
 - **R9.6** A importação é **atômica** por bundle: grava tudo ou nada.
 
+#### Emenda de 2026-11-02: importar pela tela, com o Firstlume organizando os states
+
+Quadros 49 a 52 do canvas. A emenda só acrescenta: a API de R9 continua igual para quem já a usa.
+
+- **R9.7** O assistente de novo stack pergunta se a infraestrutura já existe. Se sim, recebe os states antes de criar o stack. Nada é gravado até o último botão. Se a importação falhar, o stack criado nesse passo é removido.
+- **R9.8** O envio aceita vários arquivos ao mesmo tempo: `tar.gz` e `.tfstate` avulsos, em qualquer organização de pastas. Dentro de um bundle enviado assim, qualquer `*.tfstate` conta como state.
+- **R9.9** O state não diz de onde veio, então o Firstlume **deduz** o lugar de cada um, nesta ordem:
+  1. **lineage:** o mesmo lineage já existe numa unit deste stack;
+  2. **caminho:** o caminho no arquivo termina no caminho de uma unit, ou o nome do arquivo é o nome da pasta dela;
+  3. **recursos:** os endereços do state estão nos blocos `resource` da pasta, seguindo módulos locais e o `source` do Terragrunt;
+  4. **identificadores:** em pastas empatadas (mesmo código), o `id` e os nomes do state são comparados com os valores que só uma delas tem (`inputs`, `tfvars`, nome da pasta).
+- **R9.10** Um caminho que bate não vale se a maioria dos recursos não estiver no código daquela pasta. Módulos remotos não dão para ler: esses recursos não contam nem a favor nem contra.
+- **R9.11** O que não for decidido fica para a pessoa escolher a pasta ou deixar de fora, com o motivo. Isso inclui dois states na mesma unit; se tiverem o mesmo lineage, o de serial mais alto fica no lugar e o outro é marcado como cópia antiga. Toda colocação mostra o motivo e pode ser trocada. A importação só acontece depois da confirmação.
+- **R9.12** A identificação lê do state só uma lista fixa de atributos identificadores (`internal/reslabel`), nunca um atributo sensível, e não grava nem devolve esses valores. O código é lido pela API do Git, sem clonar. Sem conexão Git ou sem conseguir ler o código, vale só o caminho, e a pessoa digita a unit.
+- **R9.13** Um state cujo lineage já está em outro stack da organização aparece com esse aviso, porque dois stacks escreveriam na mesma infraestrutura.
+- **R9.14** Se nenhum state combinar com o código, a tela avisa que a pasta ou a branch podem estar erradas e pede uma confirmação explícita para importar assim mesmo.
+- **R9.15** Depois de importar, o stack mostra quantos states e recursos entraram, lembra de parar a pipeline antiga e de declarar `backend "http" {}`, e pede um plan, que deve dar "No changes". É o plan que confirma a dedução.
+- **R9.16** O stack ganha o botão "Import state…", com a mesma identificação e depois a comparação de R9.3 e R9.4 (substituir por unit).
+
 ## 5. API
 
 Rotas de usuário, todas sob `/api/v1/orgs/{org}/stacks/{id}/state`:
@@ -227,7 +246,8 @@ Rotas de usuário, todas sob `/api/v1/orgs/{org}/stacks/{id}/state`:
 | `GET /state/units/{chave}/diff?from=&to=` | Diferença por endereço |
 | `POST /state/units/{chave}/rollback` | `{version}` |
 | `DELETE /state/units/{chave}/lock` | Destrava à força |
-| `POST /state/import?dry_run=true\|false` | Multipart: arquivo, prefixo e units a substituir |
+| `POST /state/import?dry_run=true\|false` | Multipart: arquivo, prefixo e units a substituir; ou vários arquivos e `placement` (JSON com `source`, `unit` ou `skip`) |
+| `POST /state/identify` | Multipart: arquivos. Diz onde cada state vai (R9.9), sem gravar nada. Para um stack novo, fica em `/orgs/{org}/state/identify`, com repositório, branch e pasta |
 | `DELETE /state` | Exclui o state (R6.2) |
 | `GET\|POST\|DELETE /state/tokens` | Tokens de state |
 | `GET /state/events` | Registro de eventos |
@@ -310,6 +330,18 @@ Testes: `internal/server/stateimport_test.go` (bundles montados no teste, tokens
 - [x] **CAS4.5** A tela da run mostra o backend usado por unit (R2.3).
 - [x] **CAS4.6** A aba Resources lista os recursos de cada unit com endereço, tipo e provider; nenhum valor de atributo aparece na resposta da API (R8.8).
 - [x] **CAS4.7** Um recurso criado por uma run mostra essa run como última mudança; um drift aberto marca os recursos afetados até o próximo apply.
+
+### Marco S5: importar pela tela (emenda R9.7 a R9.16)
+
+Testes: `internal/stateid/stateid_test.go` e `TestIdentifyAndPlaceStates`, no Postgres com um Gitea falso. Também verificado no navegador contra o Gitea de dev: states reais gerados com Terraform, enviados em caminhos e nomes diferentes, no stack `environments/tg`.
+
+- [x] **CAS5.1** Enviar um bundle com caminhos de outro repositório e `.tfstate` soltos coloca cada state na unit certa e mostra o motivo, sem gravar nada.
+- [x] **CAS5.2** Duas pastas com o mesmo módulo: o state vai para a que tem o valor exclusivo. Sem valor exclusivo, a tela pergunta.
+- [x] **CAS5.3** Um caminho que bate com recursos que não estão no código não é aceito sozinho (R9.10).
+- [x] **CAS5.4** Nenhum valor de atributo aparece na resposta da identificação (R9.12).
+- [x] **CAS5.5** Criar o stack importando grava as units escolhidas e deixa de fora as marcadas; se a importação falhar, o stack não fica.
+- [x] **CAS5.6** Num stack que já tem state, "Import state…" mostra igual, mais novo, mais velho e conflito, e só substitui o que for marcado.
+- [x] **CAS5.7** O plan depois da importação dá "No changes" num stack real, com Terragrunt e agent (`environments/tg` no Gitea de dev). Falta repetir num stack da empresa.
 - [x] **CAS4.8** Um stack que já fez apply sem gravar state no Firstlume mostra o aviso de state em outro backend.
 
 ### Critérios gerais

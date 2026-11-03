@@ -107,6 +107,35 @@ func (s *Store) ImportState(ctx context.Context, orgID, stackID string, items []
 	return out, nil
 }
 
+// StateLineage is a unit whose current state has a lineage.
+type StateLineage struct {
+	Lineage string
+	api.StateLocation
+}
+
+// StateLineages finds which of these lineages the organization's stacks have.
+func (s *Store) StateLineages(ctx context.Context, orgID string, lineages []string) ([]StateLineage, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT v.lineage, st.id, st.name, u.key FROM state_units u
+		JOIN state_versions v ON v.unit_id = u.id AND v.number = u.current_version
+		JOIN stacks st ON st.id = u.stack_id
+		WHERE u.organization_id = $1 AND u.deleted_at IS NULL AND v.lineage = ANY($2)
+		ORDER BY st.name, u.key`, orgID, lineages)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StateLineage
+	for rows.Next() {
+		var l StateLineage
+		if err := rows.Scan(&l.Lineage, &l.StackID, &l.Stack, &l.Unit); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
 func unitName(key string) string {
 	if key == "" {
 		return "the root unit"

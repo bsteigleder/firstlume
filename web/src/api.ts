@@ -134,6 +134,60 @@ export interface CreateStackRequest {
   git_token: string;
 }
 
+/** Where one uploaded state goes, or why that is left to a person (spec 0002 R9.9). */
+export interface IdentifiedState {
+  source: string;
+  resources: number;
+  serial: number;
+  lineage: string;
+  placed: boolean;
+  unit: string;
+  reason?: "lineage" | "path" | "resources" | "values" | "only_unit";
+  matched: number;
+  total: number;
+  why?: "tie" | "no_match" | "contradicts" | "older_copy" | "competing";
+  candidates?: string[];
+  path_unit: string;
+  already_in?: { stack_id: string; stack: string; unit: string }[];
+}
+
+export interface StateImportProblem {
+  path: string;
+  error: string;
+}
+
+export interface StateIdentifyResult {
+  units: string[];
+  code_note?: string;
+  states: IdentifiedState[];
+  ignored?: string[];
+  problems?: StateImportProblem[];
+}
+
+export interface StatePlacement {
+  source: string;
+  unit: string;
+  skip?: boolean;
+}
+
+export interface StateImportUnit {
+  key: string;
+  serial: number;
+  lineage: string;
+  resources: number;
+  status: "new" | "same" | "newer" | "older" | "conflict";
+  current_version?: number;
+  current_serial?: number;
+  action: "create" | "replace" | "skip";
+  locked_by?: string;
+  version?: number;
+}
+
+export interface StateImportResult {
+  dry_run: boolean;
+  units: StateImportUnit[];
+}
+
 export interface GitConnection {
   provider: string;
   url: string;
@@ -528,6 +582,16 @@ async function request<T>(method: string, path: string, body?: unknown, token = 
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  return answer<T>(res);
+}
+
+/** Sends files; the browser sets the multipart Content-Type itself. */
+async function upload<T>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(`/api/v1${path}`, { method: "POST", headers: authHeaders(), body: form });
+  return answer<T>(res);
+}
+
+async function answer<T>(res: Response): Promise<T> {
   if (res.status === 401) {
     onUnauthorized();
     throw new ApiError(401, "invalid or missing token");
@@ -535,7 +599,9 @@ async function request<T>(method: string, path: string, body?: unknown, token = 
   if (!res.ok) {
     let msg = res.statusText;
     try {
-      msg = (await res.json()).error ?? msg;
+      const body = await res.json();
+      msg = body.error ?? msg;
+      if (body.problems?.length) msg += `: ${body.problems[0].path}: ${body.problems[0].error}`;
     } catch {
       // non-JSON error body
     }
@@ -543,6 +609,13 @@ async function request<T>(method: string, path: string, body?: unknown, token = 
   }
   if (res.status === 204) return undefined as T;
   return (res.headers.get("Content-Type") ?? "").includes("json") ? res.json() : ((await res.text()) as T);
+}
+
+function filesForm(files: File[], fields: Record<string, string> = {}): FormData {
+  const form = new FormData();
+  for (const [k, v] of Object.entries(fields)) form.append(k, v);
+  for (const f of files) form.append("file", f);
+  return form;
 }
 
 /** Settings live at three kinds of level; this builds the right path for each. */
@@ -582,6 +655,15 @@ export const api = {
       putSettings: (levelPath: string, s: LevelSettings) => request<SettingsResponse>("PUT", `${p}${levelPath}`, s),
 
       createStack: (req: CreateStackRequest) => request<Stack>("POST", `${p}/stacks`, req),
+      /** Where these states would go in a stack not created yet. Writes nothing. */
+      identifyForNewStack: (files: File[], gitRepository: string, ref: string, path: string) =>
+        upload<StateIdentifyResult>(`${p}/state/identify`, filesForm(files, { git_repository: gitRepository, ref, path })),
+      identifyForStack: (id: string, files: File[]) => upload<StateIdentifyResult>(`${p}/stacks/${id}/state/identify`, filesForm(files)),
+      importState: (id: string, files: File[], placement: StatePlacement[], replace: string[], dryRun: boolean) => {
+        const form = filesForm(files, { placement: JSON.stringify(placement) });
+        for (const unit of replace) form.append("replace", unit);
+        return upload<StateImportResult>(`${p}/stacks/${id}/state/import${dryRun ? "?dry_run=true" : ""}`, form);
+      },
       getStack: (id: string) => request<Stack>("GET", `${p}/stacks/${id}`),
       updateStack: (id: string, req: UpdateStackRequest) => request<Stack>("PATCH", `${p}/stacks/${id}`, req),
       deleteStack: (id: string) => request<void>("DELETE", `${p}/stacks/${id}`),

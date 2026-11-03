@@ -1085,6 +1085,57 @@ type StateImportUnit struct {
 	Version int `json:"version,omitempty"`
 }
 
+// StatePlacement says where one uploaded state goes (spec 0002 R9.11).
+type StatePlacement struct {
+	// Source is the name IdentifiedState gave it.
+	Source string `json:"source"`
+	Unit   string `json:"unit"`
+	// Skip leaves it out of the import.
+	Skip bool `json:"skip,omitempty"`
+}
+
+// StateLocation is a unit that already holds a state.
+type StateLocation struct {
+	StackID string `json:"stack_id"`
+	Stack   string `json:"stack"`
+	Unit    string `json:"unit"`
+}
+
+// IdentifiedState says where one uploaded state goes, or why that is left to a
+// person. It never carries attribute values (R9.12).
+type IdentifiedState struct {
+	Source    string `json:"source"`
+	Resources int    `json:"resources"`
+	Serial    int64  `json:"serial"`
+	Lineage   string `json:"lineage"`
+	// Placed says Unit holds a suggestion, since "" is the root unit.
+	Placed bool   `json:"placed"`
+	Unit   string `json:"unit"`
+	// Reason is lineage, path, resources, values or only_unit.
+	Reason string `json:"reason,omitempty"`
+	// Matched of Total of its readable addresses are in the unit's code.
+	Matched int `json:"matched"`
+	Total   int `json:"total"`
+	// Why is tie, no_match, contradicts, older_copy or competing.
+	Why        string   `json:"why,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+	// PathUnit is the unit by its path alone, to import it anyway (R9.14).
+	PathUnit string `json:"path_unit"`
+	// AlreadyIn are other stacks with this lineage (R9.13).
+	AlreadyIn []StateLocation `json:"already_in,omitempty"`
+}
+
+// StateIdentifyResult is where the uploaded states go (R9.9).
+type StateIdentifyResult struct {
+	// Units are the units the code has; empty if it couldn't be read.
+	Units []string `json:"units"`
+	// CodeNote says why the code couldn't be read, when so.
+	CodeNote string               `json:"code_note,omitempty"`
+	States   []IdentifiedState    `json:"states"`
+	Ignored  []string             `json:"ignored,omitempty"`
+	Problems []StateImportProblem `json:"problems,omitempty"`
+}
+
 type StateImportProblem struct {
 	Path  string `json:"path"`
 	Error string `json:"error"`
