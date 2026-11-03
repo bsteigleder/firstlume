@@ -1037,6 +1037,13 @@ type ResourceDrift struct {
 	Resources int       `json:"resources"`
 }
 
+// DeleteStackRequest asks to delete the stack's state with it, confirmed by the
+// stack's name. Without it, a stack whose state manages resources stays.
+type DeleteStackRequest struct {
+	DeleteState bool   `json:"delete_state,omitempty"`
+	Confirm     string `json:"confirm,omitempty"`
+}
+
 // DeleteStateRequest confirms deleting a stack's state by its name.
 type DeleteStateRequest struct {
 	Confirm string `json:"confirm"`

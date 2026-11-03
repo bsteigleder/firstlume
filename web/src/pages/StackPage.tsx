@@ -24,6 +24,7 @@ import { RunDialog } from "./RunDialog";
 import { SettingsEditor } from "./SettingsEditor";
 import { StackDeclaration } from "./StackDeclaration";
 import { StackResources } from "./StackResources";
+import { DeleteStackDialog, ExportStateDialog, unitsWithState } from "./StateExport";
 
 export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "source" }) {
   const { stackId = "" } = useParams();
@@ -38,6 +39,8 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
   const navigate = useNavigate();
   const imported = (location.state as { imported?: ImportSummary } | null)?.imported;
   const showImported = (summary: ImportSummary | null) => navigate(location.pathname, { replace: true, state: summary ? { imported: summary } : null });
+  const [destroying, setDestroying] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const chain = folderChain(stack.data?.folder_id);
 
   useCrumbs([
@@ -51,6 +54,7 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
   const s = stack.data;
   const web = repoWebURL(s.repository);
   const resourceCount = units.data?.reduce((n, u) => n + u.resources, 0);
+  const exportable = unitsWithState(units.data ?? []);
 
   return (
     <div className="page">
@@ -80,6 +84,13 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
             <button onClick={() => setRenaming(true)}>Rename</button>
             <MoveButton stack={s} />
             <button onClick={() => setImporting(true)}>Import state…</button>
+            <button
+              disabled={exportable.length === 0}
+              title={exportable.length === 0 ? "This stack has no state in First Lume yet." : undefined}
+              onClick={() => setExporting(true)}
+            >
+              Export state…
+            </button>
             <button className="primary" onClick={() => (setPlanOnly(false), setRunning(true))}>
               <PlayIcon /> Run…
             </button>
@@ -115,9 +126,12 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
             await stack.reload();
             await reloadTree();
           }}
+          onDestroy={() => setDestroying(true)}
         />
       )}
       {running && <RunDialog stack={s} again={planOnly ? { type: "plan", ref: s.ref } : undefined} onClose={() => setRunning(false)} />}
+      {destroying && <RunDialog stack={s} again={{ type: "destroy", ref: s.ref }} onClose={() => setDestroying(false)} />}
+      {exporting && exportable.length > 0 && <ExportStateDialog stack={s} units={exportable} onClose={() => setExporting(false)} />}
       {renaming && <RenameStackDialog stack={s} onClose={() => setRenaming(false)} onSaved={stack.reload} />}
       {importing && (
         <ImportStateDialog
@@ -228,13 +242,12 @@ function Runs({ stack }: { stack: Stack }) {
   );
 }
 
-function Source({ stack, onSaved }: { stack: Stack; onSaved: () => Promise<void> }) {
-  const { api, link } = useOrg();
-  const navigate = useNavigate();
+function Source({ stack, onSaved, onDestroy }: { stack: Stack; onSaved: () => Promise<void>; onDestroy: () => void }) {
+  const { api } = useOrg();
+  const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState({ repository: stack.repository, ref: stack.ref, path: stack.path, git_token: "" });
   const [changeToken, setChangeToken] = useState(false);
   const save = useAction();
-  const del = useAction();
   useEffect(() => setForm({ repository: stack.repository, ref: stack.ref, path: stack.path, git_token: "" }), [stack.repository, stack.ref, stack.path]);
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const dirty = form.repository !== stack.repository || form.ref !== stack.ref || form.path !== stack.path || changeToken;
@@ -317,23 +330,21 @@ function Source({ stack, onSaved }: { stack: Stack; onSaved: () => Promise<void>
             Removes the stack, its runs and its settings from First Lume. It does <strong>not</strong> destroy the infrastructure: run a destroy first if
             you want it gone.
           </p>
-          {del.error && <div className="form-error">{del.error}</div>}
         </div>
-        <button
-          className="danger"
-          disabled={del.busy}
-          onClick={() => {
-            if (!confirm(`Delete stack “${stack.name}”? This does not destroy its infrastructure.`)) return;
-            void del.run(async () => {
-              await api.deleteStack(stack.id);
-              await onSaved().catch(() => {});
-              navigate(stack.folder_id ? link(`f/${stack.folder_id}`) : link());
-            });
-          }}
-        >
+        <button className="danger" onClick={() => setDeleting(true)}>
           Delete stack
         </button>
       </section>
+      {deleting && (
+        <DeleteStackDialog
+          stack={stack}
+          onClose={() => setDeleting(false)}
+          onDestroy={() => {
+            setDeleting(false);
+            onDestroy();
+          }}
+        />
+      )}
     </div>
   );
 }

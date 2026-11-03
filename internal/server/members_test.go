@@ -168,6 +168,7 @@ func TestOrganizationVisibility(t *testing.T) {
 		{"GET", ""}, {"PATCH", ""}, {"DELETE", ""}, {"GET", "/tree"}, {"GET", "/settings"}, {"PUT", "/settings"},
 		{"POST", "/folders"}, {"POST", "/stacks"}, {"GET", "/stacks/" + st.ID}, {"GET", "/stacks/" + st.ID + "/runs"},
 		{"POST", "/stacks/" + st.ID + "/runs"}, {"GET", "/stacks/" + st.ID + "/state"}, {"GET", "/stacks/" + st.ID + "/resources"},
+		{"GET", "/stacks/" + st.ID + "/state/export"},
 		{"GET", "/runs?active=true"}, {"GET", "/runs/" + run.ID}, {"GET", "/runs/" + run.ID + "/logs"}, {"POST", "/runs/" + run.ID + "/approve"},
 		{"GET", "/git/connection"}, {"GET", "/vault"}, {"GET", "/state-storage"}, {"GET", "/agents"}, {"POST", "/agents"},
 		{"GET", "/members"}, {"POST", "/members"},

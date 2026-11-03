@@ -1082,6 +1082,63 @@ a.badge.plain:hover {
   color: var(--danger);
 }
 
+/* ---------- exporting state ---------- */
+
+.export-unit {
+  margin-top: 7px;
+  width: 100%;
+  max-width: 100%;
+  font-size: 12.5px;
+}
+
+.export-file {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+
+.export-actions {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.export-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.export-row.done {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.export-row-text {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+
+button.link-inline {
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* ---------- new stack wizard ---------- */
 
 .wizard {

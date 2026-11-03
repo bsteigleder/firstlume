@@ -150,25 +150,29 @@ func (s *Store) UpdateStack(ctx context.Context, orgID, id string, req api.Updat
 
 // DeleteStack refuses to delete while a run is in progress, so an apply is
 // never orphaned. It does not destroy infrastructure: run a destroy first.
-func (s *Store) DeleteStack(ctx context.Context, orgID, id, actor string) error {
+func (s *Store) DeleteStack(ctx context.Context, orgID, id, actor string, deleteState bool) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		var active bool
+		var active, locked bool
 		err := tx.QueryRow(ctx, `
-			SELECT EXISTS (SELECT 1 FROM runs WHERE stack_id = st.id AND status IN `+activeStatuses+`)
-			FROM stacks st WHERE st.organization_id = $1 AND st.id = $2 FOR UPDATE`, orgID, id).Scan(&active)
+			SELECT EXISTS (SELECT 1 FROM runs WHERE stack_id = st.id AND status IN `+activeStatuses+`),
+			       EXISTS (SELECT 1 FROM state_units WHERE stack_id = st.id AND deleted_at IS NULL AND lock_id IS NOT NULL)
+			FROM stacks st WHERE st.organization_id = $1 AND st.id = $2 FOR UPDATE`, orgID, id).Scan(&active, &locked)
 		if err != nil {
 			return notFound(err)
 		}
-		if active {
+		// A run or a lock means someone may be about to write the state (R6.3).
+		if active || locked {
 			return ErrConflict
 		}
 		// Deleting the stack would orphan infrastructure its state still manages (R6.1).
-		managed, err := hasManagedState(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		if managed {
-			return ErrStateNotEmpty
+		if !deleteState {
+			managed, err := hasManagedState(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			if managed {
+				return ErrStateNotEmpty
+			}
 		}
 		if err := retireState(ctx, tx, orgID, id, actor, "stack deleted"); err != nil {
 			return err
