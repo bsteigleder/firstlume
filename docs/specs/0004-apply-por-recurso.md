@@ -1,6 +1,6 @@
 # Spec 0004: apply acompanhado recurso por recurso
 
-- **Status:** aprovada em 2026-10-31; Marcos P1 e P2 implementados e testados em 2026-10-31
+- **Status:** aprovada em 2026-10-31; Marcos P1 e P2 implementados e testados em 2026-10-31; Marco P3 (tela) implementado em 2026-11-03
 - **Data:** 2026-10-31
 - **Depende de:** spec 0001, seção 4.11 (revisão do plano recurso por recurso), já implementada
 - **Telas:** aprovadas em 2026-10-31 no canvas de telas, quadros "16 · Apply por recurso" (rodando, terminou com erro, terminou com sucesso)
@@ -171,10 +171,10 @@ Testes em `internal/executor/applyjson_test.go` com Terragrunt 1.1.6 real, com T
 
 ### Marco P3: tela
 
-- [ ] **CAP3.1** A tela segue os três quadros aprovados: rodando, terminou com erro e terminou com sucesso (R4.1 a R4.10).
+- [x] **CAP3.1** A tela segue os três quadros aprovados: rodando, terminou com erro e terminou com sucesso (R4.1 a R4.10).
 - [ ] **CAP3.2** Os filtros, a ordem, os cards recolhidos, "Show more", "Show in log", "Expand log" e o link do arquivo no Git funcionam com o `apply-demo` de verdade.
-- [ ] **CAP3.3** Uma run antiga, sem estado, aparece como hoje.
-- [ ] **CAP3.4** A tela funciona em largura de celular: os filtros quebram linha e os cards não estouram a largura.
+- [x] **CAP3.3** Uma run antiga, sem estado, aparece como hoje.
+- [x] **CAP3.4** A tela funciona em largura de celular: os filtros quebram linha e os cards não estouram a largura.
 
 ### Critérios gerais
 

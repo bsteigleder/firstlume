@@ -328,6 +328,41 @@ export interface ResourceChange {
   label?: ResourceLabel;
   attributes?: AttributeChange[];
   truncated?: boolean;
+  /** Where the resource is in the apply (spec 0004); absent when the apply did not report progress. */
+  apply?: ResourceApply;
+}
+
+export type ApplyState = "pending" | "applying" | "done" | "failed" | "not_applied";
+
+export interface ResourceApply {
+  state: ApplyState;
+  started_at?: string;
+  finished_at?: string;
+  duration_ms?: number;
+  /** Operations in the order they ran: one, or two for a replace. */
+  steps?: ApplyStep[];
+  errors?: ApplyError[];
+}
+
+export interface ApplyStep {
+  action: "create" | "update" | "delete";
+  started_at?: string;
+  finished_at?: string;
+  failed?: boolean;
+}
+
+export interface ApplyError {
+  summary: string;
+  detail?: string;
+  /** Relative to the module's directory. */
+  file?: string;
+  line?: number;
+}
+
+export interface ApplyTotals {
+  done: number;
+  failed: number;
+  not_applied: number;
 }
 
 /** Identifies a resource across a run --all plan (what approvals acknowledge). */
@@ -461,6 +496,8 @@ export interface Run {
   config?: StackConfig;
   settings_used?: RunSettings;
   unit_backends?: UnitBackend[];
+  /** Set once an apply that reported progress resource by resource has finished. */
+  apply_totals?: ApplyTotals;
   approved_at?: string;
   started_at?: string;
   finished_at?: string;
