@@ -2,7 +2,7 @@
 
 Plataforma de automação de Infraestrutura como Código (Terraform, OpenTofu e Terragrunt), no estilo do env0, instalável via Helm em qualquer cluster Kubernetes.
 
-> **Status: fase 2.** Já existem organizações, pastas e stacks com configurações herdadas, runs de plan/apply com revisão por recurso e aprovação configurável, drift detection agendado, a conexão com o Gitea, o state backend próprio (por unit, com lock e versões), uma UI web, o agent que cria Jobs no Kubernetes e o chart Helm, e o login pelo Gitea (OIDC) com sessões e lista de grupos permitidos. Membros e convites vêm a seguir. Veja o [roadmap](#roadmap).
+> **Status: fase 2.** Já existem organizações, pastas e stacks com configurações herdadas, runs de plan/apply com revisão por recurso e aprovação configurável, drift detection agendado, a conexão com o Gitea, o state backend próprio (por unit, com lock e versões), uma UI web, o agent que cria Jobs no Kubernetes e o chart Helm, e o login pelo Gitea (OIDC) com sessões, lista de grupos permitidos, membros e convites. Veja o [roadmap](#roadmap).
 
 ## Arquitetura
 
@@ -23,7 +23,7 @@ Plataforma de automação de Infraestrutura como Código (Terraform, OpenTofu e 
 - **Um binário, uma imagem.** `firstlume server | agent | exec | migrate | keygen`. A UI (React, em `web/`) é embutida no binário e servida pelo server no mesmo endereço da API.
 - **O agent busca o trabalho (modelo pull).** Ele só faz requisições de saída, então pode rodar em outro cluster ou na rede do cliente sem que a API precise alcançá-lo.
 - **Cada fase de um run roda num Job efêmero.** O pod é endurecido: não roda como root, tem rootfs somente leitura, não pode escalar privilégios e o Job nunca é retentado. As credenciais de nuvem vêm da identidade do pod (IRSA, Workload Identity), via anotações no ServiceAccount do executor.
-- **O lock é por ambiente.** Só um run por vez executa ou aguarda aprovação em cada ambiente. Os demais esperam na fila, em ordem de chegada.
+- **O lock é por stack.** Só um run por vez executa ou aguarda aprovação em cada stack. Os demais esperam na fila, em ordem de chegada.
 - **O apply roda exatamente o que foi planejado.** O plan grava o commit SHA e o arquivo de plano, criptografado no banco. O apply faz checkout desse commit e aplica esse arquivo.
 - **Segredos criptografados.** Variáveis sensíveis, tokens git e planos são cifrados com AES-256-GCM, usando uma chave derivada de `FIRSTLUME_SECRET_KEY`. Valores sensíveis são mascarados nos logs e nunca são devolvidos pela API.
 
@@ -34,16 +34,16 @@ queued ─▶ planning ─┬─▶ no_changes                       (sem mudan�
                     ├─▶ planned                          (type=plan)
                     ├─▶ awaiting_approval ─┬─▶ apply_queued ─▶ applying ─▶ applied
                     │                      └─▶ discarded
-                    ├─▶ apply_queued                     (auto_approve)
+                    ├─▶ apply_queued                     (require_approval: false)
                     └─▶ drifted                          (type=drift)
 qualquer fase em execução ─▶ failed  |  queued/apply_queued ─▶ canceled
 ```
 
-A aprovação é configurável por ambiente, na UI ou com `PATCH /api/v1/environments/{id}` (`auto_approve`). O padrão é exigir aprovação.
+A aprovação é a configuração `require_approval`, herdada da organização para as pastas e os stacks: vale o nível mais próximo do stack. Ela muda na UI ou com `PUT .../settings` (cuidado: esse `PUT` substitui o que o nível define, veja [Credenciais de registry](#credenciais-de-registry)). O padrão é exigir aprovação. A regra é lida quando o plan termina, então uma mudança também vale para os runs já na fila.
 
 ### Drift detection
 
-Cada ambiente pode ter um intervalo de verificação (`drift_interval_minutes`, de 15 min a 7 dias). O server cria um run `drift` quando a verificação vence e o ambiente está livre. Esse run é um `plan` que **só reporta**: nunca aplica, não pede aprovação e não guarda o arquivo de plano. O resultado (`in_sync`, `drifted` ou `error`) fica no ambiente e aparece na UI. Também dá para verificar na hora, com um run do tipo `drift`. Mudanças na branch que ainda não foram aplicadas também aparecem como drift.
+O intervalo de verificação é a configuração herdada `drift_interval_minutes` (de 15 min a 7 dias; `0` desliga, e esse é o padrão). O server cria um run `drift` quando a verificação vence e o stack está livre. Esse run é um `plan` que **só reporta**: nunca aplica, não pede aprovação e não guarda o arquivo de plano. O resultado (`in_sync`, `drifted` ou `error`) fica no stack e aparece na UI. Também dá para verificar na hora, com um run do tipo `drift`. Mudanças na branch que ainda não foram aplicadas também aparecem como drift.
 
 Se o executor parar de enviar heartbeat por `FIRSTLUME_HEARTBEAT_TIMEOUT` (10 min por padrão), o run é marcado como `failed`. Se o pod morrer (por exemplo, por OOM ou deadline), o agent reporta a falha.
 
@@ -117,7 +117,7 @@ remote_state {
 - **As travas de um run** são soltas quando a fase termina, de qualquer jeito que termine.
 - **Código com outro backend** (por exemplo `s3`) continua funcionando: as variáveis do Firstlume são ignoradas. Código **sem backend** falha no Init, porque o state ficaria no disco do runner e se perderia.
 - **Exportar.** O botão **Export state…** do stack baixa o state atual em claro: o stack inteiro em `.tar.gz`, no formato que a importação lê, ou uma unit em `.tfstate` (`GET /api/v1/orgs/{org}/stacks/{id}/state/export`, com `?unit=<chave>` para uma unit). O arquivo tem segredos em texto puro, e cada exportação fica registrada.
-- **Um stack com recursos no state só é excluído junto com o state.** O diálogo de excluir oferece exportar antes e pede o nome do stack (pela API, `DELETE .../stacks/{id}` com `{"delete_state": true, "confirm": "<nome>"}`). Sem isso, rode um destroy ou exclua o state antes (`DELETE .../stacks/{id}/state`). A infraestrutura continua de pé, e o state excluído fica guardado por 30 dias.
+- **Um stack com recursos no state só é excluído junto com o state.** O diálogo de excluir oferece exportar antes e pede o nome do stack (pela API, `DELETE .../stacks/{id}` com `{"delete_state": true, "confirm": "<nome>"}`). Sem isso, rode um destroy ou exclua o state antes: `DELETE .../stacks/{id}/state`, com `{"confirm": "<nome do stack>"}` no corpo. Essa exclusão é recusada com um run ativo ou uma unit travada. A infraestrutura continua de pé, e o state excluído fica guardado por 30 dias.
 
 #### Onde o state fica
 
@@ -321,16 +321,16 @@ Para o código baixar charts e imagens de registries com login (Harbor, GHCR, Do
 - **Nas configurações**, herdadas por host (o nível mais próximo vence, e hosts diferentes se somam):
 
   ```bash
-  curl -X PUT -H "$H" $O/settings -d '{
-    "registries": [
+  curl -s -H "$H" $O/settings | jq '.level | .registries = [
       {"host": "harbor.example.com", "username": "robot$infra", "password": "..."},
       {"host": "ghcr.io", "username": "bot", "password_vault": {"path": "secret/ci/ghcr", "field": "token"}},
       {"host": "tf.example.com", "kind": "terraform", "password": "..."}
-    ]
-  }'
+    ]' | curl -s -X PUT -H "$H" $O/settings -d @-
   ```
 
-  A senha nunca é devolvida. Mandada vazia, a guardada continua. Sem o campo `registries`, as credenciais do nível ficam como estão; `[]` remove todas.
+  **O `PUT .../settings` substitui tudo o que o nível define, exceto `registries`.** O que não vier no corpo deixa de valer ali: as variáveis do nível são apagadas e `require_approval`, `drift_interval_minutes`, `confirm_destructive`, `vault_role` e `git_on_push` voltam a ser herdados. Por isso o exemplo parte do `level` devolvido pelo `GET`, em vez de mandar só `registries`. Nele, as variáveis sensíveis vêm sem valor e, mandadas assim, continuam com o valor guardado.
+
+  A senha nunca é devolvida. Mandada vazia, a guardada continua. A lista enviada substitui a do nível. Sem o campo `registries`, as credenciais do nível ficam como estão; `[]` remove todas.
 - **No repositório**, em `registries` do `config.yaml`, com as mesmas fontes da declaração (`{var: ...}`, `{vault: ...}`). Para o mesmo host, vencem as configurações.
 
 No run, o Firstlume escreve o `config.json` do Docker no HOME da fase, aponta `DOCKER_CONFIG` e `HELM_REGISTRY_CONFIG` para ele (o provider `helm` e o próprio `helm` leem daí) e exporta `TF_TOKEN_<host>` para registries do tipo `terraform`. Senhas e o `usuário:senha` em base64 são mascarados no log. O apply usa as credenciais do plan.
@@ -406,7 +406,7 @@ helm install firstlume deploy/helm/firstlume -n firstlume --create-namespace \
   --set controlPlane.database.url='postgres://user:pass@host:5432/firstlume?sslmode=require'
 ```
 
-Agent adicional em outro cluster (crie o token com `POST /api/v1/agents`):
+Agent adicional em outro cluster (crie o token com `POST /api/v1/orgs/{org}/agents`; o agent atende só essa organização):
 
 ```bash
 helm install firstlume-agent deploy/helm/firstlume -n firstlume --create-namespace \

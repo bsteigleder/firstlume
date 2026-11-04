@@ -129,7 +129,7 @@ agent:
   # URL executor pods use to reach the control plane. Empty = apiUrl.
   executorApiUrl: ""
   # Agent token, only needed when controlPlane.enabled=false
-  # (create one with POST /api/v1/agents).
+  # (create one with POST /api/v1/orgs/{org}/agents).
   token: ""
   # Or read it from an existing Secret with key `agent-token`.
   existingSecret: ""
