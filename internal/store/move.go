@@ -89,6 +89,7 @@ func (s *Store) PreviewMoveStack(ctx context.Context, orgID, stackID, folderID s
 		"drift_interval_minutes": own.driftInterval != nil,
 		"confirm_destructive":    own.confirmDestructive != nil,
 		"vault_role":             own.vaultRole != nil,
+		"git_on_push":            own.gitOnPush != nil,
 	} {
 		if set {
 			out.OwnSettings = append(out.OwnSettings, name)
@@ -176,6 +177,7 @@ func (s *Store) moveChanges(before, after *inherited) ([]api.MoveChange, error) 
 		be.DriftIntervalMinutes.Origin, ae.DriftIntervalMinutes.Origin)
 	setting("confirm_destructive", strconv.FormatBool(be.ConfirmDestructive.Value), strconv.FormatBool(ae.ConfirmDestructive.Value),
 		be.ConfirmDestructive.Origin, ae.ConfirmDestructive.Origin)
+	setting("git_on_push", be.GitOnPush.Value, ae.GitOnPush.Value, be.GitOnPush.Origin, ae.GitOnPush.Origin)
 	if be.VaultRole.Value != ae.VaultRole.Value {
 		c := api.MoveChange{Setting: "vault_role"}
 		if be.VaultRole.Value != "" {

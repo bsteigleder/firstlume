@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Navigate, useNavigate, useParams } from "react-router";
+import { Link, Navigate, useNavigate, useParams } from "react-router";
 import { api as rootAPI, settingsPath, type CreateAgentResponse, type GitConnection, type VaultConnection } from "../api";
 import { Logo } from "../icons";
 import { PageTitle, rememberOrg, useCrumbs, useOrg } from "../org";
@@ -107,7 +107,7 @@ function General() {
 }
 
 function GitConnectionSection() {
-  const { api } = useOrg();
+  const { api, link } = useOrg();
   // undefined while loading, null when there is none.
   const [conn, setConn] = useState<GitConnection | null | undefined>(undefined);
   const [form, setForm] = useState({ url: "", account: "", token: "" });
@@ -138,6 +138,8 @@ function GitConnectionSection() {
       <div className="section-head">
         <h2 className="section-title">Git connection</h2>
         {conn && <span className="badge ok">Connected{repos !== null ? ` · ${repos} repositories` : ""}</span>}
+        <span className="grow" />
+        {conn && <Link to={link("git-events")} className="small-btn">Git events</Link>}
       </div>
       <p className="muted">
         First Lume lists the account’s repositories, finds <span className="mono">.firstlume</span> folders and clones with a service token, not

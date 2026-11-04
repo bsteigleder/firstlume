@@ -12,12 +12,15 @@ import {
   PlanCounts,
   repoLabel,
   repoWebURL,
+  RunOrigin,
   StatusBadge,
+  supersededBy,
   timeAgo,
   useAction,
   useData,
 } from "../ui";
 import { RenameStackDialog } from "./dialogs";
+import { GitLastDecision } from "./GitEvents";
 import { ImportedNotice, ImportStateDialog, type ImportSummary } from "./ImportState";
 import { MoveButton } from "./MoveStack";
 import { RunDialog } from "./RunDialog";
@@ -118,7 +121,7 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
 
       {tab === "runs" && <Runs stack={s} />}
       {tab === "resources" && <StackResources stack={s} onImport={() => setImporting(true)} />}
-      {tab === "settings" && <SettingsEditor level={{ kind: "stack", id: s.id, name: s.name }} path={settingsPath({ kind: "stack", id: s.id })} />}
+      {tab === "settings" && <SettingsEditor level={{ kind: "stack", id: s.id, name: s.name }} path={settingsPath({ kind: "stack", id: s.id })} ownGitToken={!s.connection_id} />}
       {tab === "source" && (
         <Source
           stack={s}
@@ -175,6 +178,8 @@ function Runs({ stack }: { stack: Stack }) {
         </Link>
       )}
 
+      {stack.connection_id && <GitLastDecision stack={stack} />}
+
       {runs.data.length === 0 ? (
         <Empty>No runs yet. Use Run… to plan this stack.</Empty>
       ) : (
@@ -224,8 +229,9 @@ function Runs({ stack }: { stack: Stack }) {
                       <PlanCounts summary={r.plan_summary} />
                     </td>
                     <td className="small">
-                      {r.created_by === "drift-detection" ? "schedule" : r.created_by}
+                      <RunOrigin run={r} />
                       {r.approved_by && <div className="muted">approved by {r.approved_by}</div>}
+                      {supersededBy(r) && <div className="muted">Superseded by <span className="mono">{supersededBy(r)?.slice(0, 7)}</span></div>}
                     </td>
                     <td className="muted small">
                       {timeAgo(r.created_at)}

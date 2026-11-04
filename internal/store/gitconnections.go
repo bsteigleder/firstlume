@@ -19,9 +19,9 @@ func (s *Store) GetGitConnection(ctx context.Context, orgID string) (*GitConnect
 	var c GitConnection
 	var enc []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, provider, url, account, account_kind, token_enc, created_at, updated_at
+		SELECT id, provider, url, account, account_kind, token_enc, webhook_secret_enc IS NOT NULL, created_at, updated_at
 		FROM git_connections WHERE organization_id = $1`, orgID).Scan(
-		&c.ID, &c.Provider, &c.URL, &c.Account, &c.AccountKind, &enc, &c.CreatedAt, &c.UpdatedAt)
+		&c.ID, &c.Provider, &c.URL, &c.Account, &c.AccountKind, &enc, &c.WebhookSecretSet, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, notFound(err)
 	}
@@ -45,9 +45,9 @@ func (s *Store) PutGitConnection(ctx context.Context, orgID string, c api.GitCon
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (organization_id) DO UPDATE SET provider = EXCLUDED.provider, url = EXCLUDED.url,
 		       account = EXCLUDED.account, account_kind = EXCLUDED.account_kind, token_enc = EXCLUDED.token_enc, updated_at = now()
-		RETURNING provider, url, account, account_kind, created_at, updated_at`,
+		RETURNING provider, url, account, account_kind, webhook_secret_enc IS NOT NULL, created_at, updated_at`,
 		orgID, c.Provider, c.URL, c.Account, c.AccountKind, enc).Scan(
-		&out.Provider, &out.URL, &out.Account, &out.AccountKind, &out.CreatedAt, &out.UpdatedAt)
+		&out.Provider, &out.URL, &out.Account, &out.AccountKind, &out.WebhookSecretSet, &out.CreatedAt, &out.UpdatedAt)
 	return &out, err
 }
 
