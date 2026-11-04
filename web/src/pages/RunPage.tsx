@@ -1,8 +1,11 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
   changeKey,
   isTerminal,
+  type ApplyError,
+  type ApplyState,
+  type ApplyStep,
   settingsPath,
   streamLogs,
   type ChangeAction,
@@ -14,7 +17,7 @@ import {
   type Stack,
   type UnitBackend,
 } from "../api";
-import { ChevronRightIcon, ExternalIcon } from "../icons";
+import { CheckIcon, ChevronRightIcon, CloseIcon, ExternalIcon } from "../icons";
 import { useCrumbs, useOrg } from "../org";
 import {
   commitURL,
@@ -51,13 +54,17 @@ export function RunPage() {
   const [acked, setAcked] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<string | null>(null);
   const [reconcile, setReconcile] = useState(false);
+  const [filter, setFilter] = useState<StateFilter>("all");
+  const [logOpen, setLogOpen] = useStoredFlag("firstlume.applyLogOpen");
+  const [focus, setFocus] = useState<LogFocus | null>(null);
 
-  // Keep the run and its steps fresh while they can still change.
+  // Keep the run, its steps and, during the apply, its changes fresh while they can still change.
   useEffect(() => {
     if (!active) return;
     const refresh = () => {
       void run.reload();
       void steps.reload();
+      if (status === "applying") void changes.reload();
     };
     const t = setInterval(refresh, 2000);
     const stop = onTabShown(refresh);
@@ -65,7 +72,9 @@ export function RunPage() {
       clearInterval(t);
       stop();
     };
-  }, [active, run.reload, steps.reload]);
+  }, [active, status, run.reload, steps.reload, changes.reload]);
+  const counts = applyCounts(changes.data);
+  const now = useNow(!!counts && counts.applying > 0);
   useEffect(() => {
     void steps.reload();
   }, [status, steps.reload]);
@@ -82,13 +91,41 @@ export function RunPage() {
   if (!run.data) return null;
   const r = run.data;
   const s = stack.data;
-  const track = buildTrack(r, steps.data ?? []);
+  const track = buildTrack(r, steps.data ?? [], counts);
   const current = selected ?? defaultStep(track);
   const confirmRequired = settings.data?.effective.confirm_destructive.value ?? false;
   const destructive = (changes.data ?? []).filter((c) => c.action === "delete" || c.action === "replace");
   const missing = confirmRequired ? destructive.filter((c) => !acked[changeKey(c)]) : [];
   const awaiting = r.status === "awaiting_approval";
   const isDrift = r.type === "drift";
+
+  const applyStep = (steps.data ?? []).find((st) => st.phase === "apply" && st.name === "Apply");
+  const applyDuration = applyStep?.started_at && applyStep.finished_at ? duration(applyStep.started_at, applyStep.finished_at) : "";
+  const failedChanges = (changes.data ?? []).filter((c) => c.apply?.state === "failed");
+  // Resources that failed or never ran explain the failure better than the run's error (R4.9).
+  const explained = !!counts && counts.failed + counts.not_applied > 0;
+  const apply: ApplyView | null = counts
+    ? {
+        filter,
+        now,
+        showInLog: (c) => {
+          setSelected(APPLY_STEP);
+          setLogOpen(true);
+          setFocus({ address: c.address, unit: c.unit, seq: Date.now() });
+        },
+        fileLink: (c, e) => {
+          if (!s || !r.commit_sha || !e.file || e.file.startsWith("/") || e.file.split("/").includes("..") || e.file.includes(".terragrunt-cache")) return null;
+          const path = [s.path, c.unit, e.file].filter((p) => p && p !== ".").join("/");
+          const url = fileURL(s.repository, r.commit_sha, path);
+          return url && e.line ? `${url}#L${e.line}` : url;
+        },
+      }
+    : null;
+  const summaryText = counts
+    ? active
+      ? `${counts.done + counts.failed} of ${counts.total} finished${r.approved_by ? ` · approved by ${r.approved_by}` : ""}`
+      : `${counts.done} of ${counts.total} applied${applyDuration ? ` · finished in ${applyDuration}` : ""}`
+    : "";
 
   async function act(fn: () => Promise<Run>) {
     await action.run(async () => {
@@ -123,7 +160,39 @@ export function RunPage() {
       {supersededBy(r) && <SupersededNotice run={r} />}
       {r.status === "queued" && r.trigger?.kind === "push" && <WaitingForStack run={r} />}
 
-      {r.status === "failed" && r.error && (
+      {counts && active && counts.failed > 0 && (
+        <div className="error-banner" role="alert">
+          <span>
+            <strong>{failedChanges.length === 1 ? `${failedChanges[0].name} failed.` : `${plural(counts.failed, "change")} failed.`}</strong> Changes already
+            running will finish; what depends on {counts.failed === 1 ? "it" : "them"} won’t start.
+          </span>
+          <button type="button" className="small-btn" onClick={() => setFilter("failed")}>
+            Show failed
+          </button>
+        </div>
+      )}
+      {counts && r.status === "failed" && explained && (
+        <div className="error-banner" role="alert">
+          <span>
+            <strong>Apply failed.</strong> {counts.done} of {plural(counts.total, "change")} {counts.done === 1 ? "was" : "were"} applied, {counts.failed} failed and{" "}
+            {counts.not_applied} {counts.not_applied === 1 ? "was" : "were"} not applied. Fix the error and run again: the next plan only has what is left.
+          </span>
+          {counts.failed > 0 && (
+            <button type="button" className="small-btn" onClick={() => setFilter("failed")}>
+              Show failed
+            </button>
+          )}
+        </div>
+      )}
+      {counts && r.status === "applied" && (
+        <div className="banner banner-ok" role="status">
+          <span className="banner-text">
+            <strong>All {plural(counts.total, "change")} applied.</strong>
+            {applyDuration && ` Finished in ${applyDuration}.`}
+          </span>
+        </div>
+      )}
+      {r.status === "failed" && r.error && !explained && (
         <div className="error-banner" role="alert">
           <span>
             <strong>{track.find((t) => t.state === "failed")?.name ?? "The run"} failed:</strong> {r.error}
@@ -147,7 +216,8 @@ export function RunPage() {
 
       <section className="card steps-card" aria-label="Run steps">
         <StepTrack track={track} selected={current} onSelect={setSelected} />
-        <StepLog track={track} selected={current} events={logs.events} run={r} live={logs.streaming} error={logs.error} />
+        <StepLog track={track} selected={current} events={logs.events} run={r} live={logs.streaming} error={logs.error}
+          collapse={counts && current === APPLY_STEP ? { open: logOpen, toggle: () => setLogOpen(!logOpen) } : null} focus={focus} />
         <p className="hint">Click a step to see its log. Hooks from .firstlume will show up here as their own steps.</p>
       </section>
 
@@ -177,13 +247,18 @@ export function RunPage() {
 
       <div className="run-columns">
         <section className="changes-col" aria-label="Changes">
-          <h2>{isDrift ? "What differs from the code" : "What changes"}</h2>
+          {counts ? (
+            <ApplySummary counts={counts} text={summaryText} filter={filter} onFilter={setFilter} />
+          ) : (
+            <h2>{isDrift ? "What differs from the code" : "What changes"}</h2>
+          )}
           <ChangeList
             changes={changes.data}
             drift={isDrift}
             ack={awaiting && confirmRequired ? { acked, toggle: (k) => setAcked((a) => ({ ...a, [k]: !a[k] })), origin: settings.data?.effective.confirm_destructive.origin } : null}
             planning={r.status === "queued" || r.status === "planning"}
             backends={r.unit_backends}
+            apply={apply}
           />
         </section>
         <aside className="run-aside">
@@ -210,16 +285,25 @@ interface TrackItem {
   hook?: boolean;
 }
 
+const APPLY_STEP = "apply/Apply";
+
 /** The run's steps: the executor's, plus "Queued" and "Approval", which the server knows. */
-function buildTrack(r: Run, steps: RunStep[]): TrackItem[] {
-  const fromStep = (s: RunStep): TrackItem => ({
-    key: `${s.phase}/${s.name}`,
-    phase: s.phase,
-    name: s.name,
-    hook: s.kind === "hook",
-    state: s.status === "succeeded" ? "done" : s.status === "running" ? "running" : s.status === "failed" ? "failed" : "skipped",
-    meta: s.status === "skipped" ? "skipped" : s.started_at ? duration(s.started_at, s.finished_at ?? undefined) : "",
-  });
+function buildTrack(r: Run, steps: RunStep[], counts: ApplyCounts | null): TrackItem[] {
+  const fromStep = (s: RunStep): TrackItem => {
+    let meta = s.status === "skipped" ? "skipped" : s.started_at ? duration(s.started_at, s.finished_at ?? undefined) : "";
+    // The running apply also says how far it got (R4.10).
+    if (counts && s.status === "running" && `${s.phase}/${s.name}` === APPLY_STEP) {
+      meta += ` · ${counts.done + counts.failed} of ${counts.total}`;
+    }
+    return {
+      key: `${s.phase}/${s.name}`,
+      phase: s.phase,
+      name: s.name,
+      hook: s.kind === "hook",
+      state: s.status === "succeeded" ? "done" : s.status === "running" ? "running" : s.status === "failed" ? "failed" : "skipped",
+      meta,
+    };
+  };
   const items: TrackItem[] = [
     {
       key: "queued",
@@ -301,13 +385,23 @@ function StepTrack({ track, selected, onSelect }: { track: TrackItem[]; selected
   );
 }
 
-function StepLog({ track, selected, events, run, live, error }: {
+/** Where "Show in log" points: the error block of a resource. */
+interface LogFocus {
+  address: string;
+  unit?: string;
+  seq: number;
+}
+
+function StepLog({ track, selected, events, run, live, error, collapse, focus }: {
   track: TrackItem[];
   selected: string;
   events: LogEvent[];
   run: Run;
   live: boolean;
   error: string | null;
+  /** While the apply reports progress, its log shows only the last lines (R4.8). */
+  collapse: { open: boolean; toggle: () => void } | null;
+  focus: LogFocus | null;
 }) {
   const item = track.find((t) => t.key === selected) ?? track[0];
   const ref = useRef<HTMLDivElement>(null);
@@ -325,11 +419,33 @@ function StepLog({ track, selected, events, run, live, error }: {
     return events.filter((e) => e.phase === phase && e.step === name).map((e) => e.data).join("");
   }, [item, events, run]);
   const lines = text.replace(/\n$/, "").split("\n");
+  const collapsed = !!collapse && !collapse.open && lines.length > 4;
+  const shown = collapsed ? lines.slice(-3) : lines;
+  const offset = lines.length - shown.length;
+
+  // The first line of the focused resource's error block: "with <address>,".
+  const focusLine = useMemo(() => {
+    if (!focus) return -1;
+    return lines.findIndex((l) => l.includes(`with ${focus.address},`) && (!focus.unit || l.startsWith(`[${focus.unit}] `)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, text]);
 
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && follow) el.scrollTop = el.scrollHeight;
-  }, [lines.length, follow, selected]);
+    if (el && follow && !focus) el.scrollTop = el.scrollHeight;
+  }, [lines.length, follow, selected, focus]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || focusLine < 0 || collapsed) return;
+    const line = el.querySelector<HTMLElement>(`[data-line="${focusLine}"]`);
+    if (!line) return;
+    setFollow(false);
+    el.scrollTop = Math.max(0, line.offsetTop - el.offsetTop - 60);
+    el.closest(".log-panel")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    // Once per click.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.seq, focusLine, collapsed]);
 
   return (
     <div className="log-panel">
@@ -338,6 +454,14 @@ function StepLog({ track, selected, events, run, live, error }: {
         <span className="log-meta">{item.meta}</span>
         {live && item.state === "running" && <span className="dot pulse live" aria-label="streaming" />}
         {error && <span className="log-error-msg">{error}</span>}
+        {collapse && lines.length > 4 && (
+          <>
+            <span className="grow" />
+            <button type="button" className="small-btn log-toggle" aria-expanded={collapse.open} onClick={collapse.toggle}>
+              {collapse.open ? "Collapse log" : "Expand log"}
+            </button>
+          </>
+        )}
       </div>
       <div className="log-view" ref={ref} onScroll={() => {
         const el = ref.current;
@@ -346,15 +470,58 @@ function StepLog({ track, selected, events, run, live, error }: {
         {text === "" ? (
           <div className="log-line dim">{item.state === "pending" ? "Not started yet." : item.state === "skipped" ? "Skipped." : "No output yet."}</div>
         ) : (
-          lines.map((l, i) => (
-            <div key={i} className={`log-line${l.startsWith("==>") ? " log-step" : ""}${/^(Error|│ Error|==> Error)/.test(l) ? " log-error" : ""}`}>
-              {l || " "}
-            </div>
-          ))
+          <>
+            {collapsed && <div className="log-line dim">… {offset} earlier lines</div>}
+            {shown.map((l, i) => {
+              const n = i + offset;
+              const err = /^(\[[^\]]+\] )?(Error|│ Error|==> Error)/.test(l);
+              return (
+                <div key={n} data-line={n}
+                  className={`log-line${l.startsWith("==>") ? " log-step" : ""}${err ? " log-error" : ""}${focus && n >= focusLine && focusLine >= 0 && n < focusLine + 4 ? " log-focus" : ""}`}>
+                  {l || " "}
+                </div>
+              );
+            })}
+          </>
         )}
       </div>
     </div>
   );
+}
+
+/** A flag kept in the browser, for per-viewer preferences. */
+function useStoredFlag(key: string): [boolean, (v: boolean) => void] {
+  const [value, setValue] = useState(() => {
+    try {
+      return localStorage.getItem(key) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const set = useCallback(
+    (v: boolean) => {
+      setValue(v);
+      try {
+        localStorage.setItem(key, v ? "1" : "0");
+      } catch {
+        // Storage unavailable: the choice lasts until the page is left.
+      }
+    },
+    [key],
+  );
+  return [value, set];
+}
+
+/** The current time, ticking every second while enabled (for elapsed times). */
+function useNow(enabled: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!enabled) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [enabled]);
+  return now;
 }
 
 /**
@@ -406,11 +573,11 @@ function useLogs(url: string, run: Run | null, reloadRun: () => Promise<void>) {
 // --- changes ---
 
 const actionOrder: ChangeAction[] = ["delete", "replace", "update", "create"];
-const actionInfo: Record<ChangeAction, { label: string; group: string; driftGroup: string; tone: string }> = {
-  delete: { label: "Delete", group: "Will be deleted", driftGroup: "Exists only in the real infrastructure", tone: "bad" },
-  replace: { label: "Replace", group: "Will be replaced (deleted and created again)", driftGroup: "Would be replaced to match the code", tone: "rep" },
-  update: { label: "Update", group: "Will be updated in place", driftGroup: "Changed outside First Lume", tone: "warn" },
-  create: { label: "Create", group: "Will be created", driftGroup: "Missing from the real infrastructure", tone: "ok" },
+const actionInfo: Record<ChangeAction, { label: string; group: string; driftGroup: string; applyGroup: string; applied: string; tone: string }> = {
+  delete: { label: "Delete", group: "Will be deleted", driftGroup: "Exists only in the real infrastructure", applyGroup: "Delete", applied: "Deleted", tone: "bad" },
+  replace: { label: "Replace", group: "Will be replaced (deleted and created again)", driftGroup: "Would be replaced to match the code", applyGroup: "Replace", applied: "Replaced", tone: "rep" },
+  update: { label: "Update", group: "Will be updated in place", driftGroup: "Changed outside First Lume", applyGroup: "Update in place", applied: "Updated", tone: "warn" },
+  create: { label: "Create", group: "Will be created", driftGroup: "Missing from the real infrastructure", applyGroup: "Create", applied: "Created", tone: "ok" },
 };
 
 function ActionCounts({ changes }: { changes: ResourceChange[] }) {
@@ -426,12 +593,81 @@ function ActionCounts({ changes }: { changes: ResourceChange[] }) {
   );
 }
 
-function ChangeList({ changes, drift, ack, planning, backends }: {
+// --- apply progress (spec 0004) ---
+
+type StateFilter = "all" | ApplyState;
+
+/** Failed first: what needs attention leads each group (R4.6). */
+const stateOrder: ApplyState[] = ["failed", "applying", "not_applied", "pending", "done"];
+const stateInfo: Record<ApplyState, { chip: string; color: string }> = {
+  failed: { chip: "Failed", color: "var(--danger-strong)" },
+  applying: { chip: "Applying", color: "var(--running)" },
+  not_applied: { chip: "Not applied", color: "var(--border-strong)" },
+  pending: { chip: "Waiting", color: "var(--surface)" },
+  done: { chip: "Done", color: "var(--success)" },
+};
+
+type ApplyCounts = Record<ApplyState, number> & { total: number };
+
+/** Counts resources by state, or null when the apply does not report progress. */
+function applyCounts(changes: ResourceChange[] | null): ApplyCounts | null {
+  if (!changes?.some((c) => c.apply)) return null;
+  const counts: ApplyCounts = { total: changes.length, pending: 0, applying: 0, done: 0, failed: 0, not_applied: 0 };
+  for (const c of changes) counts[c.apply?.state ?? "pending"]++;
+  return counts;
+}
+
+function msLabel(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} m ${s % 60} s`;
+}
+
+function plural(n: number, word: string) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+/** What a change card needs to show the apply. */
+interface ApplyView {
+  filter: StateFilter;
+  now: number;
+  showInLog: (c: ResourceChange) => void;
+  fileLink: (c: ResourceChange, e: ApplyError) => string | null;
+}
+
+function ApplySummary({ counts, text, filter, onFilter }: { counts: ApplyCounts; text: string; filter: StateFilter; onFilter: (f: StateFilter) => void }) {
+  const label = `${counts.done} done, ${counts.failed} failed, ${counts.applying} applying, ${counts.not_applied} not applied, ${counts.pending} waiting`;
+  const chips: StateFilter[] = ["all", ...stateOrder.filter((st) => counts[st] > 0)];
+  return (
+    <div className="apply-summary">
+      <div className="apply-summary-head">
+        <h2>What changes</h2>
+        <span className="muted small">{text}</span>
+      </div>
+      <div className="apply-bar" role="img" aria-label={label}>
+        {(["done", "failed", "applying", "not_applied"] as ApplyState[]).map((st) =>
+          counts[st] ? <span key={st} style={{ flex: counts[st], background: stateInfo[st].color }} /> : null,
+        )}
+        {counts.pending > 0 && <span style={{ flex: counts.pending }} />}
+      </div>
+      <div className="filter-chips" role="group" aria-label="Filter by status">
+        {chips.map((f) => (
+          <button key={f} type="button" className={`filter-chip${filter === f ? " on" : ""}`} aria-pressed={filter === f} onClick={() => onFilter(f)}>
+            {f !== "all" && <i className="swatch" style={{ background: stateInfo[f].color }} aria-hidden />}
+            {f === "all" ? "All" : stateInfo[f].chip} · {f === "all" ? counts.total : counts[f]}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChangeList({ changes, drift, ack, planning, backends, apply }: {
   changes: ResourceChange[] | null;
   drift: boolean;
   ack: { acked: Record<string, boolean>; toggle: (k: string) => void; origin?: Level } | null;
   planning: boolean;
   backends?: UnitBackend[];
+  apply: ApplyView | null;
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   // Units outside Firstlume get a chip on their cards; the normal case gets none.
@@ -440,21 +676,35 @@ function ChangeList({ changes, drift, ack, planning, backends }: {
   if (changes.length === 0) {
     return <div className="empty">{planning ? "The plan is still running. Changes show up here when it finishes." : "Nothing changes."}</div>;
   }
-  const allOpen = changes.every((c) => open[changeKey(c)]);
+  const rank = (c: ResourceChange) => stateOrder.indexOf(c.apply?.state ?? "pending");
+  const groups = actionOrder
+    .map((a) => {
+      const all = changes.filter((c) => c.action === a);
+      if (!apply) return { action: a, all, items: all };
+      const items = all.filter((c) => apply.filter === "all" || (c.apply?.state ?? "pending") === apply.filter);
+      return { action: a, all, items: [...items].sort((x, y) => rank(x) - rank(y)) };
+    })
+    .filter((g) => g.items.length > 0);
+  if (groups.length === 0) return <div className="empty">No changes in this state.</div>;
+  // Collapsed by default; during an apply, what needs attention starts open (R4.7).
+  const startsOpen = (c: ResourceChange) => !!apply && ["failed", "applying", "not_applied"].includes(c.apply?.state ?? "");
+  const isOpen = (c: ResourceChange) => open[changeKey(c)] ?? startsOpen(c);
+  const allOpen = changes.every(isOpen);
   return (
     <>
       <div className="change-toolbar">
-        <button className="link" onClick={() => setOpen(allOpen ? {} : Object.fromEntries(changes.map((c) => [changeKey(c), true])))}>
+        <button className="link" onClick={() => setOpen(Object.fromEntries(changes.map((c) => [changeKey(c), !allOpen])))}>
           {allOpen ? "Collapse all" : "Expand all"}
         </button>
       </div>
-      {actionOrder.map((a) => {
-        const items = changes.filter((c) => c.action === a);
-        if (!items.length) return null;
+      {groups.map(({ action: a, all, items }) => {
+        const info = actionInfo[a];
+        const title = apply ? info.applyGroup : drift ? info.driftGroup : info.group;
+        const count = apply && apply.filter !== "all" ? `${items.length} of ${all.length}` : items.length;
         return (
           <div key={a} className="change-group">
-            <h3 className={`group-title tone-${actionInfo[a].tone}`}>
-              {drift ? actionInfo[a].driftGroup : actionInfo[a].group} · {items.length}
+            <h3 className={`group-title tone-${info.tone}`}>
+              {title} · {count}
             </h3>
             {items.map((c) => (
               <ChangeCard
@@ -462,9 +712,10 @@ function ChangeList({ changes, drift, ack, planning, backends }: {
                 change={c}
                 drift={drift}
                 ack={ack}
+                apply={apply}
                 backend={elsewhere.get(c.unit ?? "")}
-                open={!!open[changeKey(c)]}
-                onToggle={() => setOpen((o) => ({ ...o, [changeKey(c)]: !o[changeKey(c)] }))}
+                open={isOpen(c)}
+                onToggle={() => setOpen((o) => ({ ...o, [changeKey(c)]: !isOpen(c) }))}
               />
             ))}
           </div>
@@ -476,10 +727,11 @@ function ChangeList({ changes, drift, ack, planning, backends }: {
 
 // Collapsed by default: a long plan reads as a list of names, and the
 // attribute diff opens per resource. Warnings and acks always show.
-function ChangeCard({ change: c, drift, ack, backend, open, onToggle }: {
+function ChangeCard({ change: c, drift, ack, apply, backend, open, onToggle }: {
   change: ResourceChange;
   drift: boolean;
   ack: { acked: Record<string, boolean>; toggle: (k: string) => void; origin?: Level } | null;
+  apply: ApplyView | null;
   // backend is where the card's unit keeps its state, when not in Firstlume.
   backend?: string;
   open: boolean;
@@ -490,37 +742,46 @@ function ChangeCard({ change: c, drift, ack, backend, open, onToggle }: {
   const destructive = c.action === "delete" || c.action === "replace";
   const forcing = (c.attributes ?? []).filter((a) => a.forces_replacement).map((a) => a.path);
   const nattrs = c.attributes?.length ?? 0;
+  const progress = apply ? c.apply : undefined;
+  const opens = nattrs > 0 || (c.action === "replace" && (progress?.steps?.length ?? 0) > 0);
+  const address = c.unit ? `${c.unit} · ${c.address}` : c.address;
   return (
-    <article className={`change-card edge-${info.tone}`}>
-      <button className="change-head" aria-expanded={open} onClick={onToggle} disabled={!nattrs}>
+    <article className={`change-card edge-${info.tone}${progress ? ` apply-${progress.state}` : ""}`}>
+      <button className="change-head" aria-expanded={open} onClick={onToggle} disabled={!opens}>
         <span className={`change-chev${open ? " open" : ""}`} aria-hidden>
-          {nattrs > 0 && <ChevronRightIcon />}
+          {opens && <ChevronRightIcon />}
         </span>
         <ResourceIcon type={c.type} size={28} />
         <span className={`badge ${info.tone}`}>{info.label}</span>
         {c.label ? <LabelLine label={c.label} data={false} /> : <strong>{c.name}</strong>}
         <span className="muted small">{humanType(c.type)}</span>
-        {!open && nattrs > 0 && (
+        {!open && !progress && nattrs > 0 && (
           <span className="muted small">
             · {nattrs}
             {c.truncated ? "+" : ""} attribute{nattrs === 1 ? "" : "s"}
           </span>
         )}
+        {progress && <span className="mono muted small">{address}</span>}
         <span className="grow" />
         {backend && (
           <span className={backend === "local" ? "badge bad" : "badge idle"} title={`This unit keeps its state in backend ${backend}`}>
             state: {backend}
           </span>
         )}
-        <span className="mono muted small">{c.unit ? `${c.unit} · ${c.address}` : c.address}</span>
+        {progress ? <StateChip change={c} now={apply!.now} /> : <span className="mono muted small">{address}</span>}
       </button>
-      {c.action === "delete" && !drift && <p className="change-warning bad">This resource and anything stored in it will be deleted.</p>}
-      {c.action === "replace" && (
+      {progress?.state === "failed" && (progress.errors?.length ?? 0) > 0 && (
+        <ResourceErrors errors={progress.errors!} link={(e) => apply!.fileLink(c, e)} onShowInLog={() => apply!.showInLog(c)} />
+      )}
+      {progress?.state === "not_applied" && <p className="small muted">Not applied: the apply stopped before reaching it. It will be in the next plan.</p>}
+      {!progress && c.action === "delete" && !drift && <p className="change-warning bad">This resource and anything stored in it will be deleted.</p>}
+      {!progress && c.action === "replace" && (
         <p className="change-warning rep">
           {forcing.length ? <>Changing <span className="mono">{forcing.join(", ")}</span> forces Terraform to delete this resource and create a new one.</> : "Terraform will delete this resource and create a new one."}{" "}
           Anything that depends on it may be affected.
         </p>
       )}
+      {open && progress && c.action === "replace" && (progress.steps?.length ?? 0) > 0 && <ReplaceSteps steps={progress.steps!} />}
       {open && nattrs > 0 && (
         <div className="diff">
           {drift && <><span className="diff-head">attribute</span><span className="diff-head">real infrastructure → code</span></>}
@@ -535,7 +796,7 @@ function ChangeCard({ change: c, drift, ack, backend, open, onToggle }: {
                     <span className="before">{a.before ?? "(none)"}</span> <span className="muted">→</span> <span className="after">{a.after ?? "(none)"}</span>
                   </>
                 )}
-                {a.forces_replacement && <span className="forces">forces replacement</span>}
+                {a.forces_replacement && <span className="forces">{progress ? "forced replacement" : "forces replacement"}</span>}
               </span>
             </span>
           ))}
@@ -615,6 +876,100 @@ function WaitingForStack({ run }: { run: Run }) {
       </strong>
       , which is using this stack.
     </p>
+  );
+}
+
+// --- apply progress: what a card shows (spec 0004) ---
+
+function StateChip({ change: c, now }: { change: ResourceChange; now: number }) {
+  const a = c.apply!;
+  switch (a.state) {
+    case "done":
+      return (
+        <span className="state-chip done">
+          <CheckIcon /> {actionInfo[c.action].applied} {a.started_at && <span className="t">· {msLabel(a.duration_ms ?? 0)}</span>}
+        </span>
+      );
+    case "applying": {
+      const running = [...(a.steps ?? [])].reverse().find((st) => !st.finished_at);
+      const verb = running?.action === "delete" ? "Deleting…" : running?.action === "update" ? "Updating…" : "Creating…";
+      return (
+        <span className="state-chip run">
+          <span className="spin" aria-hidden /> {verb} {a.started_at && <span className="t">{msLabel(now - Date.parse(a.started_at))}</span>}
+        </span>
+      );
+    }
+    case "failed":
+      return (
+        <span className="state-chip fail">
+          <CloseIcon size={13} /> Failed {a.duration_ms ? <span className="t">· after {msLabel(a.duration_ms)}</span> : null}
+        </span>
+      );
+    case "not_applied":
+      return <span className="state-chip skip">Not applied</span>;
+    default:
+      return <span className="state-chip wait">Waiting</span>;
+  }
+}
+
+/** The two halves of a replace, in the order they ran (R4.2). */
+function ReplaceSteps({ steps }: { steps: ApplyStep[] }) {
+  const label = (st: ApplyStep) => {
+    const old = st.action === "delete";
+    if (st.failed) return old ? "Deleting the old one failed" : "Creating the new one failed";
+    if (!st.finished_at) return old ? "Deleting the old one…" : "Creating the new one…";
+    return old ? "Old one deleted" : "New one created";
+  };
+  return (
+    <div className="substeps">
+      {steps.map((st, i) => (
+        <Fragment key={i}>
+          {i > 0 && <span className="muted" aria-hidden>→</span>}
+          <span className={`state-chip ${st.failed ? "fail" : st.finished_at ? "done" : "run"}`}>
+            {label(st)}
+            {st.started_at && st.finished_at && <span className="t"> · {msLabel(Date.parse(st.finished_at) - Date.parse(st.started_at))}</span>}
+          </span>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+/** Terraform's errors for one resource: the first line, then all of it (R4.3). */
+function ResourceErrors({ errors, link, onShowInLog }: { errors: ApplyError[]; link: (e: ApplyError) => string | null; onShowInLog: () => void }) {
+  const [more, setMore] = useState(false);
+  const first = errors[0];
+  const detailLines = (first.detail ?? "").split("\n");
+  const hasMore = detailLines.length > 1 || errors.length > 1;
+  const shown = more ? errors : [{ ...first, detail: detailLines[0] }];
+  const url = link(first);
+  const where = first.file ? `${first.file}${first.line ? `:${first.line}` : ""}` : "";
+  return (
+    <div className="res-error">
+      {shown.map((e, i) => (
+        <div key={i} className="res-error-item">
+          <span className="res-error-title">{e.summary}</span>
+          {e.detail && <pre>{e.detail}</pre>}
+        </div>
+      ))}
+      <div className="res-error-foot">
+        {where && <span className="mono small muted">{where}</span>}
+        {hasMore && (
+          <button type="button" className="link" aria-expanded={more} onClick={() => setMore(!more)}>
+            {more ? "Show less" : "Show more"}
+          </button>
+        )}
+        <span className="grow" />
+        <button type="button" className="small-btn" onClick={onShowInLog}>
+          Show in log
+        </button>
+        {url && (
+          <a className="small-btn" href={url} target="_blank" rel="noreferrer">
+            <ExternalIcon /> Open {where} in Git
+          </a>
+        )}
+      </div>
+    </div>
   );
 }
 

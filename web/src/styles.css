@@ -2052,6 +2052,192 @@ button.change-head:disabled {
   background: var(--success-soft);
 }
 
+/* Apply followed resource by resource (spec 0004). */
+
+.apply-summary {
+  position: sticky;
+  top: var(--topbar-height, 57px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 0 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.apply-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.apply-bar {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-chip {
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.filter-chip.on {
+  background: var(--text);
+  border-color: var(--text);
+  color: var(--surface);
+}
+
+.filter-chip.on:hover:not(:disabled) {
+  background: var(--text);
+}
+
+.swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  border: 1px solid var(--border-strong);
+  display: inline-block;
+}
+
+.state-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.state-chip .t {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
+.state-chip.done {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.state-chip.run {
+  background: var(--running-soft);
+  color: var(--running);
+}
+
+.state-chip.fail {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.state-chip.wait {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.state-chip.skip {
+  border: 1px dashed var(--border-strong);
+  color: var(--muted);
+}
+
+.spin {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: spin 0.9s linear infinite;
+}
+
+.change-card.apply-failed {
+  border-color: var(--danger-strong);
+}
+
+.change-card.apply-applying {
+  border-color: var(--running);
+}
+
+.change-card.apply-not_applied {
+  opacity: 0.65;
+}
+
+.substeps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.res-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger-strong);
+  border-radius: 8px;
+  background: var(--danger-soft);
+}
+
+.res-error-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.res-error-title {
+  color: var(--danger);
+  font-weight: 700;
+  font-size: 13.5px;
+}
+
+.res-error pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.res-error-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.banner-ok {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.log-toggle {
+  background: transparent;
+  color: #d9dae0;
+  border-color: #45464d;
+}
+
+.log-line.log-focus {
+  background: rgba(255, 138, 128, 0.12);
+  box-shadow: inset 3px 0 0 var(--log-error);
+}
+
 .side-card {
   display: flex;
   flex-direction: column;
@@ -3629,4 +3815,11 @@ tr:hover .grip,
   padding: 12px 14px;
   font-size: 13.5px;
   line-height: 1.45;
+}
+
+/* The top bar wraps on narrow screens, so nothing can stick right below it. */
+@media (max-width: 900px) {
+  .apply-summary {
+    position: static;
+  }
 }
