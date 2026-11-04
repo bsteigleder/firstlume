@@ -4,6 +4,7 @@ import { api, authConfig, loginURL, setToken, setUnauthorizedHandler, type AuthC
 import { Logo } from "./icons";
 import { lastOrg, OrgShell } from "./org";
 import { FolderPage } from "./pages/FolderPage";
+import { GitEventsPage } from "./pages/GitEvents";
 import { NoAccessPage } from "./pages/NoAccess";
 import { RunPage } from "./pages/RunPage";
 import { CreateOrgPage, FolderSettingsPage, OrgSettingsPage } from "./pages/SettingsPages";
@@ -28,6 +29,7 @@ const router = createBrowserRouter([
       { path: "s/:stackId/source", element: <StackPage tab="source" /> },
       { path: "r/:runId", element: <RunPage /> },
       { path: "settings", element: <OrgSettingsPage /> },
+      { path: "git-events", element: <GitEventsPage /> },
     ],
   },
   { path: "*", element: <Navigate to="/" replace /> },

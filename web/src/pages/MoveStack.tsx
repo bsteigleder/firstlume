@@ -240,6 +240,7 @@ const settingLabels: Record<string, string> = {
   drift_interval_minutes: "Drift check",
   confirm_destructive: "Confirm each delete or replace",
   vault_role: "Vault role",
+  git_on_push: "On push",
 };
 
 const categoryLabels: Record<string, string> = {
@@ -263,6 +264,8 @@ function changeValue(c: MoveChange, v: MoveChange["before"]): string {
       return v.value === "true" ? "On" : "Off";
     case "drift_interval_minutes":
       return driftLabel(Number(v.value));
+    case "git_on_push":
+      return { off: "Off", plan: "Plan", apply: "Apply" }[v.value ?? "off"] ?? v.value ?? "";
     case "registry":
       return v.value ? `user ${v.value}` : "set";
   }

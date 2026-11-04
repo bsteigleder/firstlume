@@ -47,6 +47,46 @@ Cada ambiente pode ter um intervalo de verificação (`drift_interval_minutes`, 
 
 Se o executor parar de enviar heartbeat por `FIRSTLUME_HEARTBEAT_TIMEOUT` (10 min por padrão), o run é marcado como `failed`. Se o pod morrer (por exemplo, por OOM ou deadline), o agent reporta a falha.
 
+### Gatilhos do Git
+
+Um push na branch de um stack pode disparar o run sozinho. Por enquanto só com o Gitea. Gerar o segredo e instalar o webhook ainda são passos manuais, até o marco G2 ([spec 0006](docs/specs/0006-gatilhos-git.md)).
+
+1. Gere o segredo do webhook. Ele só aparece nesta resposta, junto com a URL e os eventos:
+
+   ```bash
+   curl -X POST -H "Authorization: Bearer $TOKEN" https://firstlume.example.com/api/v1/orgs/{org}/git/webhook-secret
+   ```
+
+2. No repositório do Gitea, crie um webhook do tipo `gitea` com essa URL e esse segredo, `content_type` `json` e os eventos `push`, `pull_request` e `pull_request_sync`. O Gitea recusa endereços privados por padrão: numa instalação interna, ajuste `[webhook] ALLOWED_HOST_LIST` no `app.ini`.
+3. Ligue o gatilho, herdado como as outras configurações, em **On push** nas configurações da organização, de uma pasta ou do stack (na API, `"git_on_push"` no `PUT .../settings`):
+
+   | Valor | Um push que afeta o stack... |
+   |---|---|
+   | `off` (padrão) | não faz nada |
+   | `plan` | cria um run `plan`, que nunca aplica |
+   | `apply` | cria um run `apply`, que espera aprovação se `require_approval` estiver ligado e aplica direto se não estiver |
+
+   Ligar não dispara nada: vale a partir do próximo push.
+
+**Quem dá push executa código.** Com o gatilho ligado, quem escreve na branch roda código com as credenciais do stack já no plan, antes de qualquer aprovação. Use proteção de branch.
+
+**O que conta como afetado.** Um stack é afetado quando muda algum arquivo dentro do `path` dele. Módulos fora do `path` só contam se forem declarados em `.firstlume/config.yaml`, com caminhos relativos à raiz do repositório:
+
+```yaml
+triggers:
+  paths:              # afeta também quando estes mudam
+    - modules/**
+    - root.hcl
+  ignore:             # não conta quando só estes mudaram
+    - "**/*.md"
+```
+
+Force push, branch nova, falha ao comparar os commits e um `config.yaml` inválido fazem todos os stacks da branch contarem como afetados, porque rodar a mais termina em `no_changes` e rodar a menos deixaria mudança sem aplicar.
+
+**Um push novo substitui o que ficou velho.** Runs de pushes anteriores que estão na fila são cancelados, e os que aguardam aprovação são descartados com "superseded by <commit>". Quem está executando termina, e runs manuais nunca são tocados.
+
+**Por que não rodou?** A aba Runs do stack mostra a última decisão, e a página **Git events** (na seção Git connection das configurações da organização, ou `GET /api/v1/orgs/{org}/git/events?stack={id}`) mostra cada push recebido e a decisão por stack: `run_created`, `not_affected` (com os arquivos considerados), `trigger_off`, `other_branch` ou `duplicate`. Os eventos ficam guardados por 30 dias.
+
 ### State
 
 O Firstlume é o backend de state dos stacks ([spec 0002](docs/specs/0002-state-backend.md)). Ele usa o backend `http` do Terraform e do OpenTofu, sem plugin. O código declara o backend e o Firstlume preenche o endereço e a credencial em cada run:

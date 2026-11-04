@@ -19,7 +19,8 @@ const activeStatuses = `('queued', 'planning', 'awaiting_approval', 'apply_queue
 func runColumnsAs(alias string) string {
 	cols := []string{"id", "stack_id", "type", "status", "ref", "commit_sha", "commit_author_name", "commit_author_email",
 		"commit_message", "has_changes", "plan_summary", "error", "agent_id", "created_by", "approved_by", "approved_at",
-		"started_at", "finished_at", "created_at", "updated_at", "acknowledged", "config", "settings_used", "unit_backends"}
+		"started_at", "finished_at", "created_at", "updated_at", "acknowledged", "config", "settings_used", "unit_backends",
+		"trigger_kind", "trigger_actor", "trigger_event_id", "trigger_before_sha", "trigger_pull_request", "trigger_pull_request_url"}
 	for i, c := range cols {
 		cols[i] = alias + "." + c
 	}
@@ -36,6 +37,8 @@ type runScan struct {
 	errMsg, agentID, createdBy, approvedBy                                  *string
 	approvedAt, startedAt, finishedAt, createdAt, updatedAt                 *time.Time
 	acknowledged, config, settingsUsed, unitBackends                        []byte
+	triggerKind, triggerActor, triggerEvent, triggerBefore, triggerPRURL    *string
+	triggerPR                                                               *int
 }
 
 func newRunScan() *runScan { return &runScan{} }
@@ -43,7 +46,8 @@ func newRunScan() *runScan { return &runScan{} }
 func (s *runScan) dest() []any {
 	return []any{&s.id, &s.stackID, &s.typ, &s.status, &s.ref, &s.commit, &s.authorName, &s.authorEmail, &s.message,
 		&s.hasChanges, &s.summary, &s.errMsg, &s.agentID, &s.createdBy, &s.approvedBy, &s.approvedAt,
-		&s.startedAt, &s.finishedAt, &s.createdAt, &s.updatedAt, &s.acknowledged, &s.config, &s.settingsUsed, &s.unitBackends}
+		&s.startedAt, &s.finishedAt, &s.createdAt, &s.updatedAt, &s.acknowledged, &s.config, &s.settingsUsed, &s.unitBackends,
+		&s.triggerKind, &s.triggerActor, &s.triggerEvent, &s.triggerBefore, &s.triggerPR, &s.triggerPRURL}
 }
 
 func (s *runScan) result() (*api.Run, error) {
@@ -57,6 +61,7 @@ func (s *runScan) result() (*api.Run, error) {
 	if s.createdAt != nil {
 		r.CreatedAt = *s.createdAt
 	}
+	r.Trigger = s.trigger(r.Type)
 	if s.updatedAt != nil {
 		r.UpdatedAt = *s.updatedAt
 	}
@@ -89,6 +94,24 @@ func (s *runScan) result() (*api.Run, error) {
 		}
 	}
 	return r, nil
+}
+
+// trigger reads why the run exists. Runs not started by Git have no columns set.
+func (s *runScan) trigger(typ api.RunType) *api.RunTrigger {
+	switch {
+	case s.id == nil:
+		return nil
+	case s.triggerKind == nil && typ == api.RunDrift:
+		return &api.RunTrigger{Kind: api.TriggerDrift}
+	case s.triggerKind == nil:
+		return &api.RunTrigger{Kind: api.TriggerManual}
+	}
+	t := &api.RunTrigger{Kind: *s.triggerKind, Actor: deref(s.triggerActor), EventID: deref(s.triggerEvent),
+		BeforeSHA: deref(s.triggerBefore), PullRequestURL: deref(s.triggerPRURL)}
+	if s.triggerPR != nil {
+		t.PullRequest = *s.triggerPR
+	}
+	return t
 }
 
 func scanRun(row pgx.Row) (*api.Run, error) {

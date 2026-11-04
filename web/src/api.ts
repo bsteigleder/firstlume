@@ -236,7 +236,7 @@ export interface MovePreview {
 }
 
 export interface MoveChange {
-  setting: "require_approval" | "drift_interval_minutes" | "confirm_destructive" | "vault_role" | "variable" | "registry";
+  setting: "require_approval" | "drift_interval_minutes" | "confirm_destructive" | "vault_role" | "git_on_push" | "variable" | "registry";
   category?: VariableCategory;
   key?: string;
   sensitive?: boolean;
@@ -264,11 +264,14 @@ export interface Level {
   name?: string;
 }
 
+export type GitOnPush = "off" | "plan" | "apply";
+
 export interface LevelSettings {
   require_approval: boolean | null;
   drift_interval_minutes: number | null;
   confirm_destructive: boolean | null;
   vault_role?: string | null;
+  git_on_push?: GitOnPush | null;
   variables: Variable[];
   /** Left out, the level's credentials stay as they are. */
   registries?: RegistryCredential[];
@@ -284,6 +287,7 @@ export interface EffectiveSettings {
   drift_interval_minutes: { value: number; origin: Level };
   confirm_destructive: { value: boolean; origin: Level };
   vault_role: { value: string; origin: Level };
+  git_on_push: { value: GitOnPush; origin: Level };
   variables: EffectiveVariable[];
   registries: EffectiveRegistry[];
 }
@@ -426,6 +430,16 @@ export interface RunSettings {
   variables: EffectiveVariable[];
 }
 
+/** Why a run exists. */
+export interface RunTrigger {
+  kind: "manual" | "drift" | "push";
+  actor?: string;
+  event_id?: string;
+  before_sha?: string;
+  pull_request?: number;
+  pull_request_url?: string;
+}
+
 export interface Run {
   id: string;
   stack_id: string;
@@ -442,6 +456,7 @@ export interface Run {
   agent_id?: string;
   created_by: string;
   approved_by?: string;
+  trigger?: RunTrigger;
   acknowledged?: string[];
   config?: StackConfig;
   settings_used?: RunSettings;
@@ -451,6 +466,40 @@ export interface Run {
   finished_at?: string;
   created_at: string;
   updated_at: string;
+}
+
+export type GitEventOutcome = "run_created" | "not_affected" | "trigger_off" | "other_branch" | "duplicate" | "error";
+
+/** What was decided about one stack for a Git event. */
+export interface GitEventStack {
+  stack_id?: string;
+  stack_name: string;
+  outcome: GitEventOutcome;
+  reason?: string;
+  /** The files considered, up to a limit; files_total counts them all. */
+  files?: string[];
+  files_total?: number;
+  run_id?: string;
+}
+
+/** A webhook delivery kept, with what it led to. */
+export interface GitEvent {
+  id: string;
+  kind: "push";
+  source: string;
+  repository: string;
+  ref: string;
+  before_sha: string;
+  after_sha: string;
+  total_commits: number;
+  sender: string;
+  status: "pending" | "processing" | "done" | "failed";
+  /** Why every stack of the branch counted as affected. */
+  affects_all?: string;
+  error?: string;
+  received_at: string;
+  processed_at?: string;
+  stacks: GitEventStack[];
 }
 
 /** An active run, or one that failed within the last hour. */
@@ -705,6 +754,8 @@ export const api = {
       cancelRun: (id: string) => request<Run>("POST", `${p}/runs/${id}/cancel`),
       logsURL: (id: string) => `/api/v1${p}/runs/${id}/logs`,
 
+      gitEvents: (stackID = "", limit = 100) =>
+        request<GitEvent[]>("GET", `${p}/git/events?limit=${limit}${stackID ? `&stack=${stackID}` : ""}`),
       gitConnection: () => request<GitConnection>("GET", `${p}/git/connection`),
       putGitConnection: (req: { provider: string; url: string; account: string; token: string }) =>
         request<GitConnection>("PUT", `${p}/git/connection`, req),

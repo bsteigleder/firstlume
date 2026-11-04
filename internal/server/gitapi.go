@@ -20,6 +20,8 @@ func (s *Server) gitRoutes(r chi.Router) {
 	r.Get("/git/connection", s.getGitConnection)
 	r.Put("/git/connection", s.putGitConnection)
 	r.Delete("/git/connection", s.deleteGitConnection)
+	r.Post("/git/webhook-secret", s.rotateWebhookSecret)
+	r.Get("/git/events", s.listGitEvents)
 	r.Get("/git/repos", s.listGitRepos)
 	r.Get("/git/repos/{owner}/{repo}/branches", s.listGitBranches)
 	r.Get("/git/repos/{owner}/{repo}/discover", s.discoverStacks)

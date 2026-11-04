@@ -4,7 +4,7 @@ import { api, signOut, type ActiveRun, type Folder, type Me, type OrgAPI, type O
 import { ChevronDownIcon, ChevronRightIcon, CloseIcon, FolderIcon, FolderPlusIcon, GearIcon, Logo, PlusIcon, SearchIcon, TrashIcon } from "./icons";
 import { DeleteFolderDialog, FolderNameDialog, NewStackDialog } from "./pages/dialogs";
 import { MoveStackDialog, StackGrip, useStackDrop } from "./pages/MoveStack";
-import { errorMessage, ErrorBanner, Initials, StatusBadge, timeAgo, useData } from "./ui";
+import { errorMessage, ErrorBanner, Initials, runOriginText, StatusBadge, timeAgo, useData } from "./ui";
 import { useSession } from "./session";
 import { ThemeSwitch } from "./theme";
 
@@ -616,7 +616,7 @@ function ActiveRunsDrawer({ onClose }: { onClose: () => void }) {
                     </span>
                     <span className="ellipsis">{r.commit_message || `${r.type} on ${r.ref}`}</span>
                     <span className="muted small">
-                      {r.type} · {r.commit_author_name ? `${r.commit_author_name} · ` : ""}started by {r.created_by}
+                      {r.type} · {r.commit_author_name ? `${r.commit_author_name} · ` : ""}started by {runOriginText(r)}
                     </span>
                   </span>
                   <span className="queue-side">

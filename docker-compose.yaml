@@ -28,6 +28,8 @@ services:
       GITEA__server__ROOT_URL: http://127.0.0.1:3000/
       GITEA__server__HTTP_PORT: "3000"
       GITEA__service__DISABLE_REGISTRATION: "true"
+      # The server of `make run-server` is on a private address (spec 0006, M4).
+      GITEA__webhook__ALLOWED_HOST_LIST: private,loopback
     ports:
       - "127.0.0.1:3000:3000"
     volumes:

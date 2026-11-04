@@ -66,6 +66,8 @@ func ParseDeclaration(data []byte) (*api.StackConfig, *Declaration, error) {
 			d.Terraform, err = parseVariables(v, "terraform")
 		case "registries":
 			d.Registries, err = parseRegistries(v)
+		case "triggers":
+			c.Triggers, err = parseTriggers(v)
 		default:
 			err = lineErr(k, "unknown key %q", k.Value)
 		}

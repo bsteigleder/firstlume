@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import type { EffectiveRegistry, EffectiveVariable, Level, LevelSettings, Variable } from "../api";
+import type { EffectiveRegistry, EffectiveVariable, GitOnPush, Level, LevelSettings, Variable } from "../api";
 import { useOrg } from "../org";
 import { driftIntervals, driftLabel, ErrorBanner, levelName, useAction, useData } from "../ui";
+import { GitNothingReceived } from "./GitEvents";
 import { FileDialog, RegistryDialog, type FileDraft, type RegistryDraft } from "./SettingsDialogs";
 
 type Tri = "inherit" | "yes" | "no";
@@ -19,12 +20,13 @@ interface EditableVariable extends Variable {
  * Edits what one level (organization, folder or stack) defines, showing what
  * it inherits and from where. Stacks use the nearest level that defines each setting.
  */
-export function SettingsEditor({ level, path }: { level: Level; path: string }) {
-  const { api, link } = useOrg();
+export function SettingsEditor({ level, path, ownGitToken }: { level: Level; path: string; ownGitToken?: boolean }) {
+  const { api, link, notify } = useOrg();
   const settings = useData(() => api.getSettings(path), [api, path]);
   const [approval, setApproval] = useState<Tri>("inherit");
   const [confirmDestructive, setConfirmDestructive] = useState<Tri>("inherit");
   const [drift, setDrift] = useState<number | null>(null);
+  const [gitOnPush, setGitOnPush] = useState<GitOnPush | null>(null);
   const [vars, setVars] = useState<EditableVariable[]>([]);
   const [vaultRole, setVaultRole] = useState("");
   const [regs, setRegs] = useState<RegistryDraft[]>([]);
@@ -41,6 +43,7 @@ export function SettingsEditor({ level, path }: { level: Level; path: string }) 
     setApproval(toTri(d.level.require_approval));
     setConfirmDestructive(toTri(d.level.confirm_destructive));
     setDrift(d.level.drift_interval_minutes);
+    setGitOnPush(d.level.git_on_push ?? null);
     setVars(d.level.variables.map((v) => ({ ...v, value: v.sensitive ? "" : v.value, stored: v.sensitive })));
     setVaultRole(d.level.vault_role ?? "");
     setRegs((d.level.registries ?? []).map((r) => ({ ...r, storedPassword: !!r.has_password && !r.password_vault })));
@@ -97,10 +100,15 @@ export function SettingsEditor({ level, path }: { level: Level; path: string }) 
       drift_interval_minutes: drift,
       // Edited elsewhere for now (spec 0003, F4): kept as it is.
       vault_role: vaultRole.trim() || null,
+      git_on_push: gitOnPush,
       variables: vars.map(({ key, category, sensitive, value }) => ({ key: key.trim(), category, sensitive, value: value ?? "" })),
       registries: regs.map(({ host, kind, username, password, password_vault }) => ({ host, kind, username, password, password_vault })),
     };
-    if (await save.run(() => api.putSettings(path, body))) await settings.reload();
+    const turnedOn = eff.git_on_push.value === "off" && (gitOnPush === "plan" || gitOnPush === "apply");
+    if (await save.run(() => api.putSettings(path, body))) {
+      await settings.reload();
+      if (turnedOn) notify("Saved. Nothing runs now: the trigger counts from the next push.");
+    }
   }
 
   const triLabel = (current: { value: boolean; origin: Level }) => describe(current.value ? "Yes" : "No", current.origin);
@@ -136,6 +144,32 @@ export function SettingsEditor({ level, path }: { level: Level; path: string }) 
             ))}
           </select>
         </SettingRow>
+        <div className="setting-block">
+          <SettingRow
+            title="On push"
+            help={
+              ownGitToken
+                ? "This stack clones with its own token, so pushes can’t reach it. Triggers need a stack created from the organization’s Git connection."
+                : `What a push to the stack’s branch does, when it changes files of that stack. Now: ${describe(gitOnPushLabel(eff.git_on_push.value), eff.git_on_push.origin)}.`
+            }
+          >
+            <div role="radiogroup" aria-label="On push" className="segmented">
+              {([null, "off", "plan", "apply"] as const).map((v) => (
+                <button key={v ?? "inherit"} type="button" role="radio" aria-checked={gitOnPush === v} disabled={ownGitToken}
+                  onClick={() => (setGitOnPush(v), touch())}>
+                  {v === null ? "Inherit" : gitOnPushLabel(v)}
+                </button>
+              ))}
+            </div>
+          </SettingRow>
+          {!ownGitToken && (
+            <GitOnPushNotes
+              mode={gitOnPush ?? eff.git_on_push.value}
+              approval={approval === "inherit" ? eff.require_approval.value : approval === "yes"}
+            />
+          )}
+          {!ownGitToken && eff.git_on_push.value !== "off" && <GitNothingReceived stackID={level.kind === "stack" ? level.id : undefined} />}
+        </div>
         <SettingRow
           title="Vault role"
           help={`Runs log in to Vault with this role; Vault decides what it may read. Now: ${eff.vault_role.value ? describe(eff.vault_role.value, eff.vault_role.origin) : "none"}.`}
@@ -367,6 +401,31 @@ function SettingRow({ title, help, link, children }: { title: string; help: stri
       </div>
       {children}
     </div>
+  );
+}
+
+const gitOnPushLabel = (v: GitOnPush) => ({ off: "Off", plan: "Plan", apply: "Apply" })[v];
+
+/** What the choice means, under the row (spec 0006, canvas board 56). */
+function GitOnPushNotes({ mode, approval }: { mode: GitOnPush; approval: boolean }) {
+  if (mode === "off") return null;
+  return (
+    <>
+      <p className="notice notice-attention">
+        <strong>Whoever can push to the branch runs code with the stack’s credentials.</strong> It happens at the plan, before any approval. Protect
+        the branch in Gitea.
+      </p>
+      {mode === "apply" &&
+        (approval ? (
+          <p className="notice">
+            <strong>A push plans, then waits for approval.</strong> Approving applies exactly that commit. A newer push discards a plan still waiting.
+          </p>
+        ) : (
+          <p className="notice notice-danger">
+            <strong>A push applies by itself.</strong> Approval is off here, so nobody reviews the plan before it changes the infrastructure.
+          </p>
+        ))}
+    </>
   );
 }
 

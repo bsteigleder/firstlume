@@ -45,6 +45,8 @@ type Server struct {
 	log   *slog.Logger
 	// oidc is nil without a sign-in provider.
 	oidc *oidcClient
+	// gitEvents wakes the Git event loop when a webhook arrives.
+	gitEvents chan struct{}
 }
 
 func New(cfg Config, st *store.Store, keys *secrets.Keys, log *slog.Logger) *Server {
@@ -74,7 +76,7 @@ func New(cfg Config, st *store.Store, keys *secrets.Keys, log *slog.Logger) *Ser
 	if cfg.Auth.DiscoveryRetry == 0 {
 		cfg.Auth.DiscoveryRetry = time.Minute
 	}
-	s := &Server{cfg: cfg, store: st, keys: keys, log: log}
+	s := &Server{cfg: cfg, store: st, keys: keys, log: log, gitEvents: make(chan struct{}, 1)}
 	if cfg.Auth.OIDC != nil {
 		s.oidc = &oidcClient{cfg: *cfg.Auth.OIDC, retry: cfg.Auth.DiscoveryRetry}
 	}
@@ -109,6 +111,7 @@ func (s *Server) Handler() http.Handler {
 		s.execRoutes(r)
 	})
 	r.Route("/state/v1", s.stateRoutes)
+	r.Post("/webhooks/v1/gitea/{connection_id}", s.giteaWebhook)
 	// For Vault to verify run JWTs (spec 0003, R3.4).
 	r.Get("/.well-known/openid-configuration", s.openIDConfiguration)
 	r.Get("/.well-known/jwks.json", s.jwks)
@@ -133,6 +136,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	go s.sweepStaleRuns(ctx)
 	go s.scheduleDriftRuns(ctx)
+	go s.processGitEvents(ctx)
 	go s.purgeState(ctx)
 	go s.purgeAuth(ctx)
 	go s.warmOIDC(ctx)

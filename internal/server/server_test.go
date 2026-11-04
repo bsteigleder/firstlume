@@ -38,6 +38,7 @@ type harness struct {
 	blobs store.Blobs
 	agent *apiclient.Client
 	logs  *syncBuffer
+	srv   *Server
 }
 
 type syncBuffer struct {
@@ -111,7 +112,7 @@ func newHarnessWith(t *testing.T, cfg Config) *harness {
 	}
 	srv := New(cfg, st, keys, log)
 	ts.Config.Handler = srv.Handler()
-	return &harness{t: t, url: ts.URL, org: slug, store: st, pool: pool, blobs: store.PostgresBlobs(pool), agent: apiclient.New(ts.URL, agentToken), logs: logs}
+	return &harness{t: t, url: ts.URL, org: slug, store: st, pool: pool, blobs: store.PostgresBlobs(pool), agent: apiclient.New(ts.URL, agentToken), logs: logs, srv: srv}
 }
 
 func randomSuffix() string {

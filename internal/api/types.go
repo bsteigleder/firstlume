@@ -220,6 +220,15 @@ type StackConfig struct {
 	// Declaration summarizes what the run needs besides the code (spec 0003),
 	// without values.
 	Declaration *Declaration `json:"declaration,omitempty"`
+	// Triggers says which files of the repository count for this stack (spec 0006, R4.2).
+	Triggers *StackTriggers `json:"triggers,omitempty"`
+}
+
+// StackTriggers are globs relative to the repository's root. Paths also affect
+// the stack when they change; Ignore doesn't count, not even inside its path.
+type StackTriggers struct {
+	Paths  []string `json:"paths,omitempty"`
+	Ignore []string `json:"ignore,omitempty"`
 }
 
 // Declaration is what .firstlume/config.yaml declares a run needs: files,
@@ -257,12 +266,99 @@ type DeclaredRegistry struct {
 
 // GitConnection links an organization to a Git account. The service token is never returned.
 type GitConnection struct {
-	Provider    string    `json:"provider"`
-	URL         string    `json:"url"`
-	Account     string    `json:"account"`
-	AccountKind string    `json:"account_kind"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Provider    string `json:"provider"`
+	URL         string `json:"url"`
+	Account     string `json:"account"`
+	AccountKind string `json:"account_kind"`
+	// WebhookSecretSet tells whether webhooks can be accepted (spec 0006, R1.1).
+	WebhookSecretSet bool      `json:"webhook_secret_set"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// WebhookSecret is what a Gitea webhook needs. The secret is only shown here,
+// when it is generated.
+type WebhookSecret struct {
+	URL         string   `json:"url"`
+	Secret      string   `json:"secret"`
+	ContentType string   `json:"content_type"`
+	Events      []string `json:"events"`
+}
+
+// What a push on a stack's branch does (spec 0006, R3.1).
+const (
+	GitOnPushOff   = "off"
+	GitOnPushPlan  = "plan"
+	GitOnPushApply = "apply"
+)
+
+// How a run was started (spec 0006, section 5).
+const (
+	TriggerManual = "manual"
+	TriggerDrift  = "drift"
+	TriggerPush   = "push"
+)
+
+// RunTrigger says why a run exists.
+type RunTrigger struct {
+	Kind           string `json:"kind"`
+	Actor          string `json:"actor,omitempty"`
+	EventID        string `json:"event_id,omitempty"`
+	BeforeSHA      string `json:"before_sha,omitempty"`
+	PullRequest    int    `json:"pull_request,omitempty"`
+	PullRequestURL string `json:"pull_request_url,omitempty"`
+}
+
+// What was decided about a stack for a Git event (spec 0006, R10.1).
+const (
+	OutcomeRunCreated  = "run_created"
+	OutcomeNotAffected = "not_affected"
+	OutcomeTriggerOff  = "trigger_off"
+	OutcomeOtherBranch = "other_branch"
+	OutcomeDuplicate   = "duplicate"
+	OutcomeError       = "error"
+)
+
+// Why a stack counted as affected.
+const (
+	AffectedFiles             = "files_changed"
+	AffectedForcePush         = "force_push"
+	AffectedNewBranch         = "new_branch"
+	AffectedCompareFailed     = "compare_failed"
+	AffectedCompareIncomplete = "compare_incomplete"
+	AffectedConfigUnreadable  = "config_unreadable"
+)
+
+// GitEvent is an accepted webhook delivery and what it led to.
+type GitEvent struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	Source       string `json:"source"`
+	Repository   string `json:"repository"`
+	Ref          string `json:"ref"`
+	BeforeSHA    string `json:"before_sha"`
+	AfterSHA     string `json:"after_sha"`
+	TotalCommits int    `json:"total_commits"`
+	Sender       string `json:"sender"`
+	Status       string `json:"status"`
+	// AffectsAll is why every stack of the branch counted as affected.
+	AffectsAll  string          `json:"affects_all,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	ReceivedAt  time.Time       `json:"received_at"`
+	ProcessedAt *time.Time      `json:"processed_at,omitempty"`
+	Stacks      []GitEventStack `json:"stacks"`
+}
+
+// GitEventStack is the decision about one stack.
+type GitEventStack struct {
+	StackID   string `json:"stack_id,omitempty"`
+	StackName string `json:"stack_name"`
+	Outcome   string `json:"outcome"`
+	Reason    string `json:"reason,omitempty"`
+	// Files are the files considered, up to a limit; FilesTotal counts them all.
+	Files      []string `json:"files,omitempty"`
+	FilesTotal int      `json:"files_total,omitempty"`
+	RunID      string   `json:"run_id,omitempty"`
 }
 
 // PutGitConnectionRequest saves the connection after checking it works. An
@@ -380,7 +476,9 @@ type LevelSettings struct {
 	// ConfirmDestructive makes approvers tick every resource a plan deletes or replaces. Nil inherits.
 	ConfirmDestructive *bool `json:"confirm_destructive"`
 	// VaultRole is the role runs log in to Vault with (spec 0003). Nil inherits.
-	VaultRole *string    `json:"vault_role,omitempty"`
+	VaultRole *string `json:"vault_role,omitempty"`
+	// GitOnPush is what a push on the stack's branch does (spec 0006, R3.1). Nil inherits.
+	GitOnPush *string    `json:"git_on_push,omitempty"`
 	Variables []Variable `json:"variables"`
 	// Registries are this level's registry credentials (spec 0003, R4). Unlike
 	// the variables, nil leaves them as they are; an empty list removes them.
@@ -442,6 +540,7 @@ type EffectiveSettings struct {
 	DriftIntervalMinutes EffectiveInt        `json:"drift_interval_minutes"`
 	ConfirmDestructive   EffectiveBool       `json:"confirm_destructive"`
 	VaultRole            EffectiveString     `json:"vault_role"`
+	GitOnPush            EffectiveString     `json:"git_on_push"`
 	Variables            []EffectiveVariable `json:"variables"`
 	Registries           []EffectiveRegistry `json:"registries"`
 }
@@ -676,6 +775,8 @@ type Run struct {
 	AgentID           string       `json:"agent_id,omitempty"`
 	CreatedBy         string       `json:"created_by"`
 	ApprovedBy        string       `json:"approved_by,omitempty"`
+	// Trigger says why the run exists (spec 0006, section 5).
+	Trigger *RunTrigger `json:"trigger,omitempty"`
 	// Acknowledged lists the deleted or replaced resources the approver confirmed.
 	Acknowledged []string `json:"acknowledged,omitempty"`
 	// Config is .firstlume/config.yaml as read at the run's commit.

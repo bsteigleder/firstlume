@@ -221,6 +221,38 @@ func (c *Client) Tree(ctx context.Context, owner, name, sha string) ([]TreeEntry
 	}
 }
 
+// Comparison is what changed from one commit to another, commit by commit.
+type Comparison struct {
+	TotalCommits int `json:"total_commits"`
+	Commits      []struct {
+		SHA   string `json:"sha"`
+		Files []struct {
+			Filename string `json:"filename"`
+		} `json:"files"`
+	} `json:"commits"`
+}
+
+// Compare lists the commits reachable from head and not from base, with their files.
+func (c *Client) Compare(ctx context.Context, owner, name, base, head string) (*Comparison, error) {
+	var out Comparison
+	if _, err := c.get(ctx, "/repos/"+esc(owner)+"/"+esc(name)+"/compare/"+esc(base)+"..."+esc(head), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CommitPull finds the pull request a commit belongs to, like the merge commit of a PR.
+func (c *Client) CommitPull(ctx context.Context, owner, name, sha string) (int, string, error) {
+	var pr struct {
+		Number  int    `json:"number"`
+		HTMLURL string `json:"html_url"`
+	}
+	if _, err := c.get(ctx, "/repos/"+esc(owner)+"/"+esc(name)+"/commits/"+esc(sha)+"/pull", nil, &pr); err != nil {
+		return 0, "", err
+	}
+	return pr.Number, pr.HTMLURL, nil
+}
+
 // File returns a file's content at a commit (up to 256 KiB).
 func (c *Client) File(ctx context.Context, owner, name, sha, path string) ([]byte, error) {
 	segments := strings.Split(path, "/")

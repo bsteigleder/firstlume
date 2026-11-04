@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bsteigleder/firstlume/internal/api"
 )
 
 func TestParse(t *testing.T) {
@@ -18,7 +20,7 @@ func TestParse(t *testing.T) {
 	}
 
 	bad := map[string]string{
-		"unknown field":   valid + "triggers: {}\n",
+		"unknown field":   valid + "notifications: {}\n",
 		"typo":            "version: 1\nengine: terraform\nengine_verison: 1.15.6\n",
 		"wrong version":   "version: 2\nengine: terraform\nengine_version: 1.15.6\n",
 		"missing version": "engine: terraform\nengine_version: 1.15.6\n",
@@ -144,6 +146,79 @@ func TestParseDeclarationErrors(t *testing.T) {
 		}
 		if name != "unknown top key" && !strings.Contains(err.Error(), "line ") {
 			t.Errorf("%s: the error should point to a line: %v", name, err)
+		}
+	}
+}
+
+func TestParseTriggers(t *testing.T) {
+	const base = "version: 1\nengine: terraform\nengine_version: 1.9.8\n"
+	c, err := Parse([]byte(base + "triggers:\n  paths:\n    - modules/**\n    - root.hcl\n  ignore:\n    - \"**/*.md\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Triggers; got == nil || len(got.Paths) != 2 || got.Ignore[0] != "**/*.md" {
+		t.Fatalf("triggers = %+v", got)
+	}
+	for _, bad := range []string{
+		"triggers: modules/**\n",
+		"triggers:\n  files: [a]\n",
+		"triggers:\n  paths: a\n",
+		"triggers:\n  paths: [/etc/passwd]\n",
+		"triggers:\n  paths: [../other]\n",
+		"triggers:\n  ignore: [\"a**b\"]\n",
+		"triggers:\n  ignore: [\"[\"]\n",
+	} {
+		if _, err := Parse([]byte(base + bad)); err == nil {
+			t.Errorf("%q: want an error", bad)
+		}
+	}
+}
+
+func TestMatchGlob(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, file string
+		want          bool
+	}{
+		{"modules/**", "modules/vpc/main.tf", true},
+		{"modules/**", "modules/main.tf", true},
+		{"modules/**", "other/modules/main.tf", false},
+		{"root.hcl", "root.hcl", true},
+		{"root.hcl", "a/root.hcl", false},
+		{"**/*.md", "README.md", true},
+		{"**/*.md", "a/b/README.md", true},
+		{"**/*.md", "a/b/main.tf", false},
+		{"a/*/main.tf", "a/b/main.tf", true},
+		{"a/*/main.tf", "a/b/c/main.tf", false},
+		{"a/**/main.tf", "a/main.tf", true},
+		{"a/**/main.tf", "a/b/c/main.tf", true},
+	} {
+		if got := MatchGlob(tc.pattern, tc.file); got != tc.want {
+			t.Errorf("MatchGlob(%q, %q) = %v", tc.pattern, tc.file, got)
+		}
+	}
+}
+
+func TestAffected(t *testing.T) {
+	trig := &api.StackTriggers{Paths: []string{"modules/**"}, Ignore: []string{"**/*.md"}}
+	for _, tc := range []struct {
+		name, path string
+		t          *api.StackTriggers
+		files      []string
+		want       bool
+	}{
+		{"inside the path", "stacks/a", nil, []string{"stacks/a/main.tf"}, true},
+		{"elsewhere", "stacks/a", nil, []string{"stacks/b/main.tf"}, false},
+		{"a sibling with the same prefix", "stacks/a", nil, []string{"stacks/ab/main.tf"}, false},
+		{"the root takes every file", ".", nil, []string{"x.txt"}, true},
+		{"nothing changed", ".", nil, nil, false},
+		{"a declared path", "stacks/a", trig, []string{"modules/vpc/main.tf"}, true},
+		{"only ignored files", "stacks/a", trig, []string{"stacks/a/README.md"}, false},
+		{"ignored and not ignored", "stacks/a", trig, []string{"stacks/a/README.md", "stacks/a/main.tf"}, true},
+		{"ignored inside a declared path", "stacks/a", trig, []string{"modules/README.md"}, false},
+		{"ignored at the root", ".", trig, []string{"README.md"}, false},
+	} {
+		if got := Affected(tc.path, tc.t, tc.files); got != tc.want {
+			t.Errorf("%s: got %v", tc.name, got)
 		}
 	}
 }

@@ -161,6 +161,9 @@ func validateLevelSettings(s *api.LevelSettings) error {
 	if r := s.VaultRole; r != nil && !vaultRoleRe.MatchString(*r) {
 		return fmt.Errorf("vault_role must be 1-128 letters, digits, '.', '_' or '-'")
 	}
+	if v := s.GitOnPush; v != nil && *v != api.GitOnPushOff && *v != api.GitOnPushPlan && *v != api.GitOnPushApply {
+		return fmt.Errorf("git_on_push must be off, plan or apply")
+	}
 	if err := validateRegistries(s.Registries); err != nil {
 		return err
 	}

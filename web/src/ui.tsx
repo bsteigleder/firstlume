@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { Drift, Level, PlanSummary, RunStatus } from "./api";
-import { CloseIcon } from "./icons";
+import type { Drift, Level, PlanSummary, Run, RunStatus } from "./api";
+import { CloseIcon, ExternalIcon } from "./icons";
 
 const statusLabels: Record<RunStatus, string> = {
   queued: "Queued",
@@ -169,6 +169,46 @@ export function humanType(type: string): string {
 export function levelName(l: Level): string {
   if (l.kind === "default") return "default";
   return l.name || l.kind;
+}
+
+/** The commit a newer push replaced this run with, if that's why it ended. */
+export function supersededBy(r: Run): string | undefined {
+  return r.error?.startsWith("superseded by ") ? r.error.slice("superseded by ".length) : undefined;
+}
+
+/** Who or what started a run, in a few words (spec 0006, canvas board 59). */
+export function runOriginText(r: Run): string {
+  if (r.trigger?.kind === "push") {
+    const who = r.trigger.actor ?? r.created_by;
+    return r.trigger.pull_request ? `merge of #${r.trigger.pull_request} by ${who}` : `push by ${who}`;
+  }
+  return r.trigger?.kind === "drift" || r.created_by === "drift-detection" ? "schedule" : r.created_by;
+}
+
+export function RunOrigin({ run }: { run: Run }) {
+  const t = run.trigger;
+  if (t?.kind !== "push") return <>{runOriginText(run)}</>;
+  const who = t.actor ?? run.created_by;
+  if (!t.pull_request) {
+    return (
+      <>
+        <strong>Push</strong> by {who}
+      </>
+    );
+  }
+  return (
+    <>
+      <strong>Merge</strong> of{" "}
+      {t.pull_request_url ? (
+        <a href={t.pull_request_url} target="_blank" rel="noreferrer">
+          #{t.pull_request} <ExternalIcon size={11} />
+        </a>
+      ) : (
+        `#${t.pull_request}`
+      )}{" "}
+      by {who}
+    </>
+  );
 }
 
 export function ErrorBanner({ error, onDismiss }: { error: string | null; onDismiss?: () => void }) {

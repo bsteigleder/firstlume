@@ -24,7 +24,9 @@ import {
   humanType,
   Initials,
   levelName,
+  runOriginText,
   StatusBadge,
+  supersededBy,
   onTabShown,
   timeAgo,
   useAction,
@@ -116,7 +118,10 @@ export function RunPage() {
           </button>
         )}
       </div>
+      {r.trigger?.kind === "push" && <TriggerLine run={r} />}
       <ErrorBanner error={action.error} onDismiss={() => action.setError(null)} />
+      {supersededBy(r) && <SupersededNotice run={r} />}
+      {r.status === "queued" && r.trigger?.kind === "push" && <WaitingForStack run={r} />}
 
       {r.status === "failed" && r.error && (
         <div className="error-banner" role="alert">
@@ -221,7 +226,7 @@ function buildTrack(r: Run, steps: RunStep[]): TrackItem[] {
       phase: "plan",
       name: "Queued",
       state: r.started_at ? "done" : r.status === "canceled" ? "skipped" : "waiting",
-      meta: `${r.created_by === "drift-detection" ? "schedule" : r.created_by} · ${timeAgo(r.created_at)}`,
+      meta: `${runOriginText(r)} · ${timeAgo(r.created_at)}`,
     },
   ];
   const plan = steps.filter((s) => s.phase === "plan").map(fromStep);
@@ -309,7 +314,7 @@ function StepLog({ track, selected, events, run, live, error }: {
   const [follow, setFollow] = useState(true);
   const text = useMemo(() => {
     if (item.key === "queued") {
-      return run.started_at ? `Queued by ${run.created_by} at ${new Date(run.created_at).toLocaleTimeString()}.\nPicked up by an agent.` : "Waiting for an agent to pick up this run.";
+      return run.started_at ? `Queued by ${runOriginText(run)} at ${new Date(run.created_at).toLocaleTimeString()}.\nPicked up by an agent.` : "Waiting for an agent to pick up this run.";
     }
     if (item.key === "approval") {
       if (run.status === "awaiting_approval") return "Waiting for approval from an organization administrator.";
@@ -547,6 +552,69 @@ function ChangeCard({ change: c, drift, ack, backend, open, onToggle }: {
         </label>
       )}
     </article>
+  );
+}
+
+// --- started by a trigger (spec 0006, canvas board 59) ---
+
+function TriggerLine({ run }: { run: Run }) {
+  const { link } = useOrg();
+  const t = run.trigger!;
+  const who = t.actor ?? run.created_by;
+  return (
+    <p className="muted small trigger-line">
+      {t.pull_request ? (
+        <>
+          <strong>Started by the merge</strong> of{" "}
+          {t.pull_request_url ? (
+            <a href={t.pull_request_url} target="_blank" rel="noreferrer">
+              pull request #{t.pull_request} <ExternalIcon size={11} />
+            </a>
+          ) : (
+            `pull request #${t.pull_request}`
+          )}
+          , by {who}.
+        </>
+      ) : (
+        <>
+          <strong>Started by a push</strong> from {who}.
+        </>
+      )}{" "}
+      {t.event_id && <Link to={link(`git-events?event=${t.event_id}`)}>See the event</Link>}
+    </p>
+  );
+}
+
+function SupersededNotice({ run }: { run: Run }) {
+  const { api, link } = useOrg();
+  const sha = supersededBy(run) ?? "";
+  const runs = useData(() => api.listRuns(run.stack_id), [api, run.stack_id]);
+  const newer = runs.data?.find((r) => r.commit_sha?.startsWith(sha));
+  return (
+    <p className="notice">
+      <strong>A newer push reached <span className="mono">{run.ref}</span>{run.status === "canceled" ? " before this run started" : ""}.</strong>{" "}
+      {run.commit_sha && (
+        <>
+          This run was for <span className="mono">{run.commit_sha.slice(0, 7)}</span>, and it was replaced by <span className="mono">{sha.slice(0, 7)}</span>.{" "}
+        </>
+      )}
+      {newer && <Link to={link(`r/${newer.id}`)}>Open the new run</Link>}
+    </p>
+  );
+}
+
+function WaitingForStack({ run }: { run: Run }) {
+  const { api, link } = useOrg();
+  const runs = useData(() => api.listRuns(run.stack_id), [api, run.stack_id], { poll: true, pollMs: 4000 });
+  const holding = runs.data?.find((r) => r.id !== run.id && ["planning", "awaiting_approval", "apply_queued", "applying"].includes(r.status));
+  if (!holding) return null;
+  return (
+    <p className="notice">
+      <strong>
+        Waiting for run <Link className="mono" to={link(`r/${holding.id}`)}>{holding.id.slice(0, 8)}</Link>
+      </strong>
+      , which is using this stack.
+    </p>
   );
 }
 
