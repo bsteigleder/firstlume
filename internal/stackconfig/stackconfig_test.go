@@ -20,7 +20,9 @@ func TestParse(t *testing.T) {
 	}
 
 	bad := map[string]string{
-		"unknown field":   valid + "notifications: {}\n",
+		"unknown field": valid + "notifications: {}\n",
+		// Whoever commits doesn't choose where the code runs (spec 0007, R1.6).
+		"placement":       valid + "placement: {node_selector: {zone: east}}\n",
 		"typo":            "version: 1\nengine: terraform\nengine_verison: 1.15.6\n",
 		"wrong version":   "version: 2\nengine: terraform\nengine_version: 1.15.6\n",
 		"missing version": "engine: terraform\nengine_version: 1.15.6\n",

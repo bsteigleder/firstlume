@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/bsteigleder/firstlume/internal/api"
+	"github.com/bsteigleder/firstlume/internal/placement"
 )
 
 const (
@@ -23,6 +24,7 @@ const (
 	labelAgent     = "firstlume.io/agent"
 	labelRunID     = "firstlume.io/run-id"
 	labelPhase     = "firstlume.io/phase"
+	labelStack     = "firstlume.io/stack-id"
 	annotReported  = "firstlume.io/failure-reported"
 	managedByValue = "firstlume"
 	tokenKey       = "token"
@@ -44,6 +46,77 @@ type KubernetesConfig struct {
 	Tolerations      []corev1.Toleration
 	Affinity         *corev1.Affinity
 	PodAnnotations   map[string]string
+	// AllowPlacement accepts placement set in First Lume: on the agent, the
+	// organization, folders and stacks (spec 0007, R3). The fields above always apply.
+	AllowPlacement bool
+	// UnschedulableTimeout fails a run no node can take for this long. Zero never does.
+	UnschedulableTimeout time.Duration
+}
+
+// withPlacement returns the configuration of a run: each field set in First
+// Lume replaces the installation's, without adding to it.
+func (cfg KubernetesConfig) withPlacement(p api.Placement) (KubernetesConfig, error) {
+	if p.IsZero() {
+		return cfg, nil
+	}
+	if !cfg.AllowPlacement {
+		return cfg, fmt.Errorf("this agent doesn't accept placement (agent.executor.allowPlacement)")
+	}
+	parsed, err := placement.Parse(p)
+	if err != nil {
+		return cfg, err
+	}
+	if len(p.NodeSelector) > 0 {
+		cfg.NodeSelector = parsed.NodeSelector
+	}
+	if len(p.Tolerations) > 0 {
+		cfg.Tolerations = parsed.Tolerations
+	}
+	aff := corev1.Affinity{}
+	if cfg.Affinity != nil {
+		aff = *cfg.Affinity
+	}
+	if len(p.NodeAffinity) > 0 {
+		aff.NodeAffinity = parsed.NodeAffinity
+	}
+	if len(p.PodAffinity) > 0 {
+		aff.PodAffinity = parsed.PodAffinity
+	}
+	if len(p.PodAntiAffinity) > 0 {
+		aff.PodAntiAffinity = parsed.PodAntiAffinity
+	}
+	cfg.Affinity = &aff
+	return cfg, nil
+}
+
+// installPlacement is what the Helm values set, as the screens show it.
+func (cfg KubernetesConfig) installPlacement() (api.Placement, error) {
+	var p api.Placement
+	var aff corev1.Affinity
+	if cfg.Affinity != nil {
+		aff = *cfg.Affinity
+	}
+	for _, f := range []struct {
+		into *json.RawMessage
+		set  bool
+		v    any
+	}{
+		{&p.NodeSelector, len(cfg.NodeSelector) > 0, cfg.NodeSelector},
+		{&p.Tolerations, len(cfg.Tolerations) > 0, cfg.Tolerations},
+		{&p.NodeAffinity, aff.NodeAffinity != nil, aff.NodeAffinity},
+		{&p.PodAffinity, aff.PodAffinity != nil, aff.PodAffinity},
+		{&p.PodAntiAffinity, aff.PodAntiAffinity != nil, aff.PodAntiAffinity},
+	} {
+		if !f.set {
+			continue
+		}
+		raw, err := json.Marshal(f.v)
+		if err != nil {
+			return p, err
+		}
+		*f.into = raw
+	}
+	return p, nil
 }
 
 // ParseScheduling reads where run Jobs go: a node selector, tolerations and an
@@ -112,7 +185,11 @@ func NewKubernetesDriver(cfg KubernetesConfig, client kubernetes.Interface) *Kub
 }
 
 func jobName(a *api.Assignment) string {
-	return "flr-" + strings.ReplaceAll(a.RunID, "-", "") + "-" + string(a.Phase)
+	return jobNameOf(a.RunID, string(a.Phase))
+}
+
+func jobNameOf(runID, phase string) string {
+	return "flr-" + strings.ReplaceAll(runID, "-", "") + "-" + phase
 }
 
 // BuildJob returns the Secret holding the run token and the Job that uses it.
@@ -123,6 +200,9 @@ func BuildJob(cfg KubernetesConfig, a *api.Assignment) (*corev1.Secret, *batchv1
 		labelAgent:     cfg.AgentName,
 		labelRunID:     a.RunID,
 		labelPhase:     string(a.Phase),
+	}
+	if a.StackID != "" {
+		labels[labelStack] = a.StackID // so a rule can name a stack (R2.5)
 	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name + "-token", Namespace: cfg.Namespace, Labels: labels},
@@ -195,8 +275,18 @@ func BuildJob(cfg KubernetesConfig, a *api.Assignment) (*corev1.Secret, *batchv1
 	return secret, job
 }
 
+// ClaimInfo tells the server what this agent accepts and what it was installed with.
+func (d *KubernetesDriver) ClaimInfo() (api.ClaimRequest, error) {
+	install, err := d.cfg.installPlacement()
+	return api.ClaimRequest{AcceptsPlacement: d.cfg.AllowPlacement, InstallPlacement: install}, err
+}
+
 func (d *KubernetesDriver) Start(ctx context.Context, a *api.Assignment) error {
-	secret, job := BuildJob(d.cfg, a)
+	cfg, err := d.cfg.withPlacement(a.Placement)
+	if err != nil {
+		return err
+	}
+	secret, job := BuildJob(cfg, a)
 	secrets := d.client.CoreV1().Secrets(d.cfg.Namespace)
 	jobs := d.client.BatchV1().Jobs(d.cfg.Namespace)
 
@@ -292,5 +382,78 @@ func (d *KubernetesDriver) Failures(ctx context.Context) ([]Failure, error) {
 			return out, fmt.Errorf("marking job %s reported: %w", j.Name, err)
 		}
 	}
+	unschedulable, err := d.unschedulable(ctx, jobs)
+	return append(out, unschedulable...), err
+}
+
+// unschedulable finds runs no node has taken for too long, removes their Jobs
+// so they can't start later, and reports them with the scheduler's message.
+// A Job left Pending would otherwise fail only by heartbeat, saying nothing about why.
+func (d *KubernetesDriver) unschedulable(ctx context.Context, jobs []batchv1.Job) ([]Failure, error) {
+	if d.cfg.UnschedulableTimeout <= 0 {
+		return nil, nil
+	}
+	open := map[string]bool{}
+	for i := range jobs {
+		if _, _, done := jobFinished(&jobs[i]); !done {
+			open[jobs[i].Name] = true
+		}
+	}
+	if len(open) == 0 {
+		return nil, nil
+	}
+	pods, err := d.client.CoreV1().Pods(d.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelManagedBy + "=" + managedByValue + "," + labelAgent + "=" + d.cfg.AgentName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing run pods: %w", err)
+	}
+	var out []Failure
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		name := jobNameOf(pod.Labels[labelRunID], pod.Labels[labelPhase])
+		message, stuck := d.stuckPending(pod)
+		if !open[name] || !stuck {
+			continue
+		}
+		background := metav1.DeletePropagationBackground
+		err := d.client.BatchV1().Jobs(d.cfg.Namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &background})
+		if err != nil && !apierrors.IsNotFound(err) {
+			return out, fmt.Errorf("removing job %s: %w", name, err)
+		}
+		delete(open, name)
+		phase := api.Phase(pod.Labels[labelPhase])
+		out = append(out, Failure{RunID: pod.Labels[labelRunID], Phase: phase, Reason: unschedulableReason(phase, d.cfg.UnschedulableTimeout, message)})
+	}
 	return out, nil
+}
+
+// stuckPending says whether the scheduler has been refusing the pod for longer
+// than the timeout, and returns its message.
+func (d *KubernetesDriver) stuckPending(pod *corev1.Pod) (string, bool) {
+	if pod.Status.Phase != corev1.PodPending {
+		return "", false
+	}
+	for _, c := range pod.Status.Conditions {
+		if c.Type != corev1.PodScheduled || c.Status != corev1.ConditionFalse || c.Reason != corev1.PodReasonUnschedulable {
+			continue
+		}
+		since := c.LastTransitionTime.Time
+		if since.IsZero() {
+			since = pod.CreationTimestamp.Time
+		}
+		return c.Message, time.Since(since) >= d.cfg.UnschedulableTimeout
+	}
+	return "", false
+}
+
+func unschedulableReason(phase api.Phase, timeout time.Duration, message string) string {
+	wait := timeout.String()
+	if strings.HasSuffix(wait, "m0s") {
+		wait = strings.TrimSuffix(wait, "0s")
+	}
+	if phase == api.PhaseApply {
+		return fmt.Sprintf("The apply never started: no node could take it for %s. Nothing was applied.\n%s", wait, message)
+	}
+	return fmt.Sprintf("No node could take this run for %s. Nothing ran.\n%s", wait, message)
 }

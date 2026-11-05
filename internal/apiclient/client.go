@@ -127,9 +127,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in, out any) (
 // --- agent API ---
 
 // Claim returns the next assignment, or nil when there is nothing to run.
-func (c *Client) Claim(ctx context.Context) (*api.Assignment, error) {
+func (c *Client) Claim(ctx context.Context, req api.ClaimRequest) (*api.Assignment, error) {
 	var a api.Assignment
-	code, err := c.doJSON(ctx, http.MethodPost, "/agent/v1/claim", nil, &a)
+	code, err := c.doJSON(ctx, http.MethodPost, "/agent/v1/claim", req, &a)
 	if err != nil {
 		return nil, err
 	}

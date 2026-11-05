@@ -95,6 +95,11 @@ func (s *Store) PreviewMoveStack(ctx context.Context, orgID, stackID, folderID s
 			out.OwnSettings = append(out.OwnSettings, name)
 		}
 	}
+	for _, name := range api.PlacementFieldNames {
+		if len(*own.placement.Field(name)) > 0 {
+			out.OwnSettings = append(out.OwnSettings, "placement_"+name)
+		}
+	}
 	slices.Sort(out.OwnSettings)
 	for _, v := range before.own[keyOf(stack)] {
 		if v.Sensitive {
@@ -185,6 +190,20 @@ func (s *Store) moveChanges(before, after *inherited) ([]api.MoveChange, error) 
 		}
 		if ae.VaultRole.Value != "" {
 			c.After = &api.MoveValue{Value: ae.VaultRole.Value, Origin: ae.VaultRole.Origin}
+		}
+		out = append(out, c)
+	}
+	for _, name := range api.PlacementFieldNames {
+		pb, pa := *be.Placement.Field(name), *ae.Placement.Field(name)
+		if placementValue(pb) == placementValue(pa) {
+			continue
+		}
+		c := api.MoveChange{Setting: "placement_" + name}
+		if pb != nil {
+			c.Before = &api.MoveValue{Value: placementValue(pb), Origin: pb.Origin}
+		}
+		if pa != nil {
+			c.After = &api.MoveValue{Value: placementValue(pa), Origin: pa.Origin}
 		}
 		out = append(out, c)
 	}
@@ -297,4 +316,13 @@ func (s *Store) sameSecret(a, b []byte) (bool, error) {
 		return false, err
 	}
 	return bytes.Equal(da, db), nil
+}
+
+// placementValue is a placement field as text. Values come from jsonb, which
+// keeps keys in one order, so equal values read the same.
+func placementValue(f *api.PlacementField) string {
+	if f == nil {
+		return ""
+	}
+	return string(f.Value)
 }

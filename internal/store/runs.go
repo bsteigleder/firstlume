@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,7 +20,7 @@ const activeStatuses = `('queued', 'planning', 'awaiting_approval', 'apply_queue
 func runColumnsAs(alias string) string {
 	cols := []string{"id", "stack_id", "type", "status", "ref", "commit_sha", "commit_author_name", "commit_author_email",
 		"commit_message", "has_changes", "plan_summary", "error", "agent_id", "created_by", "approved_by", "approved_at",
-		"started_at", "finished_at", "created_at", "updated_at", "acknowledged", "config", "settings_used", "unit_backends",
+		"started_at", "finished_at", "created_at", "updated_at", "acknowledged", "config", "settings_used", "unit_backends", "placement", "placement_used",
 		"trigger_kind", "trigger_actor", "trigger_event_id", "trigger_before_sha", "trigger_pull_request", "trigger_pull_request_url"}
 	for i, c := range cols {
 		cols[i] = alias + "." + c
@@ -31,14 +32,14 @@ var runColumns = runColumnsAs("r")
 
 // runScan reads run columns that may all be NULL (from a LEFT JOIN).
 type runScan struct {
-	id, stackID, typ, status, ref, commit, authorName, authorEmail, message *string
-	hasChanges                                                              *bool
-	summary                                                                 []byte
-	errMsg, agentID, createdBy, approvedBy                                  *string
-	approvedAt, startedAt, finishedAt, createdAt, updatedAt                 *time.Time
-	acknowledged, config, settingsUsed, unitBackends                        []byte
-	triggerKind, triggerActor, triggerEvent, triggerBefore, triggerPRURL    *string
-	triggerPR                                                               *int
+	id, stackID, typ, status, ref, commit, authorName, authorEmail, message    *string
+	hasChanges                                                                 *bool
+	summary                                                                    []byte
+	errMsg, agentID, createdBy, approvedBy                                     *string
+	approvedAt, startedAt, finishedAt, createdAt, updatedAt                    *time.Time
+	acknowledged, config, settingsUsed, unitBackends, placement, placementUsed []byte
+	triggerKind, triggerActor, triggerEvent, triggerBefore, triggerPRURL       *string
+	triggerPR                                                                  *int
 }
 
 func newRunScan() *runScan { return &runScan{} }
@@ -46,7 +47,7 @@ func newRunScan() *runScan { return &runScan{} }
 func (s *runScan) dest() []any {
 	return []any{&s.id, &s.stackID, &s.typ, &s.status, &s.ref, &s.commit, &s.authorName, &s.authorEmail, &s.message,
 		&s.hasChanges, &s.summary, &s.errMsg, &s.agentID, &s.createdBy, &s.approvedBy, &s.approvedAt,
-		&s.startedAt, &s.finishedAt, &s.createdAt, &s.updatedAt, &s.acknowledged, &s.config, &s.settingsUsed, &s.unitBackends,
+		&s.startedAt, &s.finishedAt, &s.createdAt, &s.updatedAt, &s.acknowledged, &s.config, &s.settingsUsed, &s.unitBackends, &s.placement, &s.placementUsed,
 		&s.triggerKind, &s.triggerActor, &s.triggerEvent, &s.triggerBefore, &s.triggerPR, &s.triggerPRURL}
 }
 
@@ -68,6 +69,18 @@ func (s *runScan) result() (*api.Run, error) {
 	if s.summary != nil {
 		r.PlanSummary = &api.PlanSummary{}
 		if err := json.Unmarshal(s.summary, r.PlanSummary); err != nil {
+			return nil, err
+		}
+	}
+	if len(s.placement) > 0 && !bytes.Equal(s.placement, []byte("{}")) {
+		r.Placement = &api.EffectivePlacement{}
+		if err := json.Unmarshal(s.placement, r.Placement); err != nil {
+			return nil, err
+		}
+	}
+	if s.placementUsed != nil {
+		r.PlacementUsed = &api.EffectivePlacement{}
+		if err := json.Unmarshal(s.placementUsed, r.PlacementUsed); err != nil {
 			return nil, err
 		}
 	}
@@ -124,15 +137,19 @@ func scanRun(row pgx.Row) (*api.Run, error) {
 
 // CreateRun queues a run. The ref defaults to the stack's.
 func (s *Store) CreateRun(ctx context.Context, orgID, stackID string, typ api.RunType, ref, createdBy string) (*api.Run, error) {
+	placement, err := runPlacement(ctx, s.pool, orgID, stackID)
+	if err != nil {
+		return nil, err
+	}
 	return scanRun(s.pool.QueryRow(ctx, `
 		WITH inserted AS (
-			INSERT INTO runs (organization_id, stack_id, type, status, ref, created_by)
-			SELECT st.organization_id, st.id, $3, 'queued', coalesce(nullif($4, ''), st.ref), $5
+			INSERT INTO runs (organization_id, stack_id, type, status, ref, created_by, placement)
+			SELECT st.organization_id, st.id, $3, 'queued', coalesce(nullif($4, ''), st.ref), $5, $6::jsonb
 			FROM stacks st WHERE st.organization_id = $1 AND st.id = $2
 			RETURNING *
 		)
 		SELECT `+runColumns+` FROM inserted r`,
-		orgID, stackID, typ, ref, createdBy))
+		orgID, stackID, typ, ref, createdBy, placement))
 }
 
 // ScheduleDriftRuns queues a drift run for every stack whose drift check is
@@ -176,6 +193,10 @@ func (s *Store) ScheduleDriftRuns(ctx context.Context) (int64, error) {
 		if interval == 0 || (c.scheduled != nil && time.Since(*c.scheduled) < time.Duration(interval)*time.Minute) {
 			continue
 		}
+		placement, err := json.Marshal(eff.Placement)
+		if err != nil {
+			return queued, err
+		}
 		tag, err := s.pool.Exec(ctx, `
 			WITH due AS (
 				SELECT st.id, st.organization_id, st.ref FROM stacks st
@@ -187,8 +208,8 @@ func (s *Store) ScheduleDriftRuns(ctx context.Context) (int64, error) {
 				UPDATE stacks st SET drift_scheduled_at = now() FROM due WHERE st.id = due.id
 				RETURNING st.id, st.organization_id, st.ref
 			)
-			INSERT INTO runs (organization_id, stack_id, type, status, ref, created_by)
-			SELECT organization_id, id, 'drift', 'queued', ref, $3 FROM marked`, c.id, interval, api.DriftActor)
+			INSERT INTO runs (organization_id, stack_id, type, status, ref, created_by, placement)
+			SELECT organization_id, id, 'drift', 'queued', ref, $3, $4::jsonb FROM marked`, c.id, interval, api.DriftActor, placement)
 		if err != nil {
 			return queued, err
 		}
@@ -462,7 +483,17 @@ func (s *Store) CancelRun(ctx context.Context, orgID, id string) (*api.Run, erro
 // ClaimRun hands the oldest runnable phase to an agent. A run is runnable when
 // it is apply_queued, or queued with no other active run on its stack.
 // Locking the stack row serializes concurrent claims per stack.
-func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity) (*api.Run, api.Phase, error) {
+//
+// An agent that doesn't accept placement only gets runs without one, and none
+// at all when it has one set on itself: better stopped than running in the
+// wrong place (spec 0007, R3.2 and R5.6).
+func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity, req api.ClaimRequest) (*api.Run, api.Phase, error) {
+	if err := s.reportAgent(ctx, agent, req); err != nil {
+		return nil, "", err
+	}
+	if !req.AcceptsPlacement && !agent.Placement.IsZero() {
+		return nil, "", ErrNotFound
+	}
 	var run *api.Run
 	var phase api.Phase
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -472,6 +503,7 @@ func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity) (*api.Run, a
 			SELECT r.id, r.status FROM runs r
 			JOIN stacks st ON st.id = r.stack_id
 			WHERE r.organization_id = $1
+			  AND ($2 OR r.placement = '{}')
 			  AND (r.status = 'apply_queued' OR (
 			        r.status = 'queued'
 			        AND NOT EXISTS (
@@ -480,7 +512,7 @@ func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity) (*api.Run, a
 			                   OR (o.status = 'queued' AND o.created_at < r.created_at)))))
 			ORDER BY r.created_at
 			LIMIT 1
-			FOR UPDATE OF r, st SKIP LOCKED`, agent.OrganizationID).Scan(&id, &status)
+			FOR UPDATE OF r, st SKIP LOCKED`, agent.OrganizationID, req.AcceptsPlacement).Scan(&id, &status)
 		if err != nil {
 			return err
 		}
@@ -497,6 +529,15 @@ func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity) (*api.Run, a
 				RETURNING *
 			)
 			SELECT `+runColumns+` FROM updated r`, id, next, agent.ID))
+		if err != nil {
+			return err
+		}
+		run.PlacementUsed = placementUsed(run.Placement, agent, req.InstallPlacement)
+		used, err := json.Marshal(run.PlacementUsed)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE runs SET placement_used = $2 WHERE id = $1`, id, used)
 		return err
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -506,6 +547,26 @@ func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity) (*api.Run, a
 		return nil, "", err
 	}
 	return run, phase, nil
+}
+
+// placementUsed is what a phase runs with: the run's fields, then the agent's,
+// then the installation's (spec 0007, R1.4).
+func placementUsed(run *api.EffectivePlacement, agent *AgentIdentity, install api.Placement) *api.EffectivePlacement {
+	used := api.EffectivePlacement{}
+	if run != nil {
+		used = *run
+	}
+	for _, name := range api.PlacementFieldNames {
+		if *used.Field(name) != nil {
+			continue
+		}
+		if v := *agent.Placement.Field(name); len(v) > 0 {
+			*used.Field(name) = &api.PlacementField{Value: v, Origin: api.Level{Kind: api.LevelAgent, Name: agent.Name}}
+		} else if v := *install.Field(name); len(v) > 0 {
+			*used.Field(name) = &api.PlacementField{Value: v, Origin: api.Level{Kind: api.LevelInstallation}}
+		}
+	}
+	return &used
 }
 
 func statusForPhase(p api.Phase) api.RunStatus {

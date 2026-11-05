@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -103,6 +104,7 @@ type settingsRow struct {
 	confirmDestructive *bool
 	vaultRole          *string
 	gitOnPush          *string
+	placement          api.Placement
 }
 
 type variableRow struct {
@@ -125,7 +127,7 @@ func levelData(ctx context.Context, q querier, orgID string, levels []api.Level)
 	const where = `organization_id = $1 AND (folder_id = ANY($2::uuid[]) OR stack_id = $3::uuid OR (folder_id IS NULL AND stack_id IS NULL))`
 
 	settings := map[levelKey]settingsRow{}
-	rows, err := q.Query(ctx, `SELECT folder_id, stack_id, require_approval, drift_interval_minutes, confirm_destructive, vault_role, git_on_push
+	rows, err := q.Query(ctx, `SELECT folder_id, stack_id, require_approval, drift_interval_minutes, confirm_destructive, vault_role, git_on_push, placement
 		FROM level_settings WHERE `+where,
 		orgID, folders, stackID)
 	if err != nil {
@@ -134,9 +136,16 @@ func levelData(ctx context.Context, q querier, orgID string, levels []api.Level)
 	for rows.Next() {
 		var f, st *string
 		var r settingsRow
-		if err := rows.Scan(&f, &st, &r.requireApproval, &r.driftInterval, &r.confirmDestructive, &r.vaultRole, &r.gitOnPush); err != nil {
+		var placement []byte
+		if err := rows.Scan(&f, &st, &r.requireApproval, &r.driftInterval, &r.confirmDestructive, &r.vaultRole, &r.gitOnPush, &placement); err != nil {
 			rows.Close()
 			return nil, nil, err
+		}
+		if placement != nil {
+			if err := json.Unmarshal(placement, &r.placement); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
 		}
 		settings[levelKey{deref(f), deref(st)}] = r
 	}
@@ -196,6 +205,11 @@ func resolve(levels []api.Level, settings map[levelKey]settingsRow, vars map[lev
 		}
 		if r.gitOnPush != nil {
 			eff.GitOnPush = api.EffectiveString{Value: *r.gitOnPush, Origin: levels[i]}
+		}
+		for _, name := range api.PlacementFieldNames {
+			if v := *r.placement.Field(name); len(v) > 0 {
+				*eff.Placement.Field(name) = &api.PlacementField{Value: v, Origin: levels[i]}
+			}
 		}
 	}
 
@@ -287,6 +301,7 @@ func (s *Store) GetSettings(ctx context.Context, orgID string, at api.Level) (*a
 			ConfirmDestructive:   own.confirmDestructive,
 			VaultRole:            own.vaultRole,
 			GitOnPush:            own.gitOnPush,
+			Placement:            own.placement,
 			Variables:            []api.Variable{},
 			Registries:           []api.RegistryCredential{},
 		},
@@ -308,7 +323,8 @@ func (s *Store) GetSettings(ctx context.Context, orgID string, at api.Level) (*a
 // empty value keeps its stored value, since the API never returns it.
 func (s *Store) PutSettings(ctx context.Context, orgID string, at api.Level, in api.LevelSettings) error {
 	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := chain(ctx, tx, orgID, at); err != nil {
+		var err error
+		if _, err = chain(ctx, tx, orgID, at); err != nil {
 			return err
 		}
 		k := keyOf(at)
@@ -318,11 +334,17 @@ func (s *Store) PutSettings(ctx context.Context, orgID string, at api.Level, in 
 		if _, err := tx.Exec(ctx, `DELETE FROM level_settings WHERE `+level, orgID, folderID, stackID); err != nil {
 			return err
 		}
-		if in.RequireApproval != nil || in.DriftIntervalMinutes != nil || in.ConfirmDestructive != nil || in.VaultRole != nil || in.GitOnPush != nil {
+		if in.RequireApproval != nil || in.DriftIntervalMinutes != nil || in.ConfirmDestructive != nil || in.VaultRole != nil || in.GitOnPush != nil || !in.Placement.IsZero() {
+			var placement []byte
+			if !in.Placement.IsZero() {
+				if placement, err = json.Marshal(in.Placement); err != nil {
+					return err
+				}
+			}
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO level_settings (organization_id, folder_id, stack_id, require_approval, drift_interval_minutes, confirm_destructive, vault_role, git_on_push)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-				orgID, folderID, stackID, in.RequireApproval, in.DriftIntervalMinutes, in.ConfirmDestructive, in.VaultRole, in.GitOnPush); err != nil {
+				INSERT INTO level_settings (organization_id, folder_id, stack_id, require_approval, drift_interval_minutes, confirm_destructive, vault_role, git_on_push, placement)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+				orgID, folderID, stackID, in.RequireApproval, in.DriftIntervalMinutes, in.ConfirmDestructive, in.VaultRole, in.GitOnPush, placement); err != nil {
 				return classify(err)
 			}
 		}
@@ -376,6 +398,20 @@ func (s *Store) PutSettings(ctx context.Context, orgID string, at api.Level, in 
 		}
 		return nil
 	})
+}
+
+// runPlacement is what a new run of the stack records (spec 0007, R2.1).
+func runPlacement(ctx context.Context, q querier, orgID, stackID string) ([]byte, error) {
+	levels, err := chain(ctx, q, orgID, api.Level{Kind: api.LevelStack, ID: stackID})
+	if err != nil {
+		return nil, err
+	}
+	settings, vars, err := levelData(ctx, q, orgID, levels)
+	if err != nil {
+		return nil, err
+	}
+	eff, _ := resolve(levels, settings, vars)
+	return json.Marshal(eff.Placement)
 }
 
 // execVariables decrypts a stack's effective variables for an executor.

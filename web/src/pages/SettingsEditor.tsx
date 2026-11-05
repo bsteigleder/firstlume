@@ -4,6 +4,7 @@ import type { EffectiveRegistry, EffectiveVariable, GitOnPush, Level, LevelSetti
 import { useOrg } from "../org";
 import { driftIntervals, driftLabel, ErrorBanner, levelName, useAction, useData } from "../ui";
 import { GitNothingReceived } from "./GitEvents";
+import { draftFrom, draftToPlacement, noAgentAccepts, PlacementEditor, type PlacementDraft } from "./Placement";
 import { FileDialog, RegistryDialog, type FileDraft, type RegistryDraft } from "./SettingsDialogs";
 
 type Tri = "inherit" | "yes" | "no";
@@ -20,7 +21,7 @@ interface EditableVariable extends Variable {
  * Edits what one level (organization, folder or stack) defines, showing what
  * it inherits and from where. Stacks use the nearest level that defines each setting.
  */
-export function SettingsEditor({ level, path, ownGitToken }: { level: Level; path: string; ownGitToken?: boolean }) {
+export function SettingsEditor({ level, path, ownGitToken, runAll }: { level: Level; path: string; ownGitToken?: boolean; runAll?: boolean }) {
   const { api, link, notify } = useOrg();
   const settings = useData(() => api.getSettings(path), [api, path]);
   const [approval, setApproval] = useState<Tri>("inherit");
@@ -30,6 +31,8 @@ export function SettingsEditor({ level, path, ownGitToken }: { level: Level; pat
   const [vars, setVars] = useState<EditableVariable[]>([]);
   const [vaultRole, setVaultRole] = useState("");
   const [regs, setRegs] = useState<RegistryDraft[]>([]);
+  const [placement, setPlacement] = useState<PlacementDraft>(() => draftFrom());
+  const agents = useData(() => api.listAgents(), [api]);
   // The file or registry dialog, with the index it edits (-1 adds).
   const [dialog, setDialog] = useState<{ kind: "file" | "registry"; index: number } | null>(null);
   // An inherited credential being overridden: the dialog starts from it.
@@ -47,6 +50,7 @@ export function SettingsEditor({ level, path, ownGitToken }: { level: Level; pat
     setVars(d.level.variables.map((v) => ({ ...v, value: v.sensitive ? "" : v.value, stored: v.sensitive })));
     setVaultRole(d.level.vault_role ?? "");
     setRegs((d.level.registries ?? []).map((r) => ({ ...r, storedPassword: !!r.has_password && !r.password_vault })));
+    setPlacement(draftFrom(d.level.placement));
     setDirty(false);
   }, [settings.data]);
 
@@ -94,6 +98,14 @@ export function SettingsEditor({ level, path, ownGitToken }: { level: Level; pat
   const levelLabel = level.name ?? levelName(level);
 
   async function submit() {
+    let placementBody;
+    try {
+      placementBody = draftToPlacement(placement);
+    } catch (e) {
+      save.setError((e as Error).message);
+      return;
+    }
+    const placementChanged = JSON.stringify(placementBody) !== JSON.stringify(settings.data?.level.placement ?? {});
     const body: LevelSettings = {
       require_approval: fromTri(approval),
       confirm_destructive: fromTri(confirmDestructive),
@@ -101,6 +113,7 @@ export function SettingsEditor({ level, path, ownGitToken }: { level: Level; pat
       // Edited elsewhere for now (spec 0003, F4): kept as it is.
       vault_role: vaultRole.trim() || null,
       git_on_push: gitOnPush,
+      placement: placementBody,
       variables: vars.map(({ key, category, sensitive, value }) => ({ key: key.trim(), category, sensitive, value: value ?? "" })),
       registries: regs.map(({ host, kind, username, password, password_vault }) => ({ host, kind, username, password, password_vault })),
     };
@@ -108,6 +121,7 @@ export function SettingsEditor({ level, path, ownGitToken }: { level: Level; pat
     if (await save.run(() => api.putSettings(path, body))) {
       await settings.reload();
       if (turnedOn) notify("Saved. Nothing runs now: the trigger counts from the next push.");
+      else if (placementChanged) notify("Saved. New runs use it. Runs already created keep theirs.");
     }
   }
 
@@ -181,6 +195,31 @@ export function SettingsEditor({ level, path, ownGitToken }: { level: Level; pat
               placeholder={eff.vault_role.value && !isHere(eff.vault_role.origin) ? `inherit (${eff.vault_role.value})` : "inherit"} />
           </label>
         </SettingRow>
+      </section>
+
+      <section className="card settings-card placement-card" aria-label="Where runs execute">
+        <div>
+          <h2 className="section-title">Where runs execute</h2>
+          <p className="muted">
+            Each field inherits on its own. After the organization come the agent’s value and the installation’s, in the Helm values.
+          </p>
+        </div>
+        {noAgentAccepts(agents.data ?? undefined) && (Object.values(eff.placement).length > 0 || Object.values(placement.modes).some((m) => m !== "inherit")) && (
+          <p className="notice notice-attention">
+            <strong>No agent in this organization accepts placement.</strong> Runs of these stacks will wait in the queue. Whoever runs the cluster turns it on with{" "}
+            <span className="mono">agent.executor.allowPlacement=true</span>. <Link to={link("settings#agents")}>See the agents</Link>
+          </p>
+        )}
+        {runAll && <p className="notice">This stack runs as one Job, so all its units execute in the same place.</p>}
+        <PlacementEditor
+          draft={placement}
+          onChange={(d) => (setPlacement(d), touch())}
+          notSetHelp="so the agent’s or the installation’s value applies"
+          inherited={(name) => {
+            const f = eff.placement[name];
+            return f && !isHere(f.origin) ? { value: f.value, from: `from ${levelName(f.origin)}` } : undefined;
+          }}
+        />
       </section>
 
       <section className="vars-section">

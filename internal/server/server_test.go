@@ -32,13 +32,16 @@ type harness struct {
 	t     *testing.T
 	url   string
 	org   string // slug
+	orgID string
 	store *store.Store
 	pool  *pgxpool.Pool
 	// blobs is where the server stores state versions.
 	blobs store.Blobs
 	agent *apiclient.Client
-	logs  *syncBuffer
-	srv   *Server
+	// agentToken is the token of agent.
+	agentToken string
+	logs       *syncBuffer
+	srv        *Server
 }
 
 type syncBuffer struct {
@@ -112,7 +115,7 @@ func newHarnessWith(t *testing.T, cfg Config) *harness {
 	}
 	srv := New(cfg, st, keys, log)
 	ts.Config.Handler = srv.Handler()
-	return &harness{t: t, url: ts.URL, org: slug, store: st, pool: pool, blobs: store.PostgresBlobs(pool), agent: apiclient.New(ts.URL, agentToken), logs: logs, srv: srv}
+	return &harness{t: t, url: ts.URL, org: slug, orgID: orgID, agentToken: agentToken, store: st, pool: pool, blobs: store.PostgresBlobs(pool), agent: apiclient.New(ts.URL, agentToken), logs: logs, srv: srv}
 }
 
 func randomSuffix() string {
@@ -190,7 +193,7 @@ func (h *harness) run(stackID string, typ api.RunType) api.Run {
 
 func (h *harness) claim() *api.Assignment {
 	h.t.Helper()
-	a, err := h.agent.Claim(context.Background())
+	a, err := h.agent.Claim(context.Background(), api.ClaimRequest{})
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -374,7 +377,7 @@ func TestAuthAndValidation(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong admin token: %d", resp.StatusCode)
 	}
-	if _, err := apiclient.New(h.url, "fla_bogus").Claim(context.Background()); err == nil {
+	if _, err := apiclient.New(h.url, "fla_bogus").Claim(context.Background(), api.ClaimRequest{}); err == nil {
 		t.Fatal("bogus agent token accepted")
 	}
 	if _, err := apiclient.New(h.url, "flr_bogus.sig").Spec(context.Background()); err == nil {
@@ -439,7 +442,7 @@ func TestOrganizationIsolation(t *testing.T) {
 	must(t, err)
 	tok, _ := secrets.RandomToken("fla_")
 	must(t, h.store.EnsureAgent(ctx, otherID, "other", tok))
-	if a, err := apiclient.New(h.url, tok).Claim(ctx); err != nil || a != nil {
+	if a, err := apiclient.New(h.url, tok).Claim(ctx, api.ClaimRequest{}); err != nil || a != nil {
 		t.Fatalf("other organization's agent claimed %+v (%v)", a, err)
 	}
 	if a := h.claim(); a == nil || a.RunID != run.ID {

@@ -458,6 +458,10 @@ const (
 	LevelStack        LevelKind = "stack"
 	// LevelDefault marks a built-in value used when no level defines a setting.
 	LevelDefault LevelKind = "default"
+	// LevelAgent and LevelInstallation only appear in a run's placement: after
+	// the organization come the agent's value and the Helm values (spec 0007).
+	LevelAgent        LevelKind = "agent"
+	LevelInstallation LevelKind = "installation"
 )
 
 // Level identifies one organization, folder or stack.
@@ -478,7 +482,9 @@ type LevelSettings struct {
 	// VaultRole is the role runs log in to Vault with (spec 0003). Nil inherits.
 	VaultRole *string `json:"vault_role,omitempty"`
 	// GitOnPush is what a push on the stack's branch does (spec 0006, R3.1). Nil inherits.
-	GitOnPush *string    `json:"git_on_push,omitempty"`
+	GitOnPush *string `json:"git_on_push,omitempty"`
+	// Placement is where runs execute (spec 0007). Each field inherits on its own.
+	Placement Placement  `json:"placement,omitzero"`
 	Variables []Variable `json:"variables"`
 	// Registries are this level's registry credentials (spec 0003, R4). Unlike
 	// the variables, nil leaves them as they are; an empty list removes them.
@@ -541,6 +547,7 @@ type EffectiveSettings struct {
 	ConfirmDestructive   EffectiveBool       `json:"confirm_destructive"`
 	VaultRole            EffectiveString     `json:"vault_role"`
 	GitOnPush            EffectiveString     `json:"git_on_push"`
+	Placement            EffectivePlacement  `json:"placement"`
 	Variables            []EffectiveVariable `json:"variables"`
 	Registries           []EffectiveRegistry `json:"registries"`
 }
@@ -786,6 +793,12 @@ type Run struct {
 	// UnitBackends is where each unit keeps its state, as the plan found
 	// after init (spec 0002 R2.3). Nil for runs from before it was recorded.
 	UnitBackends []UnitBackend `json:"unit_backends,omitempty"`
+	// Placement is what the organization, folders and stack defined when the
+	// run was created (spec 0007, R2.1). The agent's fields aren't in it.
+	Placement *EffectivePlacement `json:"placement,omitempty"`
+	// PlacementUsed is all the last phase used, the agent's and the installation's
+	// values included. Nil until an agent takes the run.
+	PlacementUsed *EffectivePlacement `json:"placement_used,omitempty"`
 	// ApplyTotals is set on a single run read, once an apply that reported
 	// progress resource by resource has finished.
 	ApplyTotals *ApplyTotals `json:"apply_totals,omitempty"`
@@ -815,10 +828,17 @@ type Agent struct {
 	Name       string     `json:"name"`
 	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
+	// Placement is what was set on this agent in the UI or the API (spec 0007, R5).
+	Placement Placement `json:"placement"`
+	// AcceptsPlacement and InstallPlacement are what the agent last reported.
+	// Nil until it asks for work.
+	AcceptsPlacement *bool      `json:"accepts_placement,omitempty"`
+	InstallPlacement *Placement `json:"install_placement,omitempty"`
 }
 
 type CreateAgentRequest struct {
-	Name string `json:"name"`
+	Name      string    `json:"name"`
+	Placement Placement `json:"placement,omitzero"`
 }
 
 type CreateAgentResponse struct {
@@ -834,6 +854,9 @@ type Assignment struct {
 	StackID string `json:"stack_id"`
 	Phase   Phase  `json:"phase"`
 	Token   string `json:"token"`
+	// Placement is the run's fields over the agent's. The installation's values
+	// are applied by the agent, under these.
+	Placement Placement `json:"placement,omitzero"`
 }
 
 type ReportFailureRequest struct {

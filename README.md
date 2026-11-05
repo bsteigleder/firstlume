@@ -418,7 +418,19 @@ helm install firstlume-agent deploy/helm/firstlume -n firstlume --create-namespa
 
 A imagem é publicada pelo GitHub Actions em `ghcr.io/bsteigleder/firstlume` (`main`, `sha-<commit>` e, nas tags `vX.Y.Z`, `X.Y.Z`), para amd64 e arm64. Se o pacote for privado, crie um Secret de pull e passe `--set imagePullSecrets[0].name=<secret>`: o server, o agent e os Jobs dos runs (pela ServiceAccount do executor) passam a usá-lo. Num cluster com registry interno, prefira um proxy-cache dele apontando para o GHCR, com a credencial num lugar só.
 
-**Onde os runs rodam.** Os Jobs dos runs aceitam `agent.executor.nodeSelector`, `tolerations` e `affinity` (inclusive anti-afinidade), com os mesmos campos de um pod. Use quando só alguns nodes alcançam as máquinas que o código configura. Para código que fala com a API do próprio cluster (providers `kubernetes`/`helm` sem kubeconfig), ligue `agent.executor.automountServiceAccountToken` e dê permissões à ServiceAccount do executor com `agent.executor.serviceAccount.clusterRoles`. Elas valem para todos os runs daquele agent: para permissões diferentes, use outro agent.
+**Onde os runs rodam.** Os Jobs dos runs aceitam node selector, tolerations (o taint fica no node; aqui se diz quais o run tolera), afinidade de node, afinidade e antiafinidade de pod, com os mesmos campos de um pod. Use quando só alguns nodes alcançam as máquinas que o código configura. Dá para definir em três lugares, e a regra é a da herança, campo a campo: **stack → pasta → organização → agent → instalação**. Um campo num nível substitui o mesmo campo dos seguintes, sem somar, e um campo vazio cancela o herdado.
+
+- **Na instalação:** `agent.executor.nodeSelector`, `tolerations` e `affinity` no Helm. Valem para todos os runs daquele agent.
+- **No agent:** ao criar ou editar em Settings › Agents, ou em `POST /api/v1/orgs/{org}/agents` e `PUT /api/v1/orgs/{org}/agents/{id}/placement`. Vale a partir da próxima fase, sem reiniciar.
+- **Na organização, na pasta e no stack:** em Variables & settings, ou no campo `placement` de `PUT .../settings`. É o que manda um stack para uma zona: qualquer agent pode pegar qualquer run, então dois agents com zonas diferentes não separam stacks. Não dá para definir em `.firstlume/config.yaml`, porque quem envia commit não escolhe onde o código roda.
+
+O que é definido no First Lume só vale em quem aceita: `agent.executor.allowPlacement`, **desligado por padrão**, porque uma toleration pode colocar o run num node reservado, inclusive no control plane. Desligado, o agent só pega runs sem colocação, e nenhum run se ele mesmo tiver uma; o run fica na fila, com o motivo na página. Com vários agents que aceitam, os rótulos valem no cluster de quem pegar o run, então ligue a opção só no agent do cluster certo.
+
+A colocação de organização, pasta e stack fica gravada no run quando ele é criado, e o apply usa a mesma do plan. Mudar a configuração não mexe em runs já criados. Num stack com `run_all`, é um Job só, e todas as units rodam no mesmo lugar.
+
+Se nenhum node aceitar o run por `agent.executor.unschedulableTimeout` (5 min por padrão), o Job é removido e o run falha com a mensagem do scheduler. Mantenha esse valor abaixo de `controlPlane.heartbeatTimeout`, ou o heartbeat vence, com uma mensagem que não diz o motivo. Uma regra obrigatória (`required`) de antiafinidade pode falhar um run só porque os nodes estão ocupados; `preferred` só distribui e nunca bloqueia. Os pods dos runs têm o rótulo `firstlume.io/stack-id`, para uma regra poder citar um stack.
+
+Para código que fala com a API do próprio cluster (providers `kubernetes`/`helm` sem kubeconfig), ligue `agent.executor.automountServiceAccountToken` e dê permissões à ServiceAccount do executor com `agent.executor.serviceAccount.clusterRoles`. Elas valem para todos os runs daquele agent: para permissões diferentes, use outro agent.
 
 Para testar sem banco externo, use `--set postgresql.enabled=true`. É uma instância única e sem backup, só para desenvolvimento.
 
@@ -453,7 +465,7 @@ deploy/docker/        Dockerfile
 
 1. ✅ Runs de plan/apply, logs, aprovação configurável, drift detection agendado (só reporta), UI web, agent com Kubernetes e chart Helm
 2. State backend HTTP próprio, por unit, com lock, versões e criptografia, no Postgres ou no Garage/S3 (✅ marcos S1 e S2), importação de state existente e modo "só state" para quem continua usando o CI atual (✅ marco S3); aba State na UI
-3. Terragrunt nativo: descoberta de units, grafo de dependências, um run por unit e agents com labels por rede/zona
+3. Terragrunt nativo: descoberta de units, grafo de dependências e um run por unit; onde os runs executam, com afinidade, antiafinidade e tolerations na instalação, no agent, na pasta e no stack (✅ spec 0007)
 4. Arquivos e variáveis declarados no repositório, variáveis do tipo arquivo segredos do Vault com JWT emitido pelo Firstlume por fase, sem o Firstlume virar um segundo cofre, e credenciais de registry (✅ marcos F1 a F3 da spec 0003)
 5. Usuários, grupos e SSO; aprovadores por pessoa ou grupo; trilha de auditoria
 6. Integração Git (Gitea/Forgejo, GitHub, GitLab): plan em PR, commit status, apply no merge e gatilho por impacto

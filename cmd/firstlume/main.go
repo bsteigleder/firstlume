@@ -364,6 +364,10 @@ func kubernetesDriver(executorAPI string) (agent.Driver, error) {
 	if err != nil {
 		return nil, err
 	}
+	unschedulable, err := durationEnv("FIRSTLUME_UNSCHEDULABLE_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
 	return agent.NewKubernetesDriver(agent.KubernetesConfig{
 		Namespace:        namespace,
 		AgentName:        env("FIRSTLUME_AGENT_NAME", "default"),
@@ -378,6 +382,9 @@ func kubernetesDriver(executorAPI string) (agent.Driver, error) {
 		NodeSelector:     nodeSelector,
 		Tolerations:      tolerations,
 		Affinity:         affinity,
+
+		AllowPlacement:       boolEnv("FIRSTLUME_EXECUTOR_ALLOW_PLACEMENT", false),
+		UnschedulableTimeout: unschedulable,
 	}, client), nil
 }
 

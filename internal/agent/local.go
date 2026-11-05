@@ -27,6 +27,11 @@ type LocalDriver struct {
 	failures []Failure
 }
 
+// ClaimInfo says a local executor has nowhere else to go: it never accepts placement.
+func (d *LocalDriver) ClaimInfo() (api.ClaimRequest, error) {
+	return api.ClaimRequest{}, nil
+}
+
 func (d *LocalDriver) Start(ctx context.Context, a *api.Assignment) error {
 	if err := os.MkdirAll(d.WorkDir, 0o755); err != nil {
 		return err

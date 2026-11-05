@@ -37,6 +37,7 @@ import {
 } from "../ui";
 import { ResourceIcon } from "../resourceIcons";
 import { LabelLine } from "../resourceLabel";
+import { noOnlineAgentAccepts, PlacementCard } from "./Placement";
 import { RunDialog } from "./RunDialog";
 
 export function RunPage() {
@@ -49,6 +50,7 @@ export function RunPage() {
   const steps = useData(() => api.steps(runId), [api, runId]);
   const changes = useData(() => api.changes(runId), [api, runId, status]);
   const settings = useData(async () => (run.data ? api.getSettings(settingsPath({ kind: "stack", id: run.data.stack_id })) : null), [api, run.data?.stack_id]);
+  const agents = useData(() => api.listAgents(), [api, status]);
   const logs = useLogs(api.logsURL(runId), run.data, run.reload);
   const action = useAction();
   const [acked, setAcked] = useState<Record<string, boolean>>({});
@@ -192,10 +194,18 @@ export function RunPage() {
           </span>
         </div>
       )}
+      {r.status === "queued" && r.placement && noOnlineAgentAccepts(agents.data ?? undefined) && (
+        <div className="banner banner-attention" role="status">
+          <span className="banner-text">
+            <strong>No agent can take this run.</strong> It has a placement, and no online agent in {org.name} accepts one. Set{" "}
+            <span className="mono">agent.executor.allowPlacement=true</span> on an agent. <Link to={link("settings#agents")}>See the agents</Link>
+          </span>
+        </div>
+      )}
       {r.status === "failed" && r.error && !explained && (
         <div className="error-banner" role="alert">
           <span>
-            <strong>{track.find((t) => t.state === "failed")?.name ?? "The run"} failed:</strong> {r.error}
+            <strong>{track.find((t) => t.state === "failed")?.name ?? "The run"} failed:</strong> <span className="pre-line">{r.error}</span>
           </span>
         </div>
       )}
@@ -264,6 +274,7 @@ export function RunPage() {
         <aside className="run-aside">
           <CommitCard run={r} stack={s} />
           <StateCard run={r} />
+          <PlacementCard run={r} agents={agents.data ?? undefined} />
           {s && <ConfigCard run={r} stack={s} />}
         </aside>
       </div>
