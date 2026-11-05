@@ -236,7 +236,7 @@ export interface MovePreview {
 }
 
 export interface MoveChange {
-  setting: "require_approval" | "drift_interval_minutes" | "confirm_destructive" | "vault_role" | "git_on_push" | "variable" | "registry";
+  setting: "require_approval" | "drift_interval_minutes" | "confirm_destructive" | "vault_role" | "git_on_push" | "variable" | "registry" | `placement_${PlacementFieldName}`;
   category?: VariableCategory;
   key?: string;
   sensitive?: boolean;
@@ -256,7 +256,7 @@ export interface Variable {
   value?: string;
 }
 
-export type LevelKind = "organization" | "folder" | "stack" | "default";
+export type LevelKind = "organization" | "folder" | "stack" | "default" | "agent" | "installation";
 
 export interface Level {
   kind: LevelKind;
@@ -266,12 +266,36 @@ export interface Level {
 
 export type GitOnPush = "off" | "plan" | "apply";
 
+export const placementFieldNames = ["node_selector", "tolerations", "node_affinity", "pod_affinity", "pod_anti_affinity"] as const;
+export type PlacementFieldName = (typeof placementFieldNames)[number];
+
+export interface Toleration {
+  key?: string;
+  operator?: string;
+  value?: string;
+  effect?: string;
+  tolerationSeconds?: number;
+}
+
+export interface Placement {
+  node_selector?: Record<string, string>;
+  tolerations?: Toleration[];
+  node_affinity?: Record<string, unknown>;
+  pod_affinity?: Record<string, unknown>;
+  pod_anti_affinity?: Record<string, unknown>;
+}
+
+/** What the organization, folders and stack define: a value and where it came from. */
+export type EffectivePlacement = { [K in PlacementFieldName]?: { value: Placement[K]; origin: Level } };
+
 export interface LevelSettings {
   require_approval: boolean | null;
   drift_interval_minutes: number | null;
   confirm_destructive: boolean | null;
   vault_role?: string | null;
   git_on_push?: GitOnPush | null;
+  /** Where runs execute (spec 0007). A field left out inherits; an empty one cancels. */
+  placement?: Placement;
   variables: Variable[];
   /** Left out, the level's credentials stay as they are. */
   registries?: RegistryCredential[];
@@ -288,6 +312,7 @@ export interface EffectiveSettings {
   confirm_destructive: { value: boolean; origin: Level };
   vault_role: { value: string; origin: Level };
   git_on_push: { value: GitOnPush; origin: Level };
+  placement: EffectivePlacement;
   variables: EffectiveVariable[];
   registries: EffectiveRegistry[];
 }
@@ -496,6 +521,10 @@ export interface Run {
   config?: StackConfig;
   settings_used?: RunSettings;
   unit_backends?: UnitBackend[];
+  /** What the organization, folders and stack defined when the run was created. */
+  placement?: EffectivePlacement;
+  /** All the last phase used, the agent's and the installation's values included. */
+  placement_used?: EffectivePlacement;
   /** Set once an apply that reported progress resource by resource has finished. */
   apply_totals?: ApplyTotals;
   approved_at?: string;
@@ -561,6 +590,11 @@ export interface Agent {
   name: string;
   last_seen_at?: string;
   created_at: string;
+  /** Set on this agent in First Lume. */
+  placement: Placement;
+  /** What the agent last reported; left out until it asks for work. */
+  accepts_placement?: boolean;
+  install_placement?: Placement;
 }
 
 export interface CreateAgentResponse {
@@ -811,7 +845,8 @@ export const api = {
         request<DiscoverResponse>("GET", `${p}/git/repos/${fullName}/discover?ref=${encodeURIComponent(ref)}`),
 
       listAgents: () => request<Agent[]>("GET", `${p}/agents`),
-      createAgent: (name: string) => request<CreateAgentResponse>("POST", `${p}/agents`, { name }),
+      createAgent: (name: string, placement: Placement) => request<CreateAgentResponse>("POST", `${p}/agents`, { name, placement }),
+      setAgentPlacement: (id: string, placement: Placement) => request<Agent>("PUT", `${p}/agents/${id}/placement`, placement),
       deleteAgent: (id: string) => request<void>("DELETE", `${p}/agents/${id}`),
     };
   },

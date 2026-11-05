@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/bsteigleder/firstlume/internal/api"
+	"github.com/bsteigleder/firstlume/internal/placement"
 	"github.com/bsteigleder/firstlume/internal/store"
 )
 
@@ -86,6 +87,7 @@ func (s *Server) userRoutes(r chi.Router) {
 		r.Get("/agents", s.listAgents)
 		r.Post("/agents", s.createAgent)
 		r.With(s.requireID).Delete("/agents/{id}", s.deleteAgent)
+		r.With(s.requireID).Put("/agents/{id}/placement", s.setAgentPlacement)
 	})
 }
 
@@ -667,12 +669,35 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	out, err := s.store.CreateAgent(r.Context(), orgID(r), req.Name)
+	req.Placement.Normalize()
+	if err := placement.Validate(req.Placement); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	out, err := s.store.CreateAgent(r.Context(), orgID(r), req.Name, req.Placement)
 	if err != nil {
 		s.storeError(w, r, err, "agent")
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *Server) setAgentPlacement(w http.ResponseWriter, r *http.Request) {
+	var req api.Placement
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.Normalize()
+	if err := placement.Validate(req); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	out, err := s.store.SetAgentPlacement(r.Context(), orgID(r), id(r), req)
+	if err != nil {
+		s.storeError(w, r, err, "agent")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // getDeclaration returns what the last commit a run read declares in

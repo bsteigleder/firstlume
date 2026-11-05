@@ -297,18 +297,21 @@ func (s *Store) CreatePushRun(ctx context.Context, in PushRun) (*api.Run, bool, 
 		if in.PullRequest != 0 {
 			pr = &in.PullRequest
 		}
-		var err error
+		placement, err := runPlacement(ctx, tx, in.OrganizationID, in.StackID)
+		if err != nil {
+			return err
+		}
 		run, err = scanRun(tx.QueryRow(ctx, `
 			WITH inserted AS (
 				INSERT INTO runs (organization_id, stack_id, type, status, ref, commit_sha, created_by,
-				                  trigger_kind, trigger_actor, trigger_event_id, trigger_before_sha, trigger_pull_request, trigger_pull_request_url)
-				SELECT st.organization_id, st.id, $2, 'queued', st.ref, $3, $4, 'push', $4, $5, $6, $7, $8
+				                  trigger_kind, trigger_actor, trigger_event_id, trigger_before_sha, trigger_pull_request, trigger_pull_request_url, placement)
+				SELECT st.organization_id, st.id, $2, 'queued', st.ref, $3, $4, 'push', $4, $5, $6, $7, $8, $9::jsonb
 				FROM stacks st WHERE st.id = $1
 				ON CONFLICT (stack_id, trigger_before_sha, commit_sha) WHERE trigger_kind = 'push' DO NOTHING
 				RETURNING *
 			)
 			SELECT `+runColumns+` FROM inserted r`,
-			in.StackID, in.Type, in.AfterSHA, in.Actor, in.EventID, in.BeforeSHA, pr, nullable(in.PullRequestURL)))
+			in.StackID, in.Type, in.AfterSHA, in.Actor, in.EventID, in.BeforeSHA, pr, nullable(in.PullRequestURL), placement))
 		if errors.Is(err, ErrNotFound) {
 			run, err = scanRun(tx.QueryRow(ctx, `
 				SELECT `+runColumns+` FROM runs r

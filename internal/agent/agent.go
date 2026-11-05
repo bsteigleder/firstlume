@@ -21,6 +21,8 @@ type Driver interface {
 	Active(ctx context.Context) (int, error)
 	// Failures returns executors that ended abnormally since the last call.
 	Failures(ctx context.Context) ([]Failure, error)
+	// ClaimInfo is what the agent says about itself when it asks for work.
+	ClaimInfo() (api.ClaimRequest, error)
 }
 
 type Failure struct {
@@ -91,7 +93,12 @@ func (a *Agent) tick(ctx context.Context) bool {
 		return false
 	}
 
-	asg, err := a.client.Claim(ctx)
+	info, err := a.driver.ClaimInfo()
+	if err != nil {
+		a.log.Error("describing the agent", "err", err)
+		return false
+	}
+	asg, err := a.client.Claim(ctx, info)
 	if err != nil {
 		if ctx.Err() == nil {
 			a.log.Error("claiming work", "err", err)

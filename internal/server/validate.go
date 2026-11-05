@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bsteigleder/firstlume/internal/api"
+	"github.com/bsteigleder/firstlume/internal/placement"
 	"github.com/bsteigleder/firstlume/internal/stackconfig"
 )
 
@@ -163,6 +164,10 @@ func validateLevelSettings(s *api.LevelSettings) error {
 	}
 	if v := s.GitOnPush; v != nil && *v != api.GitOnPushOff && *v != api.GitOnPushPlan && *v != api.GitOnPushApply {
 		return fmt.Errorf("git_on_push must be off, plan or apply")
+	}
+	s.Placement.Normalize()
+	if err := placement.Validate(s.Placement); err != nil {
+		return err
 	}
 	if err := validateRegistries(s.Registries); err != nil {
 		return err

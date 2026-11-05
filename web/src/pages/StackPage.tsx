@@ -121,7 +121,7 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
 
       {tab === "runs" && <Runs stack={s} />}
       {tab === "resources" && <StackResources stack={s} onImport={() => setImporting(true)} />}
-      {tab === "settings" && <SettingsEditor level={{ kind: "stack", id: s.id, name: s.name }} path={settingsPath({ kind: "stack", id: s.id })} ownGitToken={!s.connection_id} />}
+      {tab === "settings" && <SettingsEditor level={{ kind: "stack", id: s.id, name: s.name }} path={settingsPath({ kind: "stack", id: s.id })} ownGitToken={!s.connection_id} runAll={s.config?.run_all} />}
       {tab === "source" && (
         <Source
           stack={s}

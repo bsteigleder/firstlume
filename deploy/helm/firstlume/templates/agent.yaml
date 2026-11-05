@@ -30,6 +30,10 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "update", "patch", "delete"]
+  # To tell why a run can't start: the scheduler's message is on the pod.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -180,6 +184,10 @@ spec:
             - name: FIRSTLUME_EXECUTOR_AFFINITY
               value: {{ toJson . | quote }}
             {{- end }}
+            - name: FIRSTLUME_EXECUTOR_ALLOW_PLACEMENT
+              value: {{ .Values.agent.executor.allowPlacement | quote }}
+            - name: FIRSTLUME_UNSCHEDULABLE_TIMEOUT
+              value: {{ .Values.agent.executor.unschedulableTimeout | quote }}
           resources:
             {{- toYaml .Values.agent.resources | nindent 12 }}
           securityContext:

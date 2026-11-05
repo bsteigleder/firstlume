@@ -17,8 +17,13 @@ func (s *Server) agentRoutes(r chi.Router) {
 
 // claimRun gives the calling agent the next runnable phase, or 204 when idle.
 func (s *Server) claimRun(w http.ResponseWriter, r *http.Request) {
+	var req api.ClaimRequest
+	if r.ContentLength != 0 && !decodeJSON(w, r, &req) { // agents older than spec 0007 send no body
+		return
+	}
+	req.InstallPlacement.Normalize()
 	agent := agentFrom(r.Context())
-	run, phase, err := s.store.ClaimRun(r.Context(), agent)
+	run, phase, err := s.store.ClaimRun(r.Context(), agent, req)
 	if errors.Is(err, store.ErrNotFound) {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -33,12 +38,17 @@ func (s *Server) claimRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("run claimed", "run_id", run.ID, "phase", phase, "agent", agent.Name)
-	writeJSON(w, http.StatusOK, api.Assignment{
-		RunID:   run.ID,
-		StackID: run.StackID,
-		Phase:   phase,
-		Token:   token,
-	})
+	asg := api.Assignment{
+		RunID:     run.ID,
+		StackID:   run.StackID,
+		Phase:     phase,
+		Token:     token,
+		Placement: agent.Placement,
+	}
+	if run.Placement != nil {
+		asg.Placement = run.Placement.Values().Over(agent.Placement)
+	}
+	writeJSON(w, http.StatusOK, asg)
 }
 
 // reportFailure lets the agent fail a run whose executor could not start or died.

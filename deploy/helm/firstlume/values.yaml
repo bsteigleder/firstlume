@@ -203,6 +203,15 @@ agent:
     nodeSelector: {}
     tolerations: []
     affinity: {}
+    # Accept placement set in First Lume: on the agent's form, the organization,
+    # folders and stacks. A field set there replaces the same field above. Off,
+    # this agent only takes runs without one, and none at all if the agent itself
+    # has one set. Leave it off if you don't trust every organization member with
+    # your nodes: a toleration can put a run on a reserved node.
+    allowPlacement: false
+    # Fail a run no node can take for this long, with the scheduler's message.
+    # Keep it below controlPlane.heartbeatTimeout. 0 never fails it.
+    unschedulableTimeout: 5m
 
 # Single-instance Postgres for trying the chart out. NOT for production:
 # no backups, no high availability. Use a managed database instead.

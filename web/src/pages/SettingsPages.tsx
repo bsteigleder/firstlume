@@ -1,11 +1,12 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router";
-import { api as rootAPI, settingsPath, type CreateAgentResponse, type GitConnection, type VaultConnection } from "../api";
+import { api as rootAPI, settingsPath, type Agent, type CreateAgentResponse, type GitConnection, type VaultConnection } from "../api";
 import { Logo } from "../icons";
 import { PageTitle, rememberOrg, useCrumbs, useOrg } from "../org";
 import { useSession } from "../session";
 import { Empty, ErrorBanner, slugify, timeAgo, useAction, useData } from "../ui";
 import { Members } from "./Members";
+import { AgentPlacementSummary, agentOnline, agentStopped, draftFrom, draftToPlacement, PlacementEditor, placementIsZero, type PlacementDraft } from "./Placement";
 import { SettingsEditor } from "./SettingsEditor";
 import { declaredVaultPaths, VaultAccessCheck } from "./VaultParts";
 
@@ -356,24 +357,27 @@ vault write auth/jwt/role/infra-dev role_type=jwt user_claim=sub \\
   );
 }
 
-// An agent polls every few seconds; one not seen for this long is probably down.
-const onlineWindowMs = 60_000;
-
 function Agents() {
   const { api } = useOrg();
   const agents = useData(() => api.listAgents(), [api], { poll: true, pollMs: 10000 });
   const [name, setName] = useState("");
+  const [draft, setDraft] = useState<PlacementDraft>(() => draftFrom());
   const [created, setCreated] = useState<CreateAgentResponse | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
   const action = useAction();
+  const noInstall = () => undefined;
 
   async function create(e: FormEvent) {
     e.preventDefault();
     await action.run(async () => {
-      setCreated(await api.createAgent(name));
+      setCreated(await api.createAgent(name, draftToPlacement(draft)));
       setName("");
+      setDraft(draftFrom());
       await agents.reload();
     });
   }
+  const stopped = (agents.data ?? []).filter(agentStopped);
+  const placed = (agents.data ?? []).filter((a) => !placementIsZero(a.placement) || !placementIsZero(a.install_placement));
 
   return (
     <section id="agents" className="card">
@@ -391,69 +395,181 @@ function Agents() {
               Copy
             </button>
           </div>
-          <span className="muted small">
-            Install it with Helm: <span className="mono">--set agent.token=…</span>
-          </span>
+          <span className="muted small">Install it in its cluster:</span>
+          <pre className="placement-yaml">{helmCommand(created)}</pre>
+          {!placementIsZero(created.agent.placement) && (
+            <p className="notice">The last line lets this agent use the placement above. Without it, the agent stays stopped, so runs never execute in the wrong place.</p>
+          )}
           <button className="link fit" onClick={() => setCreated(null)}>
             Done
           </button>
         </div>
       )}
-      <form className="inline-form" onSubmit={create}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New agent name, e.g. zone-sp2" aria-label="New agent name" />
-        <button className="primary" disabled={!name || action.busy}>
-          New agent
-        </button>
+      <form className="new-agent" onSubmit={create}>
+        <label className="field">
+          <span>New agent name</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. east-cluster" />
+        </label>
+        <details className="placement-details">
+          <summary>
+            Where its runs execute <span className="muted small">(optional)</span>
+          </summary>
+          <p className="muted small">Applies to every run of this agent, unless a stack, folder or the organization sets the same field. Leave it empty to use the Helm values.</p>
+          <PlacementEditor draft={draft} onChange={setDraft} inherited={noInstall} inheritLabel="Not set" notSetHelp="so the installation’s value applies" />
+        </details>
+        <div>
+          <button className="primary" disabled={!name || action.busy}>
+            New agent
+          </button>
+        </div>
       </form>
+      {stopped.map((a) => (
+        <p className="notice notice-attention" key={a.id}>
+          <strong>{a.name} isn’t taking runs.</strong> It has a placement set here, but its installation doesn’t allow it. Set <span className="mono">agent.executor.allowPlacement=true</span> in its
+          Helm values, or remove the placement.
+        </p>
+      ))}
       {agents.data &&
         (agents.data.length === 0 ? (
           <Empty>No agents registered.</Empty>
         ) : (
-          <table className="table plain-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Last seen</th>
-                <th>
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {agents.data.map((a) => {
-                const online = a.last_seen_at && Date.now() - new Date(a.last_seen_at).getTime() < onlineWindowMs;
-                return (
-                  <tr key={a.id}>
-                    <td>
-                      <strong>{a.name}</strong>
-                    </td>
-                    <td>
-                      <span className={`badge ${online ? "ok" : "idle"}`}>{online ? "Online" : a.last_seen_at ? "Offline" : "Waiting for first contact"}</span>
-                    </td>
-                    <td className="muted">{timeAgo(a.last_seen_at)}</td>
-                    <td className="right">
-                      <button
-                        className="small-btn"
-                        disabled={action.busy}
-                        onClick={() => {
-                          if (!confirm(`Delete agent “${a.name}”? It will stop picking up runs.`)) return;
-                          void action.run(async () => {
-                            await api.deleteAgent(a.id);
-                            await agents.reload();
-                          });
-                        }}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="table-scroll">
+            <table className="table plain-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>Where its runs execute</th>
+                  <th>From First Lume</th>
+                  <th>Last seen</th>
+                  <th>
+                    <span className="sr-only">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {agents.data.map((a) => {
+                  const online = agentOnline(a);
+                  return (
+                    <Fragment key={a.id}>
+                      <tr>
+                        <td>
+                          <strong>{a.name}</strong>
+                        </td>
+                        <td>
+                          {agentStopped(a) ? (
+                            <span className="badge bad">Stopped</span>
+                          ) : (
+                            <span className={`badge ${online ? "ok" : "idle"}`}>{online ? "Online" : a.last_seen_at ? "Offline" : "Waiting for first contact"}</span>
+                          )}
+                        </td>
+                        <td>
+                          <AgentPlacementSummary agent={a} />
+                        </td>
+                        <td>
+                          {a.accepts_placement === undefined ? (
+                            <span className="muted">Not known yet</span>
+                          ) : a.accepts_placement ? (
+                            <span className="badge ok">Accepted</span>
+                          ) : (
+                            <>
+                              <span className="badge idle">Not accepted</span>
+                              <div className="muted small">Runs with a placement skip this agent</div>
+                            </>
+                          )}
+                        </td>
+                        <td className="muted">{timeAgo(a.last_seen_at)}</td>
+                        <td className="right nowrap">
+                          <button className="small-btn" aria-expanded={editing === a.id} onClick={() => setEditing(editing === a.id ? null : a.id)}>
+                            Placement
+                          </button>{" "}
+                          <button
+                            className="small-btn"
+                            disabled={action.busy}
+                            onClick={() => {
+                              if (!confirm(`Delete agent “${a.name}”? It will stop picking up runs.`)) return;
+                              void action.run(async () => {
+                                await api.deleteAgent(a.id);
+                                await agents.reload();
+                              });
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                      {editing === a.id && (
+                        <tr>
+                          <td colSpan={6}>
+                            <AgentPlacementForm agent={a} onDone={() => (setEditing(null), void agents.reload())} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         ))}
+      {placed.length > 1 && (
+        <p className="notice">
+          <strong>Any agent can take any run.</strong> To send a stack to a zone, set the placement on its folder or stack, and allow placement only on the agent of the right cluster.
+        </p>
+      )}
     </section>
+  );
+}
+
+function helmCommand({ agent }: CreateAgentResponse) {
+  const lines = [
+    "helm install firstlume-agent deploy/helm/firstlume",
+    "--set controlPlane.enabled=false",
+    `--set agent.name=${agent.name}`,
+    `--set agent.apiUrl=${window.location.origin}`,
+    "--set agent.token=fla_…",
+  ];
+  if (!placementIsZero(agent.placement)) lines.push("--set agent.executor.allowPlacement=true");
+  return lines.join(" \\\n  ");
+}
+
+/** Changes what is set on an agent. Installation values are read-only here (canvas board 64). */
+function AgentPlacementForm({ agent, onDone }: { agent: Agent; onDone: () => void }) {
+  const { api } = useOrg();
+  const [draft, setDraft] = useState<PlacementDraft>(() => draftFrom(agent.placement));
+  const action = useAction();
+  return (
+    <form
+      className="agent-placement"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void action.run(async () => {
+          await api.setAgentPlacement(agent.id, draftToPlacement(draft));
+          onDone();
+        });
+      }}
+    >
+      <ErrorBanner error={action.error} onDismiss={() => action.setError(null)} />
+      <PlacementEditor
+        draft={draft}
+        onChange={setDraft}
+        inheritLabel="Not set"
+        notSetHelp="so nothing applies from here"
+        inherited={(name) => {
+          const value = agent.install_placement?.[name];
+          return value === undefined || value === null ? undefined : { value, from: "from the installation" };
+        }}
+      />
+      <p className="hint">A change here applies from the next phase, with no restart.</p>
+      <div className="form-actions">
+        <button type="button" onClick={onDone}>
+          Cancel
+        </button>
+        <button className="primary" disabled={action.busy}>
+          Save placement
+        </button>
+      </div>
+    </form>
   );
 }
 

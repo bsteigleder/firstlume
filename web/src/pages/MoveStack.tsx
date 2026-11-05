@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useNavigate } from "react-router";
-import type { Folder, Level, MoveChange, MovePreview, Stack, Tree } from "../api";
+import { placementFieldNames, type Folder, type Level, type MoveChange, type MovePreview, type PlacementFieldName, type Stack, type Tree } from "../api";
 import { FolderIcon, GripIcon, SearchIcon } from "../icons";
 import { useOrg } from "../org";
 import { driftLabel, ErrorBanner, Modal, StatusBadge, timeAgo, useAction } from "../ui";
+import { placementLabels, placementSummary } from "./Placement";
 
 // Moving a stack to another folder (canvas boards 23 and 24): drag its grip
 // onto a folder in the tree, or click the grip for a folder list. Either way
@@ -241,6 +242,7 @@ const settingLabels: Record<string, string> = {
   confirm_destructive: "Confirm each delete or replace",
   vault_role: "Vault role",
   git_on_push: "On push",
+  ...Object.fromEntries(placementFieldNames.map((name) => [`placement_${name}`, placementLabels[name]])),
 };
 
 const categoryLabels: Record<string, string> = {
@@ -257,6 +259,9 @@ function changeLabel(c: MoveChange): string {
 
 function changeValue(c: MoveChange, v: MoveChange["before"]): string {
   if (!v) return "Not defined";
+  if (c.setting.startsWith("placement_")) {
+    return placementSummary(c.setting.replace("placement_", "") as PlacementFieldName, JSON.parse(v.value ?? "null"));
+  }
   switch (c.setting) {
     case "require_approval":
       return v.value === "true" ? "Required" : "Not required";
@@ -277,7 +282,7 @@ function changeValue(c: MoveChange, v: MoveChange["before"]): string {
   return v.value ?? "";
 }
 
-const mono = (c: MoveChange) => c.setting === "vault_role" || (c.setting === "variable" && !c.sensitive && c.category !== "file");
+const mono = (c: MoveChange) => c.setting === "vault_role" || c.setting === "placement_node_selector" || c.setting === "placement_tolerations" || (c.setting === "variable" && !c.sensitive && c.category !== "file");
 
 /** Reviews what moving the stack changes, then moves it. */
 export function MoveStackDialog({ stack, folderID, onClose }: { stack: Stack; folderID: string; onClose: () => void }) {

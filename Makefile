@@ -110,6 +110,8 @@ helm-lint:
 	test "$$(helm template test $(CHART) -n fl --set controlPlane.database.url=postgres://x \
 	  --set agent.executor.namespace=fl-runs --set 'agent.executor.serviceAccount.clusterRoles={view}' \
 	  | grep -cE '^ *namespace: fl-runs$$|^ *value: "fl-runs"$$')" = 5
+	helm template test $(CHART) --set controlPlane.database.url=postgres://x --set agent.executor.allowPlacement=true \
+	  | grep -A1 FIRSTLUME_EXECUTOR_ALLOW_PLACEMENT | grep -q 'value: "true"'
 
 docker-build:
 	docker build -f deploy/docker/Dockerfile --build-arg VERSION=$(VERSION) -t $(IMAGE) .
