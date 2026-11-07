@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -55,11 +56,16 @@ func Run(ctx context.Context, cfg Config) error {
 	masker := NewMasker(sensitive)
 	logs := NewLogShipper(masker, cfg.Local, client.AppendLog)
 
+	stop := newStopSignal()
 	hbCtx, stopHeartbeat := context.WithCancel(ctx)
-	go heartbeat(hbCtx, client)
+	go heartbeat(hbCtx, client, heartbeatInterval, func(by string) {
+		if stop.request(by) {
+			fmt.Fprintf(logs, "\n==> Stop requested by %s: interrupting the run\n", by)
+		}
+	})
 
 	e := &executor{cfg: cfg, spec: spec, client: client, out: logs, mask: masker.Mask, masker: masker, logs: logs,
-		vault: newVaultSource(spec.Vault, masker)}
+		vault: newVaultSource(spec.Vault, masker), stop: stop}
 	res, runErr := e.run(ctx)
 	if err := e.vault.revoke(context.WithoutCancel(ctx)); err != nil {
 		fmt.Fprintf(logs, "==> Warning: could not revoke the Vault token: %v\n", err)
@@ -70,7 +76,11 @@ func Run(ctx context.Context, cfg Config) error {
 		logs.Close()
 		return runErr
 	}
-	if runErr != nil {
+	if by, stopped := stop.requested(); stopped && runErr != nil {
+		// The server ends it canceled; what failed was the interruption.
+		fmt.Fprintf(logs, "\n==> Stopped by %s\n", by)
+		res = api.CompleteRequest{Success: false, Error: "stopped by " + by}
+	} else if runErr != nil {
 		if !errors.As(runErr, new(loggedError)) {
 			fmt.Fprintf(logs, "\n==> Error: %v\n", runErr)
 		}
@@ -92,18 +102,61 @@ func Run(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-func heartbeat(ctx context.Context, client *apiclient.Client) {
-	t := time.NewTicker(30 * time.Second)
+// heartbeatInterval is short so a stop is heard within seconds.
+const heartbeatInterval = 5 * time.Second
+
+// heartbeat keeps the run alive and calls onStop when someone asked to stop it.
+func heartbeat(ctx context.Context, client *apiclient.Client, every time.Duration, onStop func(by string)) {
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = client.Heartbeat(ctx)
+			if hb, err := client.Heartbeat(ctx); err == nil && hb.StopRequested {
+				onStop(hb.StopRequestedBy)
+			}
 		}
 	}
 }
+
+// stopSignal is done once someone asks to stop the run.
+type stopSignal struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	mu     sync.Mutex
+	by     string
+}
+
+func newStopSignal() *stopSignal {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &stopSignal{ctx: ctx, cancel: cancel}
+}
+
+// request records the stop; it reports whether it is the first.
+func (s *stopSignal) request(by string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx.Err() != nil {
+		return false
+	}
+	if by == "" {
+		by = "someone"
+	}
+	s.by = by
+	s.cancel()
+	return true
+}
+
+func (s *stopSignal) requested() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.by, s.ctx.Err() != nil
+}
+
+// errStopped ends the steps left once a stop was requested.
+var errStopped = errors.New("stopped")
 
 type executor struct {
 	cfg    Config
@@ -124,6 +177,8 @@ type executor struct {
 	logs *LogShipper
 	// engineBin is the installed Terraform or OpenTofu binary.
 	engineBin string
+	// stop is done once someone asks to stop the run.
+	stop *stopSignal
 }
 
 func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
@@ -204,7 +259,9 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			if e.prepared != nil {
 				env = append(env, e.prepared.env...)
 			}
-			r = &runner{dir: workDir, bin: bin, env: env, out: e.out}
+			r = &runner{dir: workDir, bin: bin, env: env, out: e.out, stop: e.stop.ctx,
+				// Killing an apply could lose the state of what it just created.
+				noKill: s.Phase == api.PhaseApply}
 			if cfg.RunAll {
 				fmt.Fprintln(e.out, "==> terragrunt initializes each unit as part of run --all")
 				return nil
@@ -297,6 +354,12 @@ func (e *executor) runSteps(ctx context.Context, steps []step) error {
 		if st.skip != nil && st.skip() {
 			continue
 		}
+		if e.stop != nil && e.stop.ctx.Err() != nil {
+			for _, rest := range steps[i:] {
+				_ = e.reportStep(ctx, rest.name, api.StepSkipped)
+			}
+			return loggedError{errStopped}
+		}
 		if err := e.reportStep(ctx, st.name, api.StepRunning); err != nil {
 			return err
 		}
@@ -304,7 +367,9 @@ func (e *executor) runSteps(ctx context.Context, steps []step) error {
 		status := api.StepSucceeded
 		if err != nil {
 			status = api.StepFailed
-			fmt.Fprintf(e.out, "\n==> Error: %v\n", err) // inside the step, so it shows in its log
+			if e.stop == nil || e.stop.ctx.Err() == nil {
+				fmt.Fprintf(e.out, "\n==> Error: %v\n", err) // inside the step, so it shows in its log
+			}
 			err = loggedError{err}
 		}
 		if rerr := e.reportStep(ctx, st.name, status); rerr != nil && err == nil {
@@ -600,17 +665,35 @@ type runner struct {
 	bin string
 	env []string
 	out io.Writer
+	// stop, when done, interrupts the command running and keeps new ones
+	// from starting, as Ctrl+C would.
+	stop context.Context
+	// noKill waits for an interrupted command however long it takes, instead
+	// of killing it after a while.
+	noKill bool
 }
 
-func (r *runner) command(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, r.bin, args...)
+// command builds a command interrupted when ctx ends or a stop is requested.
+// release must be called once it has finished.
+func (r *runner) command(ctx context.Context, args ...string) (cmd *exec.Cmd, release func()) {
+	release = func() {}
+	if r.stop != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		unhook := context.AfterFunc(r.stop, cancel)
+		release = func() { unhook(); cancel() }
+	}
+	cmd = exec.CommandContext(ctx, r.bin, args...)
 	cmd.Dir = r.dir
 	cmd.Env = r.env
 	// On cancellation, interrupt instead of kill so Terraform can release state
-	// locks and persist partial state; force-kill only if it hangs.
+	// locks and persist partial state; force-kill only if it hangs. With no
+	// WaitDelay it is never killed.
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGINT) }
-	cmd.WaitDelay = 2 * time.Minute
-	return cmd
+	if !r.noKill {
+		cmd.WaitDelay = 2 * time.Minute
+	}
+	return cmd, release
 }
 
 // run streams output to the log and returns the exit code.
@@ -621,7 +704,8 @@ func (r *runner) run(ctx context.Context, args ...string) (int, error) {
 // runTo is run with stdout going to w; stderr still goes to the log.
 func (r *runner) runTo(ctx context.Context, w io.Writer, args ...string) (int, error) {
 	fmt.Fprintf(r.out, "\n==> %s %s\n", filepath.Base(r.bin), strings.Join(args, " "))
-	cmd := r.command(ctx, args...)
+	cmd, release := r.command(ctx, args...)
+	defer release()
 	cmd.Stdout = w
 	cmd.Stderr = r.out
 	err := cmd.Run()
@@ -637,7 +721,8 @@ func (r *runner) runTo(ctx context.Context, w io.Writer, args ...string) (int, e
 
 // capture returns stdout without logging it (used for machine-readable output).
 func (r *runner) capture(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := r.command(ctx, args...)
+	cmd, release := r.command(ctx, args...)
+	defer release()
 	cmd.Stderr = r.out
 	return cmd.Output()
 }

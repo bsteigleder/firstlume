@@ -3942,3 +3942,78 @@ tr:hover .grip,
     width: 44px;
   }
 }
+
+/* --- stopping a run (canvas boards 66-67) --- */
+
+button.danger-outline {
+  border-color: var(--danger-strong);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+button.danger-outline:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+.banner-info {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+
+.banner-info strong {
+  color: var(--text);
+}
+
+.state-chip.warn {
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+
+.change-warning.attention {
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+
+.stop-counts {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px 14px;
+}
+
+.stop-counts > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  min-width: 0;
+}
+
+.stop-counts > div + div {
+  border-top: 1px solid var(--border);
+}
+
+.stop-counts .grow {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.stop-counts > div > .mono:last-child {
+  margin-left: auto;
+}
+
+.step.stopped {
+  border-color: var(--attention-edge);
+}
+
+.step-dot.stopped {
+  background: var(--attention-soft);
+  color: var(--attention);
+  border-color: var(--attention-edge);
+  font-size: 8px;
+}
+
+.change-card.apply-cut {
+  border-color: var(--attention-edge);
+}

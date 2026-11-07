@@ -36,10 +36,23 @@ export function statusLabel(s: RunStatus) {
   return statusLabels[s];
 }
 
-export function StatusBadge({ status, title }: { status: RunStatus; title?: string }) {
+/** A run still executing after someone asked to stop it. */
+export function isStopping(r: Pick<Run, "status" | "stop_requested_at">) {
+  return !!r.stop_requested_at && (r.status === "planning" || r.status === "applying");
+}
+
+export function StatusBadge({ status, title, run }: { status: RunStatus; title?: string; run?: Pick<Run, "status" | "stop_requested_at" | "stop_requested_by"> }) {
+  if (run && isStopping(run)) {
+    return (
+      <span className="badge warn" title={title ?? `Stop requested by ${run.stop_requested_by}`}>
+        <span className="dot pulse" aria-hidden />
+        Stopping
+      </span>
+    );
+  }
   const tone = statusTone[status];
   return (
-    <span className={`badge ${tone}`} title={title}>
+    <span className={`badge ${tone}`} title={title ?? (status === "canceled" && run?.stop_requested_by ? `By ${run.stop_requested_by}` : undefined)}>
       {tone === "run" && <span className="dot pulse" aria-hidden />}
       {statusLabels[status]}
     </span>

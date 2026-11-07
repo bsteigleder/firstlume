@@ -21,7 +21,8 @@ func runColumnsAs(alias string) string {
 	cols := []string{"id", "stack_id", "type", "status", "ref", "commit_sha", "commit_author_name", "commit_author_email",
 		"commit_message", "has_changes", "plan_summary", "error", "agent_id", "created_by", "approved_by", "approved_at",
 		"started_at", "finished_at", "created_at", "updated_at", "acknowledged", "config", "settings_used", "unit_backends", "placement", "placement_used",
-		"trigger_kind", "trigger_actor", "trigger_event_id", "trigger_before_sha", "trigger_pull_request", "trigger_pull_request_url"}
+		"trigger_kind", "trigger_actor", "trigger_event_id", "trigger_before_sha", "trigger_pull_request", "trigger_pull_request_url",
+		"stop_requested_at", "stop_requested_by"}
 	for i, c := range cols {
 		cols[i] = alias + "." + c
 	}
@@ -40,6 +41,8 @@ type runScan struct {
 	acknowledged, config, settingsUsed, unitBackends, placement, placementUsed []byte
 	triggerKind, triggerActor, triggerEvent, triggerBefore, triggerPRURL       *string
 	triggerPR                                                                  *int
+	stopAt                                                                     *time.Time
+	stopBy                                                                     *string
 }
 
 func newRunScan() *runScan { return &runScan{} }
@@ -48,7 +51,8 @@ func (s *runScan) dest() []any {
 	return []any{&s.id, &s.stackID, &s.typ, &s.status, &s.ref, &s.commit, &s.authorName, &s.authorEmail, &s.message,
 		&s.hasChanges, &s.summary, &s.errMsg, &s.agentID, &s.createdBy, &s.approvedBy, &s.approvedAt,
 		&s.startedAt, &s.finishedAt, &s.createdAt, &s.updatedAt, &s.acknowledged, &s.config, &s.settingsUsed, &s.unitBackends, &s.placement, &s.placementUsed,
-		&s.triggerKind, &s.triggerActor, &s.triggerEvent, &s.triggerBefore, &s.triggerPR, &s.triggerPRURL}
+		&s.triggerKind, &s.triggerActor, &s.triggerEvent, &s.triggerBefore, &s.triggerPR, &s.triggerPRURL,
+		&s.stopAt, &s.stopBy}
 }
 
 func (s *runScan) result() (*api.Run, error) {
@@ -58,6 +62,7 @@ func (s *runScan) result() (*api.Run, error) {
 		CommitAuthorEmail: deref(s.authorEmail), CommitMessage: deref(s.message), HasChanges: s.hasChanges,
 		Error: deref(s.errMsg), AgentID: deref(s.agentID), CreatedBy: deref(s.createdBy), ApprovedBy: deref(s.approvedBy),
 		ApprovedAt: s.approvedAt, StartedAt: s.startedAt, FinishedAt: s.finishedAt,
+		StopRequestedAt: s.stopAt, StopRequestedBy: deref(s.stopBy),
 	}
 	if s.createdAt != nil {
 		r.CreatedAt = *s.createdAt
@@ -473,11 +478,19 @@ func (s *Store) DiscardRun(ctx context.Context, orgID, id string) (*api.Run, err
 		`status = 'discarded', finished_at = now()`)
 }
 
-// CancelRun only cancels runs that are not executing. Interrupting a running
-// apply could corrupt state, so that is deliberately not supported here.
-func (s *Store) CancelRun(ctx context.Context, orgID, id string) (*api.Run, error) {
-	return s.transition(ctx, orgID, id, []api.RunStatus{api.StatusQueued, api.StatusApplyQueued},
-		`status = 'canceled', finished_at = now()`)
+// CancelRun cancels a queued run at once. On a run that is executing it only
+// records the request: the executor learns of it on its next heartbeat and
+// interrupts Terraform, which stops starting changes, saves the state and
+// releases its lock. Killing it here could lose state, so the run ends
+// canceled only when the executor reports back (CompletePhase). Asking again
+// keeps the first request.
+func (s *Store) CancelRun(ctx context.Context, orgID, id, by string) (*api.Run, error) {
+	return s.transition(ctx, orgID, id,
+		[]api.RunStatus{api.StatusQueued, api.StatusApplyQueued, api.StatusPlanning, api.StatusApplying}, `
+		status = CASE WHEN status IN ('queued', 'apply_queued') THEN 'canceled' ELSE status END,
+		finished_at = CASE WHEN status IN ('queued', 'apply_queued') THEN now() ELSE finished_at END,
+		stop_requested_at = coalesce(stop_requested_at, now()),
+		stop_requested_by = coalesce(stop_requested_by, $4)`, by)
 }
 
 // ClaimRun hands the oldest runnable phase to an agent. A run is runnable when
@@ -707,16 +720,22 @@ func (s *Store) SetCommit(ctx context.Context, runID string, req api.CommitReque
 }
 
 // Heartbeat marks the executor of the given phase as alive.
-func (s *Store) Heartbeat(ctx context.Context, runID string, phase api.Phase) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE runs SET heartbeat_at = now() WHERE id = $1 AND status = $2`,
-		runID, statusForPhase(phase))
+// Heartbeat records that the executor is alive and tells it whether someone
+// asked to stop the run.
+func (s *Store) Heartbeat(ctx context.Context, runID string, phase api.Phase) (api.HeartbeatResponse, error) {
+	var at *time.Time
+	var by *string
+	err := s.pool.QueryRow(ctx, `
+		UPDATE runs SET heartbeat_at = now() WHERE id = $1 AND status = $2
+		RETURNING stop_requested_at, stop_requested_by`,
+		runID, statusForPhase(phase)).Scan(&at, &by)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return api.HeartbeatResponse{}, ErrConflict
+	}
 	if err != nil {
-		return err
+		return api.HeartbeatResponse{}, err
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrConflict
-	}
-	return nil
+	return api.HeartbeatResponse{StopRequested: at != nil, StopRequestedBy: deref(by)}, nil
 }
 
 // CompletePhase records the outcome reported by the executor.
@@ -736,7 +755,9 @@ func (s *Store) CompletePhase(ctx context.Context, runID string, phase api.Phase
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var typ api.RunType
 		var status api.RunStatus
-		err := tx.QueryRow(ctx, `SELECT type, status FROM runs WHERE id = $1 FOR UPDATE`, runID).Scan(&typ, &status)
+		var stopAt *time.Time
+		err := tx.QueryRow(ctx, `SELECT type, status, stop_requested_at FROM runs WHERE id = $1 FOR UPDATE`, runID).
+			Scan(&typ, &status, &stopAt)
 		if err != nil {
 			return notFound(err)
 		}
@@ -746,6 +767,10 @@ func (s *Store) CompletePhase(ctx context.Context, runID string, phase api.Phase
 
 		next := api.StatusFailed
 		switch {
+		// Someone asked to stop it. A plan that still finished goes no further;
+		// an apply that finished every change before stopping is applied.
+		case stopAt != nil && (phase == api.PhasePlan || !res.Success):
+			next = api.StatusCanceled
 		case !res.Success:
 		case phase == api.PhasePlan:
 			next = api.StatusAfterPlan(typ, res.HasChanges, autoApprove)

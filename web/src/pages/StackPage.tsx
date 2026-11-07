@@ -201,7 +201,7 @@ function Runs({ stack }: { stack: Stack }) {
                   <tr key={r.id}>
                     <td>
                       <Link to={link(`r/${r.id}`)} className="plain">
-                        <StatusBadge status={r.status} />
+                        <StatusBadge status={r.status} run={r} />
                       </Link>
                       <div className="muted small">{r.type === "drift" ? "drift check" : r.type}</div>
                     </td>

@@ -802,11 +802,16 @@ type Run struct {
 	// ApplyTotals is set on a single run read, once an apply that reported
 	// progress resource by resource has finished.
 	ApplyTotals *ApplyTotals `json:"apply_totals,omitempty"`
-	ApprovedAt  *time.Time   `json:"approved_at,omitempty"`
-	StartedAt   *time.Time   `json:"started_at,omitempty"`
-	FinishedAt  *time.Time   `json:"finished_at,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
+	// StopRequestedAt is when someone asked to stop the run, and
+	// StopRequestedBy who. While the run still executes it is stopping; on a
+	// canceled run it says who canceled or stopped it.
+	StopRequestedAt *time.Time `json:"stop_requested_at,omitempty"`
+	StopRequestedBy string     `json:"stop_requested_by,omitempty"`
+	ApprovedAt      *time.Time `json:"approved_at,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // ActiveRun is a run that holds or waits for its stack's lock (or, when asked
@@ -1030,6 +1035,13 @@ type CompleteRequest struct {
 	Error       string       `json:"error,omitempty"`
 	HasChanges  bool         `json:"has_changes"`
 	PlanSummary *PlanSummary `json:"plan_summary,omitempty"`
+}
+
+// HeartbeatResponse tells the executor whether someone asked to stop the run.
+// An empty body (204) means keep going.
+type HeartbeatResponse struct {
+	StopRequested   bool   `json:"stop_requested"`
+	StopRequestedBy string `json:"stop_requested_by,omitempty"`
 }
 
 type ErrorResponse struct {

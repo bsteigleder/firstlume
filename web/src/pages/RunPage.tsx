@@ -26,7 +26,9 @@ import {
   fileURL,
   humanType,
   Initials,
+  isStopping,
   levelName,
+  Modal,
   runOriginText,
   StatusBadge,
   supersededBy,
@@ -59,6 +61,7 @@ export function RunPage() {
   const [filter, setFilter] = useState<StateFilter>("all");
   const [logOpen, setLogOpen] = useStoredFlag("firstlume.applyLogOpen");
   const [focus, setFocus] = useState<LogFocus | null>(null);
+  const [confirmStop, setConfirmStop] = useState(false);
 
   // Keep the run, its steps and, during the apply, its changes fresh while they can still change.
   useEffect(() => {
@@ -100,6 +103,8 @@ export function RunPage() {
   const missing = confirmRequired ? destructive.filter((c) => !acked[changeKey(c)]) : [];
   const awaiting = r.status === "awaiting_approval";
   const isDrift = r.type === "drift";
+  const stopping = isStopping(r);
+  const stoppedBy = r.status === "canceled" ? r.stop_requested_by : undefined;
 
   const applyStep = (steps.data ?? []).find((st) => st.phase === "apply" && st.name === "Apply");
   const applyDuration = applyStep?.started_at && applyStep.finished_at ? duration(applyStep.started_at, applyStep.finished_at) : "";
@@ -110,6 +115,8 @@ export function RunPage() {
     ? {
         filter,
         now,
+        stopping,
+        stopped: !!stoppedBy,
         showInLog: (c) => {
           setSelected(APPLY_STEP);
           setLogOpen(true);
@@ -143,7 +150,7 @@ export function RunPage() {
         <h1>
           {isDrift ? "Drift check" : r.type === "plan" ? "Plan" : r.type === "destroy" ? "Destroy" : "Apply"} · {s?.name ?? "…"}
         </h1>
-        <StatusBadge status={r.status} />
+        <StatusBadge status={r.status} run={r} />
         <CommitLine run={r} stack={s} />
         <span className="grow" />
         {(r.status === "queued" || r.status === "apply_queued") && (
@@ -151,6 +158,18 @@ export function RunPage() {
             Cancel run
           </button>
         )}
+        {/* A plan changes nothing, so it stops on the click; an apply asks first. */}
+        {r.status === "planning" && !stopping && (
+          <button onClick={() => act(() => api.cancelRun(r.id))} disabled={action.busy}>
+            Stop {isDrift ? "drift check" : "plan"}
+          </button>
+        )}
+        {r.status === "applying" && !stopping && (
+          <button className="danger-outline" onClick={() => setConfirmStop(true)} disabled={action.busy}>
+            Stop apply
+          </button>
+        )}
+        {stopping && <button disabled>Stopping…</button>}
         {(r.status === "failed" || r.status === "discarded" || r.status === "canceled") && s && (
           <button className="primary" onClick={() => setReconcile(true)}>
             Run again
@@ -160,6 +179,19 @@ export function RunPage() {
       {r.trigger?.kind === "push" && <TriggerLine run={r} />}
       <ErrorBanner error={action.error} onDismiss={() => action.setError(null)} />
       {supersededBy(r) && <SupersededNotice run={r} />}
+      {stopping && (
+        <div className="banner banner-attention" role="status">
+          <span className="banner-text">
+            <strong>
+              Stop requested by {r.stop_requested_by} at {clock(r.stop_requested_at)}.
+            </strong>{" "}
+            {r.status === "applying"
+              ? "Nothing new starts. Waiting for the change in progress to end; the state is saved after it."
+              : "Waiting for Terraform to stop; the state lock is released after it."}
+          </span>
+        </div>
+      )}
+      {stoppedBy && <StoppedNotice run={r} counts={counts} applyStarted={(steps.data ?? []).some((st) => st.phase === "apply")} />}
       {r.status === "queued" && r.trigger?.kind === "push" && <WaitingForStack run={r} />}
 
       {counts && active && counts.failed > 0 && (
@@ -258,7 +290,7 @@ export function RunPage() {
       <div className="run-columns">
         <section className="changes-col" aria-label="Changes">
           {counts ? (
-            <ApplySummary counts={counts} text={summaryText} filter={filter} onFilter={setFilter} />
+            <ApplySummary counts={counts} text={summaryText} filter={filter} onFilter={setFilter} stop={stoppedBy ? "stopped" : stopping ? "stopping" : undefined} />
           ) : (
             <h2>{isDrift ? "What differs from the code" : "What changes"}</h2>
           )}
@@ -278,6 +310,16 @@ export function RunPage() {
           {s && <ConfigCard run={r} stack={s} />}
         </aside>
       </div>
+      {confirmStop && r.status === "applying" && (
+        <StopApplyDialog
+          counts={counts}
+          running={(changes.data ?? []).filter((c) => c.apply?.state === "applying")}
+          now={now}
+          busy={action.busy}
+          onClose={() => setConfirmStop(false)}
+          onStop={() => act(() => api.cancelRun(r.id)).then(() => setConfirmStop(false))}
+        />
+      )}
       {reconcile && s && <RunDialog stack={s} again={{ type: r.type, ref: r.ref }} onClose={() => setReconcile(false)} />}
     </div>
   );
@@ -285,7 +327,7 @@ export function RunPage() {
 
 // --- steps ---
 
-type StepState = "done" | "running" | "waiting" | "pending" | "failed" | "skipped";
+type StepState = "done" | "running" | "waiting" | "pending" | "failed" | "skipped" | "stopped";
 
 interface TrackItem {
   key: string;
@@ -300,8 +342,10 @@ const APPLY_STEP = "apply/Apply";
 
 /** The run's steps: the executor's, plus "Queued" and "Approval", which the server knows. */
 function buildTrack(r: Run, steps: RunStep[], counts: ApplyCounts | null): TrackItem[] {
+  const stopped = r.status === "canceled" && !!r.stop_requested_at;
   const fromStep = (s: RunStep): TrackItem => {
     let meta = s.status === "skipped" ? "skipped" : s.started_at ? duration(s.started_at, s.finished_at ?? undefined) : "";
+    if (stopped && s.status === "failed") meta = `stopped${meta ? ` · ${meta}` : ""}`;
     // The running apply also says how far it got (R4.10).
     if (counts && s.status === "running" && `${s.phase}/${s.name}` === APPLY_STEP) {
       meta += ` · ${counts.done + counts.failed} of ${counts.total}`;
@@ -311,7 +355,7 @@ function buildTrack(r: Run, steps: RunStep[], counts: ApplyCounts | null): Track
       phase: s.phase,
       name: s.name,
       hook: s.kind === "hook",
-      state: s.status === "succeeded" ? "done" : s.status === "running" ? "running" : s.status === "failed" ? "failed" : "skipped",
+      state: s.status === "succeeded" ? "done" : s.status === "running" ? "running" : s.status === "failed" ? (stopped ? "stopped" : "failed") : "skipped",
       meta,
     };
   };
@@ -358,13 +402,13 @@ function placeholders(phase: "plan" | "apply", names: string[], skipped: boolean
 function defaultStep(track: TrackItem[]): string {
   const pick =
     track.find((t) => t.state === "running") ??
-    track.find((t) => t.state === "failed") ??
+    track.find((t) => t.state === "failed" || t.state === "stopped") ??
     track.find((t) => t.state === "waiting") ??
     [...track].reverse().find((t) => t.state === "done");
   return (pick ?? track[0]).key;
 }
 
-const stateSymbol: Record<StepState, string> = { done: "✓", running: "", waiting: "!", pending: "", failed: "✕", skipped: "–" };
+const stateSymbol: Record<StepState, string> = { done: "✓", running: "", waiting: "!", pending: "", failed: "✕", skipped: "–", stopped: "■" };
 
 function StepTrack({ track, selected, onSelect }: { track: TrackItem[]; selected: string; onSelect: (k: string) => void }) {
   let lastPhase = "";
@@ -641,11 +685,29 @@ function plural(n: number, word: string) {
 interface ApplyView {
   filter: StateFilter;
   now: number;
+  /** Someone asked to stop the apply and it is still running. */
+  stopping: boolean;
+  /** Someone stopped the apply. */
+  stopped: boolean;
   showInLog: (c: ResourceChange) => void;
   fileLink: (c: ResourceChange, e: ApplyError) => string | null;
 }
 
-function ApplySummary({ counts, text, filter, onFilter }: { counts: ApplyCounts; text: string; filter: StateFilter; onFilter: (f: StateFilter) => void }) {
+/** How the apply's states read once someone asked to stop it (canvas board 67). */
+function stateInfoFor(stop?: "stopping" | "stopped"): Record<ApplyState, { chip: string; color: string }> {
+  if (stop === "stopping") return { ...stateInfo, applying: { chip: "Stopping", color: "var(--attention-edge)" }, pending: { chip: "Won’t start", color: "var(--surface)" } };
+  if (stop === "stopped") return { ...stateInfo, failed: { chip: "Cut halfway", color: "var(--attention-edge)" }, not_applied: { chip: "Didn’t start", color: "var(--border-strong)" } };
+  return stateInfo;
+}
+
+function ApplySummary({ counts, text, filter, onFilter, stop }: {
+  counts: ApplyCounts;
+  text: string;
+  filter: StateFilter;
+  onFilter: (f: StateFilter) => void;
+  stop?: "stopping" | "stopped";
+}) {
+  const stateInfo = stateInfoFor(stop);
   const label = `${counts.done} done, ${counts.failed} failed, ${counts.applying} applying, ${counts.not_applied} not applied, ${counts.pending} waiting`;
   const chips: StateFilter[] = ["all", ...stateOrder.filter((st) => counts[st] > 0)];
   return (
@@ -757,7 +819,7 @@ function ChangeCard({ change: c, drift, ack, apply, backend, open, onToggle }: {
   const opens = nattrs > 0 || (c.action === "replace" && (progress?.steps?.length ?? 0) > 0);
   const address = c.unit ? `${c.unit} · ${c.address}` : c.address;
   return (
-    <article className={`change-card edge-${info.tone}${progress ? ` apply-${progress.state}` : ""}`}>
+    <article className={`change-card edge-${info.tone}${progress ? ` apply-${apply!.stopped && progress.state === "failed" ? "cut" : progress.state}` : ""}`}>
       <button className="change-head" aria-expanded={open} onClick={onToggle} disabled={!opens}>
         <span className={`change-chev${open ? " open" : ""}`} aria-hidden>
           {opens && <ChevronRightIcon />}
@@ -779,12 +841,19 @@ function ChangeCard({ change: c, drift, ack, apply, backend, open, onToggle }: {
             state: {backend}
           </span>
         )}
-        {progress ? <StateChip change={c} now={apply!.now} /> : <span className="mono muted small">{address}</span>}
+        {progress ? <StateChip change={c} apply={apply!} /> : <span className="mono muted small">{address}</span>}
       </button>
       {progress?.state === "failed" && (progress.errors?.length ?? 0) > 0 && (
         <ResourceErrors errors={progress.errors!} link={(e) => apply!.fileLink(c, e)} onShowInLog={() => apply!.showInLog(c)} />
       )}
-      {progress?.state === "not_applied" && <p className="small muted">Not applied: the apply stopped before reaching it. It will be in the next plan.</p>}
+      {progress?.state === "not_applied" && (
+        <p className="small muted">
+          {apply!.stopped ? "Didn’t start: the apply was stopped before reaching it." : "Not applied: the apply stopped before reaching it."} It will be in the next plan.
+        </p>
+      )}
+      {progress?.state === "failed" && apply!.stopped && (
+        <p className="change-warning attention">Stopped halfway: it may exist in the provider in part. Plan again to see what is left.</p>
+      )}
       {!progress && c.action === "delete" && !drift && <p className="change-warning bad">This resource and anything stored in it will be deleted.</p>}
       {!progress && c.action === "replace" && (
         <p className="change-warning rep">
@@ -892,8 +961,25 @@ function WaitingForStack({ run }: { run: Run }) {
 
 // --- apply progress: what a card shows (spec 0004) ---
 
-function StateChip({ change: c, now }: { change: ResourceChange; now: number }) {
+function StateChip({ change: c, apply }: { change: ResourceChange; apply: ApplyView }) {
   const a = c.apply!;
+  const now = apply.now;
+  if (apply.stopping && a.state === "applying") {
+    return (
+      <span className="state-chip warn">
+        <span className="spin" aria-hidden /> Stopping… {a.started_at && <span className="t">{msLabel(now - Date.parse(a.started_at))}</span>}
+      </span>
+    );
+  }
+  if (apply.stopping && a.state === "pending") return <span className="state-chip skip">Won’t start</span>;
+  if (apply.stopped && a.state === "failed") {
+    return (
+      <span className="state-chip warn">
+        Cut halfway {a.duration_ms ? <span className="t">· after {msLabel(a.duration_ms)}</span> : null}
+      </span>
+    );
+  }
+  if (apply.stopped && a.state === "not_applied") return <span className="state-chip skip">Didn’t start</span>;
   switch (a.state) {
     case "done":
       return (
@@ -1227,5 +1313,115 @@ function ConfigCard({ run, stack }: { run: Run; stack: Stack }) {
         </ul>
       </details>
     </section>
+  );
+}
+
+// --- stopping a run (canvas boards 66-67) ---
+
+function clock(iso?: string) {
+  return iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+}
+
+/** Asks before stopping an apply, saying what will be left behind. */
+function StopApplyDialog({ counts, running, now, busy, onClose, onStop }: {
+  counts: ApplyCounts | null;
+  running: ResourceChange[];
+  now: number;
+  busy: boolean;
+  onClose: () => void;
+  onStop: () => void;
+}) {
+  const first = running[0];
+  return (
+    <Modal title="Stop this apply?" onClose={onClose}>
+      <div className="modal-body">
+        <p>
+          Terraform won’t start the changes still waiting. {running.length === 1 ? "The one running now is" : "Those running now are"} asked to stop: depending on the
+          provider, {running.length === 1 ? "it finishes or stops" : "each finishes or stops"} halfway. <strong>What was already applied stays applied</strong>, and the
+          state is saved with it.
+        </p>
+        {counts && (
+          <div className="stop-counts">
+            <div>
+              <span className="state-chip done">
+                <CheckIcon /> Applied
+              </span>
+              <span className="mono">{counts.done}</span>
+            </div>
+            <div>
+              <span className="state-chip run">Running now</span>
+              <span className="small muted grow">
+                {first && (
+                  <>
+                    <span className="mono">{first.address}</span>
+                    {first.apply?.started_at ? `, for ${msLabel(now - Date.parse(first.apply.started_at))}` : ""}
+                    {running.length > 1 ? ` and ${running.length - 1} more` : ""}
+                  </>
+                )}
+              </span>
+              <span className="mono">{counts.applying}</span>
+            </div>
+            <div>
+              <span className="state-chip skip">Waiting, won’t start</span>
+              <span className="mono">{counts.pending}</span>
+            </div>
+          </div>
+        )}
+        <p className="hint">To undo what was applied, plan again once it stops and review that plan.</p>
+        <div className="form-actions">
+          <button type="button" onClick={onClose} autoFocus>
+            Keep applying
+          </button>
+          <button type="button" className="danger" disabled={busy} onClick={onStop}>
+            {busy ? "Stopping…" : "Stop apply"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** Who stopped or canceled the run, and what it left behind. */
+function StoppedNotice({ run: r, counts, applyStarted }: { run: Run; counts: ApplyCounts | null; applyStarted: boolean }) {
+  const by = r.stop_requested_by;
+  const at = clock(r.stop_requested_at);
+  if (!r.started_at || (r.approved_at && !applyStarted && !counts)) {
+    return (
+      <div className="banner banner-info" role="status">
+        <span className="banner-text">
+          <strong>Canceled by {by} before {r.started_at ? "the apply" : "it"} started.</strong> {r.started_at ? "Nothing was applied." : "Nothing ran."}
+        </span>
+      </div>
+    );
+  }
+  if (!applyStarted && !counts) {
+    return (
+      <div className="banner banner-info" role="status">
+        <span className="banner-text">
+          <strong>
+            Stopped by {by} during the {r.type === "drift" ? "drift check" : "plan"}, at {at}.
+          </strong>{" "}
+          Nothing was changed, and the state lock was released.
+        </span>
+      </div>
+    );
+  }
+  const parts = counts
+    ? [
+        `${counts.done} of ${plural(counts.total, "change")} ${counts.done === 1 ? "was" : "were"} applied`,
+        counts.failed ? `${counts.failed} ${counts.failed === 1 ? "was" : "were"} cut halfway` : "",
+        counts.not_applied + counts.pending ? `${counts.not_applied + counts.pending} didn’t start` : "",
+      ].filter(Boolean)
+    : [];
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
+  return (
+    <div className="banner banner-attention" role="status">
+      <span className="banner-text">
+        <strong>
+          Stopped by {by} during the apply, at {at}.
+        </strong>{" "}
+        {list ? `${list}. ` : ""}The state has what was applied. Plan again to see where the stack is.
+      </span>
+    </div>
   );
 }
