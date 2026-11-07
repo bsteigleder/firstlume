@@ -516,6 +516,9 @@ export interface Run {
   agent_id?: string;
   created_by: string;
   approved_by?: string;
+  /** When someone asked to stop the run, and who. While it still executes it is stopping. */
+  stop_requested_at?: string;
+  stop_requested_by?: string;
   trigger?: RunTrigger;
   acknowledged?: string[];
   config?: StackConfig;

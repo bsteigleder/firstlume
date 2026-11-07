@@ -104,7 +104,7 @@ export function FolderPage() {
                       {r ? (
                         <>
                           <Link to={link(`r/${r.id}`)} className="plain">
-                            <StatusBadge status={r.status} />
+                            <StatusBadge status={r.status} run={r} />
                           </Link>
                           <div className="muted small">
                             {r.commit_author_name ? `${r.commit_author_name} · ` : ""}

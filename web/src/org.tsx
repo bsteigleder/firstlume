@@ -620,7 +620,7 @@ function ActiveRunsDrawer({ onClose }: { onClose: () => void }) {
                     </span>
                   </span>
                   <span className="queue-side">
-                    <StatusBadge status={r.status} />
+                    <StatusBadge status={r.status} run={r} />
                     <span className="muted small">{timeAgo(r.status === "failed" && r.finished_at ? r.finished_at : r.created_at)}</span>
                   </span>
                 </Link>

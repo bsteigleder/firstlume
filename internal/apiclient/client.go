@@ -165,9 +165,11 @@ func (c *Client) AppendLog(ctx context.Context, data []byte) error {
 	return err
 }
 
-func (c *Client) Heartbeat(ctx context.Context) error {
-	_, err := c.doJSON(ctx, http.MethodPost, "/exec/v1/heartbeat", nil, nil)
-	return err
+// Heartbeat keeps the run phase alive and says whether someone asked to stop it.
+func (c *Client) Heartbeat(ctx context.Context) (api.HeartbeatResponse, error) {
+	var hb api.HeartbeatResponse
+	_, err := c.doJSON(ctx, http.MethodPost, "/exec/v1/heartbeat", nil, &hb)
+	return hb, err
 }
 
 func (c *Client) PutArtifact(ctx context.Context, name string, data []byte) error {

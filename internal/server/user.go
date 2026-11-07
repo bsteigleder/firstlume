@@ -641,7 +641,7 @@ func (s *Server) discardRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
-	run, err := s.store.CancelRun(r.Context(), orgID(r), id(r))
+	run, err := s.store.CancelRun(r.Context(), orgID(r), id(r), actorName(r))
 	if err != nil {
 		s.storeError(w, r, err, "run")
 		return

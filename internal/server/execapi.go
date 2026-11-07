@@ -119,11 +119,16 @@ func (s *Server) execLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) execHeartbeat(w http.ResponseWriter, r *http.Request) {
 	runID, phase := phaseOf(r)
-	if err := s.store.Heartbeat(r.Context(), runID, phase); err != nil {
+	hb, err := s.store.Heartbeat(r.Context(), runID, phase)
+	if err != nil {
 		s.execError(w, r, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	if !hb.StopRequested {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, hb)
 }
 
 func (s *Server) execPutArtifact(w http.ResponseWriter, r *http.Request) {
