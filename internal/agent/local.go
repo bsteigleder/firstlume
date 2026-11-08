@@ -21,6 +21,9 @@ type LocalDriver struct {
 	ToolsDir      string
 	Output        io.Writer
 	KeepWorkspace bool
+	// AllowCommands takes command runs, which run here with no isolation and
+	// no egress policy: for development only (spec 0009, E1).
+	AllowCommands bool
 
 	mu       sync.Mutex
 	active   int
@@ -29,7 +32,7 @@ type LocalDriver struct {
 
 // ClaimInfo says a local executor has nowhere else to go: it never accepts placement.
 func (d *LocalDriver) ClaimInfo() (api.ClaimRequest, error) {
-	return api.ClaimRequest{}, nil
+	return api.ClaimRequest{AcceptsCommands: d.AllowCommands}, nil
 }
 
 func (d *LocalDriver) Start(ctx context.Context, a *api.Assignment) error {

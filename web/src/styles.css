@@ -516,6 +516,25 @@ a.badge.plain:hover {
   text-decoration: underline;
 }
 
+/* Whether a command run may change the state (spec 0009). */
+.access-tag {
+  display: inline-flex;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  vertical-align: middle;
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.access-tag.write {
+  background: var(--attention-soft);
+  color: var(--attention);
+}
+
 .dot {
   width: 7px;
   height: 7px;
@@ -1080,6 +1099,75 @@ a.badge.plain:hover {
 
 .danger-choice strong {
   color: var(--danger);
+}
+
+/* ---------- command runs (spec 0009) ---------- */
+
+.command-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 76px;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.command-input.invalid {
+  border-color: var(--danger-strong);
+  box-shadow: 0 0 0 1px var(--danger-strong);
+}
+
+.command-check {
+  font-size: 12.5px;
+  font-weight: 500;
+  min-height: 1em;
+}
+
+.command-check.ok {
+  color: var(--success);
+}
+
+.command-check.bad {
+  color: var(--danger);
+}
+
+.command-help summary {
+  cursor: pointer;
+  color: var(--link);
+  width: fit-content;
+}
+
+.command-help ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.45;
+}
+
+.command-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.command-chip {
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 /* ---------- exporting state ---------- */
@@ -1830,6 +1918,32 @@ a.banner:hover {
 
 .log-error {
   color: var(--log-error);
+}
+
+/* The line a command run is about to run. */
+.log-cmd {
+  color: var(--log-meta);
+}
+
+.command-block {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.command-aside {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  align-items: start;
 }
 
 .approval-card {

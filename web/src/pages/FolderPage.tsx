@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router";
 import { settingsPath, type Stack } from "../api";
 import { PeopleIcon, PlayIcon } from "../icons";
 import { folderContents, PageTitle, useCrumbs, useOrg } from "../org";
-import { DriftBadge, driftLabel, Empty, repoLabel, StatusBadge, timeAgo, useData } from "../ui";
+import { DriftBadge, driftLabel, Empty, repoLabel, runWhat, StatusBadge, timeAgo, useData } from "../ui";
 import { StackGrip } from "./MoveStack";
 import { RunDialog } from "./RunDialog";
 
@@ -108,7 +108,7 @@ export function FolderPage() {
                           </Link>
                           <div className="muted small">
                             {r.commit_author_name ? `${r.commit_author_name} · ` : ""}
-                            {r.commit_message ? `“${r.commit_message}” · ` : `${r.type} · `}
+                            {r.type === "command" ? `${runWhat(r)} · ` : r.commit_message ? `“${r.commit_message}” · ` : `${r.type} · `}
                             {timeAgo(r.created_at)}
                           </div>
                           {r.status === "awaiting_approval" && (

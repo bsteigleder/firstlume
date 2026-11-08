@@ -1,0 +1,54 @@
+{{- if and .Values.agent.enabled .Values.agent.executor.commandEgress.enabled }}
+{{- $egress := .Values.agent.executor.commandEgress }}
+# Where the pods of command runs may connect (spec 0009, E3): DNS, the
+# Firstlume API, HTTPS to the public internet, and what extraEgress adds.
+# Everything else is blocked, SSH and telnet included, and so is the private
+# network. Plan and apply pods aren't selected. It only takes effect when the
+# cluster's network plugin enforces NetworkPolicy (Calico, Cilium and others).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "firstlume.fullname" . }}-command-egress
+  namespace: {{ include "firstlume.executorNamespace" . }}
+  labels:
+    {{- include "firstlume.labels" . | nindent 4 }}
+    app.kubernetes.io/component: executor
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: firstlume
+      firstlume.io/run-type: command
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    {{- if .Values.controlPlane.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "firstlume.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: server
+      ports:
+        - { protocol: TCP, port: http }
+    {{- end }}
+    {{- if $egress.publicHTTPS }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: {{ toJson $egress.privateRanges }}
+        {{- if $egress.ipv6 }}
+        - ipBlock:
+            cidr: ::/0
+            except: [fc00::/7, fe80::/10]
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 443 }
+    {{- end }}
+    {{- with $egress.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

@@ -315,8 +315,12 @@ func runAgent(ctx context.Context, log *slog.Logger) error {
 			ToolsDir:      env("FIRSTLUME_TOOLS_DIR", filepath.Join(cacheDir, "firstlume", "tools")),
 			Output:        os.Stderr,
 			KeepWorkspace: boolEnv("FIRSTLUME_KEEP_WORKSPACE", false),
+			AllowCommands: boolEnv("FIRSTLUME_ALLOW_LOCAL_COMMANDS", false),
 		}
 		log.Warn("using the local driver: executors run unisolated on this host")
+		if driver.(*agent.LocalDriver).AllowCommands {
+			log.Warn("command runs allowed on the local driver: for development only")
+		}
 	default:
 		return fmt.Errorf("unknown FIRSTLUME_DRIVER %q (want kubernetes or local)", d)
 	}

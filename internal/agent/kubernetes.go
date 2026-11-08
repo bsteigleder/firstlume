@@ -25,6 +25,9 @@ const (
 	labelRunID     = "firstlume.io/run-id"
 	labelPhase     = "firstlume.io/phase"
 	labelStack     = "firstlume.io/stack-id"
+	// LabelRunType tells command runs' pods apart, for the egress policy the
+	// chart creates (spec 0009, E3).
+	LabelRunType   = "firstlume.io/run-type"
 	annotReported  = "firstlume.io/failure-reported"
 	managedByValue = "firstlume"
 	tokenKey       = "token"
@@ -204,6 +207,9 @@ func BuildJob(cfg KubernetesConfig, a *api.Assignment) (*corev1.Secret, *batchv1
 	if a.StackID != "" {
 		labels[labelStack] = a.StackID // so a rule can name a stack (R2.5)
 	}
+	if a.Type != "" {
+		labels[LabelRunType] = string(a.Type)
+	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name + "-token", Namespace: cfg.Namespace, Labels: labels},
 		Type:       corev1.SecretTypeOpaque,
@@ -278,7 +284,7 @@ func BuildJob(cfg KubernetesConfig, a *api.Assignment) (*corev1.Secret, *batchv1
 // ClaimInfo tells the server what this agent accepts and what it was installed with.
 func (d *KubernetesDriver) ClaimInfo() (api.ClaimRequest, error) {
 	install, err := d.cfg.installPlacement()
-	return api.ClaimRequest{AcceptsPlacement: d.cfg.AllowPlacement, InstallPlacement: install}, err
+	return api.ClaimRequest{AcceptsPlacement: d.cfg.AllowPlacement, InstallPlacement: install, AcceptsCommands: true}, err
 }
 
 func (d *KubernetesDriver) Start(ctx context.Context, a *api.Assignment) error {

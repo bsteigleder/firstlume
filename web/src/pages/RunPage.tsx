@@ -20,6 +20,7 @@ import {
 import { CheckIcon, ChevronRightIcon, CloseIcon, ExternalIcon } from "../icons";
 import { useCrumbs, useOrg } from "../org";
 import {
+  AccessTag,
   commitURL,
   duration,
   ErrorBanner,
@@ -62,6 +63,7 @@ export function RunPage() {
   const [logOpen, setLogOpen] = useStoredFlag("firstlume.applyLogOpen");
   const [focus, setFocus] = useState<LogFocus | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmStopCommand, setConfirmStopCommand] = useState(false);
 
   // Keep the run, its steps and, during the apply, its changes fresh while they can still change.
   useEffect(() => {
@@ -103,6 +105,7 @@ export function RunPage() {
   const missing = confirmRequired ? destructive.filter((c) => !acked[changeKey(c)]) : [];
   const awaiting = r.status === "awaiting_approval";
   const isDrift = r.type === "drift";
+  const isCommand = r.type === "command";
   const stopping = isStopping(r);
   const stoppedBy = r.status === "canceled" ? r.stop_requested_by : undefined;
 
@@ -148,10 +151,11 @@ export function RunPage() {
     <div className="page run-page">
       <div className="run-head">
         <h1>
-          {isDrift ? "Drift check" : r.type === "plan" ? "Plan" : r.type === "destroy" ? "Destroy" : "Apply"} · {s?.name ?? "…"}
+          {isCommand ? "Command" : isDrift ? "Drift check" : r.type === "plan" ? "Plan" : r.type === "destroy" ? "Destroy" : "Apply"} · {s?.name ?? "…"}
         </h1>
         <StatusBadge status={r.status} run={r} />
         <CommitLine run={r} stack={s} />
+        <AccessTag run={r} />
         <span className="grow" />
         {(r.status === "queued" || r.status === "apply_queued") && (
           <button onClick={() => act(() => api.cancelRun(r.id))} disabled={action.busy}>
@@ -161,21 +165,28 @@ export function RunPage() {
         {/* A plan changes nothing, so it stops on the click; an apply asks first. */}
         {r.status === "planning" && !stopping && (
           <button onClick={() => act(() => api.cancelRun(r.id))} disabled={action.busy}>
-            Stop {isDrift ? "drift check" : "plan"}
+            Stop {isCommand ? "command" : isDrift ? "drift check" : "plan"}
           </button>
         )}
-        {r.status === "applying" && !stopping && (
+        {/* A command that may write the state asks first, and is never killed (spec 0009, R21). */}
+        {isCommand && r.status === "applying" && !stopping && (
+          <button className="danger-outline" onClick={() => setConfirmStopCommand(true)} disabled={action.busy}>
+            Stop command
+          </button>
+        )}
+        {!isCommand && r.status === "applying" && !stopping && (
           <button className="danger-outline" onClick={() => setConfirmStop(true)} disabled={action.busy}>
             Stop apply
           </button>
         )}
         {stopping && <button disabled>Stopping…</button>}
-        {(r.status === "failed" || r.status === "discarded" || r.status === "canceled") && s && (
-          <button className="primary" onClick={() => setReconcile(true)}>
+        {(r.status === "failed" || r.status === "discarded" || r.status === "canceled" || r.status === "succeeded") && s && (
+          <button className={r.status === "succeeded" ? "" : "primary"} onClick={() => setReconcile(true)}>
             Run again
           </button>
         )}
       </div>
+      {isCommand && <pre className="command-block" aria-label="Command">{r.command}</pre>}
       {r.trigger?.kind === "push" && <TriggerLine run={r} />}
       <ErrorBanner error={action.error} onDismiss={() => action.setError(null)} />
       {supersededBy(r) && <SupersededNotice run={r} />}
@@ -191,7 +202,8 @@ export function RunPage() {
           </span>
         </div>
       )}
-      {stoppedBy && <StoppedNotice run={r} counts={counts} applyStarted={(steps.data ?? []).some((st) => st.phase === "apply")} />}
+      {stoppedBy && !isCommand && <StoppedNotice run={r} counts={counts} applyStarted={(steps.data ?? []).some((st) => st.phase === "apply")} />}
+      {isCommand && <CommandOutcome run={r} steps={steps.data ?? []} />}
       {r.status === "queued" && r.trigger?.kind === "push" && <WaitingForStack run={r} />}
 
       {counts && active && counts.failed > 0 && (
@@ -234,7 +246,7 @@ export function RunPage() {
           </span>
         </div>
       )}
-      {r.status === "failed" && r.error && !explained && (
+      {r.status === "failed" && r.error && !explained && r.exit_code === undefined && (
         <div className="error-banner" role="alert">
           <span>
             <strong>{track.find((t) => t.state === "failed")?.name ?? "The run"} failed:</strong> <span className="pre-line">{r.error}</span>
@@ -263,7 +275,22 @@ export function RunPage() {
         <p className="hint">Click a step to see its log. Hooks from .firstlume will show up here as their own steps.</p>
       </section>
 
-      {awaiting && (
+      {awaiting && isCommand && (
+        <section className="card approval-card" aria-label="Approval">
+          <span className="small">
+            <strong>Nothing has run yet.</strong> Approving runs this command{r.commit_sha ? ` on commit ${r.commit_sha.slice(0, 7)}` : ` on ${r.ref}`}; no other run
+            of the stack starts meanwhile. The command is all there is to review.
+          </span>
+          <span className="grow" />
+          <button onClick={() => act(() => api.discardRun(r.id))} disabled={action.busy}>
+            Discard
+          </button>
+          <button className="primary" disabled={action.busy} onClick={() => act(() => api.approveRun(r.id, []))}>
+            Approve and run
+          </button>
+        </section>
+      )}
+      {awaiting && !isCommand && (
         <section className="card approval-card" aria-label="Approval">
           <ActionCounts changes={changes.data ?? []} />
           <span className={missing.length ? "danger-text small" : "small muted"}>
@@ -287,6 +314,14 @@ export function RunPage() {
         </section>
       )}
 
+      {isCommand ? (
+        <div className="command-aside">
+          <CommitCard run={r} stack={s} />
+          {r.unit_backends && <StateCard run={r} />}
+          <PlacementCard run={r} agents={agents.data ?? undefined} />
+          {s && <ConfigCard run={r} stack={s} />}
+        </div>
+      ) : (
       <div className="run-columns">
         <section className="changes-col" aria-label="Changes">
           {counts ? (
@@ -310,7 +345,31 @@ export function RunPage() {
           {s && <ConfigCard run={r} stack={s} />}
         </aside>
       </div>
-      {confirmStop && r.status === "applying" && (
+      )}
+      {confirmStopCommand && r.status === "applying" && (
+        <Modal title="Stop this command?" onClose={() => setConfirmStopCommand(false)}>
+          <div className="modal-body">
+            <p>
+              Terraform is asked to stop, as Ctrl+C does. It is never killed, so it saves the state and releases the lock first.{" "}
+              <strong>What the command already wrote to the state stays.</strong>
+            </p>
+            <div className="form-actions">
+              <button type="button" onClick={() => setConfirmStopCommand(false)}>
+                Keep running
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={action.busy}
+                onClick={() => act(() => api.cancelRun(r.id)).then(() => setConfirmStopCommand(false))}
+              >
+                Stop command
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {confirmStop && !isCommand && r.status === "applying" && (
         <StopApplyDialog
           counts={counts}
           running={(changes.data ?? []).filter((c) => c.apply?.state === "applying")}
@@ -320,7 +379,13 @@ export function RunPage() {
           onStop={() => act(() => api.cancelRun(r.id)).then(() => setConfirmStop(false))}
         />
       )}
-      {reconcile && s && <RunDialog stack={s} again={{ type: r.type, ref: r.ref }} onClose={() => setReconcile(false)} />}
+      {reconcile && s && (
+        <RunDialog
+          stack={s}
+          again={isCommand ? { type: "command", ref: r.ref, command: r.command, state_access: r.state_access } : { type: r.type, ref: r.ref }}
+          onClose={() => setReconcile(false)}
+        />
+      )}
     </div>
   );
 }
@@ -332,6 +397,8 @@ type StepState = "done" | "running" | "waiting" | "pending" | "failed" | "skippe
 interface TrackItem {
   key: string;
   phase: "plan" | "approval" | "apply";
+  /** Shown over the phase's steps when it isn't the phase's own name. */
+  phaseLabel?: string;
   name: string;
   state: StepState;
   meta: string;
@@ -368,6 +435,7 @@ function buildTrack(r: Run, steps: RunStep[], counts: ApplyCounts | null): Track
       meta: `${runOriginText(r)} · ${timeAgo(r.created_at)}`,
     },
   ];
+  if (r.type === "command") return commandTrack(r, steps, items, fromStep);
   const plan = steps.filter((s) => s.phase === "plan").map(fromStep);
   items.push(...(plan.length ? plan : placeholders("plan", ["Checkout", "Init", "Plan"], r.status === "canceled")));
 
@@ -395,6 +463,28 @@ function buildTrack(r: Run, steps: RunStep[], counts: ApplyCounts | null): Track
   return items;
 }
 
+/** A command run: Queued, Approval when it waited for one, then its steps (spec 0009). */
+function commandTrack(r: Run, steps: RunStep[], items: TrackItem[], fromStep: (s: RunStep) => TrackItem): TrackItem[] {
+  const phase = r.state_access === "write" ? "apply" : "plan";
+  // Its turn came: what it waits for now is the approval, not an agent.
+  const queued = { ...items[0], phaseLabel: "" };
+  if (r.status === "awaiting_approval" || r.approved_at || r.status === "discarded") queued.state = "done";
+  items = [queued];
+  if (r.status === "awaiting_approval" || r.approved_at || (r.status === "discarded" && phase === "apply")) {
+    items.push({
+      key: "approval",
+      phase: "approval",
+      name: "Approval",
+      state: r.status === "awaiting_approval" ? "waiting" : r.approved_at ? "done" : "skipped",
+      meta: r.status === "awaiting_approval" ? `waiting ${duration(r.updated_at)}` : r.approved_by ? `by ${r.approved_by}` : "discarded",
+    });
+  }
+  const own = steps.filter((s) => s.phase === phase).map(fromStep);
+  const skipped = r.status === "canceled" || r.status === "discarded";
+  const run = own.length ? own : placeholders(phase, ["Checkout", "Init", "Command"], skipped);
+  return [...items, ...run.map((t) => ({ ...t, phaseLabel: "command" }))];
+}
+
 function placeholders(phase: "plan" | "apply", names: string[], skipped: boolean): TrackItem[] {
   return names.map((name) => ({ key: `${phase}/${name}`, phase, name, state: skipped ? "skipped" : "pending", meta: skipped ? "skipped" : "" }));
 }
@@ -420,7 +510,7 @@ function StepTrack({ track, selected, onSelect }: { track: TrackItem[]; selected
         const next = track[i + 1];
         return (
           <span key={t.key} className="track-item">
-            {showPhase && <span className="track-phase">{t.phase}</span>}
+            {showPhase && (t.phaseLabel ?? t.phase) && <span className="track-phase">{t.phaseLabel ?? t.phase}</span>}
             <button className={`step ${t.state}${selected === t.key ? " selected" : ""}`} aria-pressed={selected === t.key}
               aria-label={`${t.name}: ${t.state}. Show its log`} onClick={() => onSelect(t.key)}>
               <span className="step-name">
@@ -463,6 +553,9 @@ function StepLog({ track, selected, events, run, live, error, collapse, focus }:
   const [follow, setFollow] = useState(true);
   const text = useMemo(() => {
     if (item.key === "queued") {
+      if (run.type === "command" && run.status === "awaiting_approval") {
+        return `Queued by ${runOriginText(run)} at ${new Date(run.created_at).toLocaleTimeString()}.\nIts turn came; it waits for approval before anything runs.`;
+      }
       return run.started_at ? `Queued by ${runOriginText(run)} at ${new Date(run.created_at).toLocaleTimeString()}.\nPicked up by an agent.` : "Waiting for an agent to pick up this run.";
     }
     if (item.key === "approval") {
@@ -532,7 +625,7 @@ function StepLog({ track, selected, events, run, live, error, collapse, focus }:
               const err = /^(\[[^\]]+\] )?(Error|│ Error|==> Error)/.test(l);
               return (
                 <div key={n} data-line={n}
-                  className={`log-line${l.startsWith("==>") ? " log-step" : ""}${err ? " log-error" : ""}${focus && n >= focusLine && focusLine >= 0 && n < focusLine + 4 ? " log-focus" : ""}`}>
+                  className={`log-line${l.startsWith("==>") ? " log-step" : ""}${l.startsWith("$ ") ? " log-cmd" : ""}${err ? " log-error" : ""}${focus && n >= focusLine && focusLine >= 0 && n < focusLine + 4 ? " log-focus" : ""}`}>
                   {l || " "}
                 </div>
               );
@@ -1120,7 +1213,7 @@ function CommitCard({ run, stack }: { run: Run; stack: Stack | null }) {
           )}
         </>
       ) : (
-        <p className="muted small">Resolved when the plan checks out {run.ref}.</p>
+        <p className="muted small">Resolved when the {run.type === "command" ? "command" : "plan"} checks out {run.ref}.</p>
       )}
     </section>
   );
@@ -1323,6 +1416,70 @@ function clock(iso?: string) {
 }
 
 /** Asks before stopping an apply, saying what will be left behind. */
+/** How a finished command run ended (spec 0009, board 69): exit code, time, and the state. */
+function CommandOutcome({ run: r, steps }: { run: Run; steps: RunStep[] }) {
+  const { link } = useOrg();
+  const step = steps.find((st) => st.name === "Command");
+  const took = step?.started_at ? duration(step.started_at, step.finished_at ?? undefined) : "";
+  const write = r.state_access === "write";
+  const writes = r.state_writes ?? [];
+  const state = !write ? (
+    r.status === "failed" ? " Read only: the state wasn’t touched." : ""
+  ) : writes.length ? (
+    <>
+      {" "}
+      The state changed:{" "}
+      {writes.map((w, i) => (
+        <Fragment key={w.key}>
+          {i > 0 && ", "}
+          version {w.version}
+          {w.key ? ` of ${w.key}` : ""}
+        </Fragment>
+      ))}{" "}
+      saved, lock released. <Link to={link(`s/${r.stack_id}/resources`)}>See the resources</Link>
+    </>
+  ) : (
+    " The state didn’t change, and the lock was released."
+  );
+  if (r.status === "succeeded") {
+    return (
+      <div className="banner banner-ok" role="status">
+        <span className="banner-text">
+          <strong>Exit code 0{took ? ` · ${took}` : ""}.</strong>
+          {r.stop_requested_by ? ` The stop ${r.stop_requested_by} asked for came after the last line, so every line ran.` : ""}
+          {state}
+        </span>
+      </div>
+    );
+  }
+  if (r.status === "failed" && r.exit_code !== undefined) {
+    return (
+      <div className="error-banner" role="alert">
+        <span>
+          <strong>
+            {r.failed_line ? `Line ${r.failed_line}` : "The command"} exited with code {r.exit_code}
+            {took ? ` after ${took}` : ""}.
+          </strong>
+          {state}
+        </span>
+      </div>
+    );
+  }
+  if (r.status === "canceled" && r.stop_requested_by) {
+    return (
+      <div className="banner banner-info" role="status">
+        <span className="banner-text">
+          <strong>
+            {r.started_at ? `Stopped by ${r.stop_requested_by} at ${clock(r.stop_requested_at)}.` : `Canceled by ${r.stop_requested_by} before it started.`}
+          </strong>
+          {r.started_at ? state || " Nothing was changed, and the state lock was released." : " Nothing ran."}
+        </span>
+      </div>
+    );
+  }
+  return null;
+}
+
 function StopApplyDialog({ counts, running, now, busy, onClose, onStop }: {
   counts: ApplyCounts | null;
   running: ResourceChange[];

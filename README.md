@@ -37,6 +37,9 @@ queued ─▶ planning ─┬─▶ no_changes                       (sem mudan�
                     ├─▶ apply_queued                     (require_approval: false)
                     └─▶ drifted                          (type=drift)
 qualquer fase em execução ─▶ failed  |  queued/apply_queued ─▶ canceled
+
+type=command:  queued ─▶ planning ─▶ succeeded | failed                     (state_access: read)
+               queued ─▶ [awaiting_approval ─▶ apply_queued ─▶] applying ─▶ succeeded | failed   (write)
 ```
 
 A aprovação é a configuração `require_approval`, herdada da organização para as pastas e os stacks: vale o nível mais próximo do stack. Ela muda na UI ou com `PUT .../settings` (cuidado: esse `PUT` substitui o que o nível define, veja [Credenciais de registry](#credenciais-de-registry)). O padrão é exigir aprovação. A regra é lida quando o plan termina, então uma mudança também vale para os runs já na fila.
@@ -46,6 +49,15 @@ A aprovação é a configuração `require_approval`, herdada da organização p
 O intervalo de verificação é a configuração herdada `drift_interval_minutes` (de 15 min a 7 dias; `0` desliga, e esse é o padrão). O server cria um run `drift` quando a verificação vence e o stack está livre. Esse run é um `plan` que **só reporta**: nunca aplica, não pede aprovação e não guarda o arquivo de plano. O resultado (`in_sync`, `drifted` ou `error`) fica no stack e aparece na UI. Também dá para verificar na hora, com um run do tipo `drift`. Mudanças na branch que ainda não foram aplicadas também aparecem como drift.
 
 Se o executor parar de enviar heartbeat por `FIRSTLUME_HEARTBEAT_TIMEOUT` (10 min por padrão), o run é marcado como `failed`. Se o pod morrer (por exemplo, por OOM ou deadline), o agent reporta a falha.
+
+### Rodar um comando no stack
+
+Um run do tipo `command` roda subcomandos do Terraform, OpenTofu ou Terragrunt no diretório do stack, com o mesmo preparo de um plan (checkout, arquivos, Vault, registries, ferramentas, `init`) e o backend do state já configurado. Serve para o que plan e apply não cobrem: `state mv`, `state rm`, `import`, `force-unlock`, ler outputs. Na UI, é a opção **Run a command** do diálogo de run; na API, `POST .../stacks/{id}/runs` com `{"type": "command", "command": "...", "state_access": "read"}`, e `POST .../stacks/{id}/commands/check` valida sem criar run (spec [0009](docs/specs/0009-run-de-comando.md)).
+
+- **Sem shell.** Cada linha roda direto, em ordem, e para na primeira que falhar. Só é aceito o engine do stack (`terraform` ou `tofu`) ou, em stack Terragrunt, só `terragrunt`, que é quem monta o state de cada unit. Em ambos os casos, com uma lista fechada de subcomandos: `state list/show`, `output`, `show`, `validate`, `providers`, `version`, `workspace list/show` só leem; `state mv/rm/replace-provider`, `import`, `taint`, `untaint` e `force-unlock` mudam o state. Pipes, `;`, `&&`, `$( )`, redirecionamentos, `ssh`, `curl` e qualquer outro programa são recusados, assim como `apply`, `destroy`, `plan`, `state pull/push` e `-json` em `output` e `show`. Para chegar a uma unit: `terragrunt --working-dir units/vpc state list`, ou todas com `terragrunt run --all -- state list`.
+- **Acesso ao state.** `read` (padrão) roda na fase plan, com o token que lê e trava mas não grava, sem aprovação. `write` roda na fase apply e segue a aprovação do stack: quando ela é exigida, o run espera aprovação ao chegar a vez dele, antes de qualquer checkout.
+- **Onde roda.** Só agents que aceitam: o driver Kubernetes, ou o local com `FIRSTLUME_ALLOW_LOCAL_COMMANDS=true` (só para desenvolvimento). Agents de versões anteriores não pegam esses runs. No Kubernetes, os pods têm o rótulo `firstlume.io/run-type: command` e uma NetworkPolicy de saída (`agent.executor.commandEgress`, ligada por padrão) só libera DNS, a API do First Lume, HTTPS para a internet pública e o que estiver em `extraEgress`. SSH, telnet e o resto da rede privada ficam bloqueados. Vault e Git em endereço privado precisam entrar em `extraEgress`. A política só vale se o plugin de rede do cluster a aplica (Calico, Cilium e outros).
+- O código do repositório ainda roda, como num plan (o provider durante um `import`, hooks do Terragrunt). Ele passa por revisão no Git; o que é digitado no diálogo, não, e por isso tem a lista.
 
 ### Gatilhos do Git
 

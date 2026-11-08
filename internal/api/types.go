@@ -12,10 +12,15 @@ const (
 	// RunDrift is a plan that only reports whether the real infrastructure still
 	// matches the code. It never applies and never waits for approval.
 	RunDrift RunType = "drift"
+	// RunCommand runs Terraform, OpenTofu or Terragrunt subcommands from a
+	// closed list in the stack's folder (spec 0009). With read access it runs
+	// in the plan phase; with write access, in the apply phase, after approval
+	// when the stack requires it.
+	RunCommand RunType = "command"
 )
 
 func (t RunType) Valid() bool {
-	return t == RunPlan || t == RunApply || t == RunDestroy || t == RunDrift
+	return t == RunPlan || t == RunApply || t == RunDestroy || t == RunDrift || t == RunCommand
 }
 
 // Applies reports whether runs of this type go on to an apply phase.
@@ -46,12 +51,14 @@ const (
 	StatusFailed    RunStatus = "failed"
 	StatusDiscarded RunStatus = "discarded"
 	StatusCanceled  RunStatus = "canceled"
+	// StatusSucceeded ends a command run whose every line exited 0.
+	StatusSucceeded RunStatus = "succeeded"
 )
 
 // IsTerminal reports whether no further transitions can happen.
 func (s RunStatus) IsTerminal() bool {
 	switch s {
-	case StatusPlanned, StatusNoChanges, StatusDrifted, StatusApplied, StatusFailed, StatusDiscarded, StatusCanceled:
+	case StatusPlanned, StatusNoChanges, StatusDrifted, StatusApplied, StatusFailed, StatusDiscarded, StatusCanceled, StatusSucceeded:
 		return true
 	}
 	return false
@@ -807,11 +814,22 @@ type Run struct {
 	// canceled run it says who canceled or stopped it.
 	StopRequestedAt *time.Time `json:"stop_requested_at,omitempty"`
 	StopRequestedBy string     `json:"stop_requested_by,omitempty"`
-	ApprovedAt      *time.Time `json:"approved_at,omitempty"`
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	FinishedAt      *time.Time `json:"finished_at,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	// Command and StateAccess are set on command runs (spec 0009): the
+	// command as typed, and "read" or "write".
+	Command     string `json:"command,omitempty"`
+	StateAccess string `json:"state_access,omitempty"`
+	// ExitCode and FailedLine say how a command run that failed ended: the
+	// code of the line that failed, and that line (from 1).
+	ExitCode   *int `json:"exit_code,omitempty"`
+	FailedLine *int `json:"failed_line,omitempty"`
+	// StateWrites lists the state versions a command run wrote. Set on a
+	// single run read of a finished command run that may write the state.
+	StateWrites []StateWrite `json:"state_writes,omitempty"`
+	ApprovedAt  *time.Time   `json:"approved_at,omitempty"`
+	StartedAt   *time.Time   `json:"started_at,omitempty"`
+	FinishedAt  *time.Time   `json:"finished_at,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
 }
 
 // ActiveRun is a run that holds or waits for its stack's lock (or, when asked
@@ -826,6 +844,39 @@ type ActiveRun struct {
 type CreateRunRequest struct {
 	Type RunType `json:"type"`
 	Ref  string  `json:"ref"`
+	// Command and StateAccess are for command runs only (spec 0009).
+	// StateAccess is "read" (the default) or "write".
+	Command     string `json:"command,omitempty"`
+	StateAccess string `json:"state_access,omitempty"`
+}
+
+// StateWrite is a state version a run wrote: the unit (empty for the root)
+// and the version's number.
+type StateWrite struct {
+	Key     string `json:"key"`
+	Version int    `json:"version"`
+}
+
+// CheckCommandRequest validates a command without creating a run.
+type CheckCommandRequest struct {
+	Command     string `json:"command"`
+	StateAccess string `json:"state_access,omitempty"`
+}
+
+// CheckCommandResponse is what a command would run, or why it can't.
+type CheckCommandResponse struct {
+	OK bool `json:"ok"`
+	// Error is set when it can't run: the line (from 1; 0 for the whole
+	// command) and the reason.
+	Error *CommandError `json:"error,omitempty"`
+	// Lines is how many commands it holds, and Writes whether any changes the state.
+	Lines  int  `json:"lines"`
+	Writes bool `json:"writes"`
+}
+
+type CommandError struct {
+	Line    int    `json:"line"`
+	Message string `json:"message"`
 }
 
 type Agent struct {
@@ -855,10 +906,11 @@ type CreateAgentResponse struct {
 
 // Assignment is handed to an agent when it claims a run phase.
 type Assignment struct {
-	RunID   string `json:"run_id"`
-	StackID string `json:"stack_id"`
-	Phase   Phase  `json:"phase"`
-	Token   string `json:"token"`
+	RunID   string  `json:"run_id"`
+	StackID string  `json:"stack_id"`
+	Type    RunType `json:"type,omitempty"`
+	Phase   Phase   `json:"phase"`
+	Token   string  `json:"token"`
 	// Placement is the run's fields over the agent's. The installation's values
 	// are applied by the agent, under these.
 	Placement Placement `json:"placement,omitzero"`
@@ -894,6 +946,10 @@ type ExecSpec struct {
 	// Registries are the stack's effective registry credentials, the
 	// password decrypted unless it comes from Vault. The apply gets the plan's.
 	Registries []ExecRegistry `json:"registries,omitempty"`
+	// Command and StateAccess are set on command runs (spec 0009). The
+	// executor checks the command again before running it.
+	Command     string `json:"command,omitempty"`
+	StateAccess string `json:"state_access,omitempty"`
 }
 
 type ExecRegistry struct {
@@ -1035,6 +1091,10 @@ type CompleteRequest struct {
 	Error       string       `json:"error,omitempty"`
 	HasChanges  bool         `json:"has_changes"`
 	PlanSummary *PlanSummary `json:"plan_summary,omitempty"`
+	// ExitCode and FailedLine are set when a line of a command run exited
+	// with a code other than 0.
+	ExitCode   *int `json:"exit_code,omitempty"`
+	FailedLine *int `json:"failed_line,omitempty"`
 }
 
 // HeartbeatResponse tells the executor whether someone asked to stop the run.

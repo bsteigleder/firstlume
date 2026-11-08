@@ -283,3 +283,23 @@ func TestUnschedulableFailsTheRun(t *testing.T) {
 		t.Fatalf("stuck apply: %+v", failures)
 	}
 }
+
+// Spec 0009, E3: command runs' pods carry the label the egress policy selects.
+func TestBuildJobLabelsCommandRuns(t *testing.T) {
+	a := *testAssignment
+	a.Type = api.RunCommand
+	_, job := BuildJob(testConfig(), &a)
+	if got := job.Spec.Template.Labels[LabelRunType]; got != "command" {
+		t.Fatalf("pod label %s = %q", LabelRunType, got)
+	}
+	if got := job.Spec.Template.Labels[labelManagedBy]; got != managedByValue {
+		t.Fatalf("pod label %s = %q", labelManagedBy, got)
+	}
+	d := &KubernetesDriver{}
+	if req, _ := d.ClaimInfo(); !req.AcceptsCommands {
+		t.Fatal("the Kubernetes driver should take command runs")
+	}
+	if req, _ := (&LocalDriver{}).ClaimInfo(); req.AcceptsCommands {
+		t.Fatal("the local driver took command runs without FIRSTLUME_ALLOW_LOCAL_COMMANDS")
+	}
+}
