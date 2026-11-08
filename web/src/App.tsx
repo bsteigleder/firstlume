@@ -40,6 +40,10 @@ type Auth = { state: "loading" } | { state: "anon" } | { state: "in"; me: Me };
 
 export function App() {
   const [auth, setAuth] = useState<Auth>({ state: "loading" });
+  const [providerName, setProviderName] = useState("Git");
+  useEffect(() => {
+    authConfig().then((c) => c.oidc?.name && setProviderName(c.oidc.name), () => undefined);
+  }, []);
 
   // The admin token (sessionStorage) or the session cookie: /me says which, if any.
   const load = useCallback(async () => {
@@ -61,7 +65,7 @@ export function App() {
   if (auth.state === "loading") return null;
   if (auth.state === "anon") return <Login onLogin={load} />;
   return (
-    <SessionContext.Provider value={{ me: auth.me, reload: load }}>
+    <SessionContext.Provider value={{ me: auth.me, reload: load, providerName }}>
       <RouterProvider router={router} />
     </SessionContext.Provider>
   );
@@ -137,7 +141,7 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
 
   // Read once: the query is cleared below so a reload doesn't show it again.
   const [search] = useState(() => window.location.search);
-  const message = loginMessage(search, cfg?.oidc?.name ?? "Gitea");
+  const message = loginMessage(search, cfg?.oidc?.name ?? "your Git provider");
   useEffect(() => {
     if (window.location.search) window.history.replaceState(null, "", window.location.pathname);
   }, []);
@@ -198,8 +202,8 @@ function Login({ onLogin }: { onLogin: () => Promise<void> }) {
           {!oidc && !tokenLogin && (
             <div className="login-unset">
               <strong>Sign-in isn’t set up yet</strong>
-              <p className="muted">An administrator turns on Gitea sign-in when installing First Lume, in the Helm values:</p>
-              <pre className="mono">{"controlPlane:\n  publicURL: https://firstlume.example.com\n  auth:\n    oidc:\n      enabled: true\n      issuer: https://gitea.example.com"}</pre>
+              <p className="muted">An administrator turns on sign-in with Gitea or GitLab when installing First Lume, in the Helm values:</p>
+              <pre className="mono">{"controlPlane:\n  publicURL: https://firstlume.example.com\n  auth:\n    oidc:\n      enabled: true\n      providerName: GitLab\n      issuer: https://gitlab.example.com"}</pre>
             </div>
           )}
         </section>

@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router";
 import { settingsPath, type GitEvent, type GitEventOutcome, type GitEventStack, type Stack } from "../api";
 import { ExternalIcon } from "../icons";
 import { PageTitle, useCrumbs, useOrg } from "../org";
-import { commitURL, Empty, ErrorBanner, timeAgo, useData } from "../ui";
+import { commitURL, Empty, ErrorBanner, linkProvider, timeAgo, useData } from "../ui";
 
 // Why it ran, or didn't (spec 0006, R10; canvas board 58).
 
@@ -13,15 +13,31 @@ const outcomes: Record<GitEventOutcome, { label: string; tone: string }> = {
   trigger_off: { label: "Trigger off", tone: "idle" },
   other_branch: { label: "Other branch", tone: "idle" },
   duplicate: { label: "Already had a run", tone: "idle" },
+  already_handled: { label: "Already handled", tone: "idle" },
   error: { label: "Error", tone: "bad" },
 };
 
-const affectsAll: Record<string, string> = {
-  force_push: "Force push: no way to tell what changed, so every stack on the branch counts",
-  new_branch: "New branch: no way to tell what changed, so every stack on the branch counts",
-  compare_failed: "Gitea couldn’t compare the commits, so every stack on the branch counts",
-  compare_incomplete: "Gitea didn’t list every changed file, so every stack on the branch counts",
-};
+/** The provider's name for texts, from the organization's connection. */
+function providerName(p: string | null) {
+  return p === "gitlab" ? "GitLab" : "Gitea";
+}
+
+function affectsAllText(reason: string, provider: string | null): string {
+  const name = providerName(provider);
+  switch (reason) {
+    case "force_push":
+      return "Force push: no way to tell what changed, so every stack on the branch counts";
+    case "new_branch":
+      return "New branch: no way to tell what changed, so every stack on the branch counts";
+    case "compare_failed":
+      return `${name} couldn’t compare the commits, so every stack on the branch counts`;
+    case "compare_incomplete":
+      return provider === "gitlab"
+        ? "GitLab listed 1000 changed files, its limit, so the list may be cut: every stack on the branch counts"
+        : `${name} didn’t list every changed file, so every stack on the branch counts`;
+  }
+  return reason;
+}
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -68,7 +84,7 @@ function FilesToggle({ decision }: { decision: GitEventStack }) {
   );
 }
 
-function decisionWhy(d: GitEventStack, stackRef: string | undefined) {
+function decisionWhy(d: GitEventStack, stackRef: string | undefined, provider: string | null, sha: string) {
   const total = d.files_total || d.files?.length || 0;
   switch (d.outcome) {
     case "run_created":
@@ -77,11 +93,13 @@ function decisionWhy(d: GitEventStack, stackRef: string | undefined) {
         return d.files?.length ? <span className="mono small">{d.files[0]}{total > 1 ? ` and ${total - 1} more` : ""}</span> : "Its files changed";
       }
       if (d.reason === "config_unreadable") return "Its .firstlume/config.yaml couldn’t be read at this commit, so the run shows why";
-      return d.reason ? (affectsAll[d.reason] ?? d.reason) : null;
+      return d.reason ? affectsAllText(d.reason, provider) : null;
     case "not_affected":
       return `${plural(total, "file")} changed, none of them for this stack. `;
     case "trigger_off":
       return "On push is off";
+    case "already_handled":
+      return `Commit ${sha} was already handled for this stack. Nothing new to run (${providerName(provider)}’s test button sends this).`;
     case "other_branch":
       return stackRef ? `This stack follows ${stackRef}` : "This stack follows another branch";
     default:
@@ -90,7 +108,7 @@ function decisionWhy(d: GitEventStack, stackRef: string | undefined) {
 }
 
 function Decisions({ event }: { event: GitEvent }) {
-  const { link, tree } = useOrg();
+  const { link, tree, gitProvider } = useOrg();
   const refOf = (id?: string) => tree?.stacks.find((s) => s.id === id)?.ref;
   if (event.stacks.length === 0) return null;
   return (
@@ -112,7 +130,7 @@ function Decisions({ event }: { event: GitEvent }) {
                 <span className={`badge ${outcomes[d.outcome].tone}`}>{outcomes[d.outcome].label}</span>
               </td>
               <td className="small">
-                {decisionWhy(d, refOf(d.stack_id))}
+                {decisionWhy(d, refOf(d.stack_id), gitProvider, event.after_sha.slice(0, 7))}
                 {d.outcome === "not_affected" && <FilesToggle decision={d} />}
                 {d.outcome === "trigger_off" && d.stack_id && (
                   <>
@@ -208,10 +226,10 @@ export function GitEventsPage() {
 }
 
 function EventRow({ event: e, open, onToggle }: { event: GitEvent; open: boolean; onToggle: () => void }) {
-  const { tree } = useOrg();
+  const { tree, gitProvider } = useOrg();
   // Any stack of the repository gives the Git address of the commit.
-  const repo = tree?.stacks.find((s) => s.repository.toLowerCase().includes(e.repository.toLowerCase()))?.repository;
-  const url = repo ? commitURL(repo, e.after_sha) : null;
+  const st = tree?.stacks.find((s) => s.repository.toLowerCase().includes(e.repository.toLowerCase()));
+  const url = st ? commitURL(st.repository, e.after_sha, linkProvider(st, gitProvider)) : null;
   const sha = e.after_sha.slice(0, 7);
   return (
     <Fragment>
@@ -231,7 +249,7 @@ function EventRow({ event: e, open, onToggle }: { event: GitEvent; open: boolean
               <span className="mono">{sha}</span>
             )}{" "}
             · {plural(e.total_commits, "commit")}
-            {e.affects_all && <div>{affectsAll[e.affects_all] ?? e.affects_all}</div>}
+            {e.affects_all && <div>{affectsAllText(e.affects_all, gitProvider)}</div>}
             {e.status === "failed" && e.error && <div className="danger-text">Could not process it: {e.error}</div>}
           </div>
         </td>
@@ -254,7 +272,7 @@ function EventRow({ event: e, open, onToggle }: { event: GitEvent; open: boolean
  * push on the branch didn't start a run, or a trigger is on and nothing came.
  */
 export function GitLastDecision({ stack }: { stack: Stack }) {
-  const { api, link } = useOrg();
+  const { api, link, gitProvider } = useOrg();
   const events = useData(() => api.gitEvents(stack.id, 20), [api, stack.id], { poll: true, pollMs: 10000 });
   const settings = useData(() => api.getSettings(settingsPath({ kind: "stack", id: stack.id })), [api, stack.id]);
   if (!events.data) return null;
@@ -266,7 +284,7 @@ export function GitLastDecision({ stack }: { stack: Stack }) {
     if (!d || d.outcome === "other_branch") continue;
     if (d.outcome !== "not_affected" && d.outcome !== "trigger_off") return null;
     const sha = e.after_sha.slice(0, 7);
-    const url = commitURL(stack.repository, e.after_sha);
+    const url = commitURL(stack.repository, e.after_sha, linkProvider(stack, gitProvider));
     const commit = url ? (
       <a className="mono" href={url} target="_blank" rel="noreferrer">
         {sha} <ExternalIcon size={11} />
@@ -298,12 +316,12 @@ export function GitLastDecision({ stack }: { stack: Stack }) {
 }
 
 function GitNothingBanner() {
-  const { link } = useOrg();
+  const { link, gitProvider } = useOrg();
   return (
     <div className="git-last card">
       <span className="badge warn">Nothing received</span>
       <span className="grow">
-        On push is on, and this repository hasn’t sent First Lume anything yet. Check its webhook in Gitea.
+        On push is on, and this repository hasn’t sent First Lume anything yet. Check its webhook in {providerName(gitProvider)}.
       </span>
       <Link to={link("git-events")}>Git events</Link>
     </div>
@@ -312,12 +330,12 @@ function GitNothingBanner() {
 
 /** Under the setting: a trigger is on and no event ever came (canvas board 56). */
 export function GitNothingReceived({ stackID }: { stackID?: string }) {
-  const { api, link } = useOrg();
+  const { api, link, gitProvider } = useOrg();
   const events = useData(() => api.gitEvents(stackID ?? "", 1), [api, stackID]);
   if (!events.data || events.data.length > 0) return null;
   return (
     <p className="notice notice-attention">
-      <strong>Nothing received {stackID ? "from this repository" : "from any repository"} yet.</strong> Check the webhook in Gitea.{" "}
+      <strong>Nothing received {stackID ? "from this repository" : "from any repository"} yet.</strong> Check the webhook in {providerName(gitProvider)}.{" "}
       <Link to={link("git-events")}>Git events</Link>
     </p>
   );

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router";
-import { api as rootAPI, settingsPath, type Agent, type CreateAgentResponse, type GitConnection, type VaultConnection } from "../api";
+import { api as rootAPI, settingsPath, type Agent, type CreateAgentResponse, type GitConnection, type GitProvider, type VaultConnection, type WebhookSecret } from "../api";
 import { Logo } from "../icons";
 import { PageTitle, rememberOrg, useCrumbs, useOrg } from "../org";
 import { useSession } from "../session";
@@ -107,94 +107,310 @@ function General() {
   );
 }
 
+/** What changes by provider on the connection card (canvas board 71). */
+const providerWords = {
+  gitea: {
+    name: "Gitea",
+    placeholder: "https://git.example.com",
+    account: "Account",
+    accountHint: "organization or user",
+    accountPlaceholder: "infra",
+    tokenHint: "From a bot account with read access to the repositories.",
+    repos: "repositories",
+  },
+  gitlab: {
+    name: "GitLab",
+    placeholder: "https://gitlab.com",
+    account: "Group or user",
+    accountHint: "full path",
+    accountPlaceholder: "acme/platform",
+    tokenHint: "A bot’s personal access token, or a group or project access token, with read_api and read_repository, and the Reporter role.",
+    repos: "projects",
+  },
+} as const;
+
 function GitConnectionSection() {
-  const { api, link } = useOrg();
+  const { api, link, reloadGit } = useOrg();
   // undefined while loading, null when there is none.
   const [conn, setConn] = useState<GitConnection | null | undefined>(undefined);
-  const [form, setForm] = useState({ url: "", account: "", token: "" });
+  const [form, setForm] = useState<{ provider: GitProvider; url: string; account: string; token: string }>({
+    provider: "gitea",
+    url: "",
+    account: "",
+    token: "",
+  });
   const [repos, setRepos] = useState<number | null>(null);
   const save = useAction();
   const remove = useAction();
 
   useEffect(() => {
     api.gitConnection().then(
-      (c) => (setConn(c), setForm({ url: c.url, account: c.account, token: "" })),
+      (c) => (setConn(c), setForm({ provider: c.provider, url: c.url, account: c.account, token: "" })),
       () => setConn(null),
     );
   }, [api]);
-  const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const set = (k: "url" | "account" | "token") => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const words = providerWords[form.provider];
+  // A stored token only goes back to the same provider and address.
+  const tokenKept = !!conn && conn.provider === form.provider && conn.url === form.url.replace(/\/+$/, "");
+
+  function pickProvider(provider: GitProvider) {
+    setForm((f) => ({
+      ...f,
+      provider,
+      url: conn?.provider === provider ? conn.url : provider === "gitlab" && !f.url ? "https://gitlab.com" : f.url,
+    }));
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     await save.run(async () => {
-      const c = await api.putGitConnection({ provider: "gitea", ...form });
+      const c = await api.putGitConnection(form);
       setConn(c);
       setRepos(c.repositories ?? null);
-      setForm((f) => ({ ...f, token: "" }));
+      setForm((f) => ({ ...f, url: c.url, account: c.account, token: "" }));
+      await reloadGit();
     });
   }
 
   return (
-    <form id="git-connection" className="card form-card" onSubmit={submit}>
-      <div className="section-head">
-        <h2 className="section-title">Git connection</h2>
-        {conn && <span className="badge ok">Connected{repos !== null ? ` · ${repos} repositories` : ""}</span>}
-        <span className="grow" />
-        {conn && <Link to={link("git-events")} className="small-btn">Git events</Link>}
-      </div>
-      <p className="muted">
-        First Lume lists the account’s repositories, finds <span className="mono">.firstlume</span> folders and clones with a service token, not
-        anyone’s personal login, so scheduled runs keep working when people leave.
-      </p>
-      {conn !== undefined && (
-        <div className="grid-2">
-          <label className="field">
-            Provider
-            <select disabled value="gitea">
-              <option value="gitea">Gitea</option>
-            </select>
-          </label>
-          <label className="field">
-            Gitea URL
-            <input type="url" value={form.url} onChange={set("url")} placeholder="https://git.example.com" required />
-            {form.url.startsWith("http://") && <span className="hint warn-text">Over http the service token travels unencrypted: use https outside a local test.</span>}
-          </label>
-          <label className="field">
-            Account <span className="optional">organization or user</span>
-            <input value={form.account} onChange={set("account")} placeholder="infra" required />
-          </label>
-          <label className="field">
-            Service token
-            <input type="password" autoComplete="off" value={form.token} onChange={set("token")}
-              placeholder={conn ? "•••••••• (saved, never shown)" : "token of a bot account"} required={!conn} />
-            <span className="hint">From a bot account with read access to the repositories.</span>
-          </label>
+    <section id="git-connection" className="settings-group">
+      <form className="card form-card" onSubmit={submit}>
+        <div className="section-head">
+          <h2 className="section-title">Git connection</h2>
+          {conn && <span className="badge ok">Connected{repos !== null ? ` · ${repos} ${providerWords[conn.provider].repos}` : ""}</span>}
+          <span className="grow" />
+          {conn && <Link to={link("git-events")} className="small-btn">Git events</Link>}
         </div>
-      )}
-      {save.error && <div className="form-error">{save.error}</div>}
-      {remove.error && <div className="form-error">{remove.error}</div>}
-      <div className="form-actions">
-        {conn && (
-          <button
-            type="button"
-            disabled={remove.busy}
-            onClick={() => {
-              if (!confirm("Disconnect Gitea? Stacks created from it must be deleted first.")) return;
-              void remove.run(async () => {
-                await api.deleteGitConnection();
-                setConn(null);
-                setRepos(null);
-              });
-            }}
-          >
-            Disconnect
+        <p className="muted">
+          First Lume lists the account’s {words.repos}, finds <span className="mono">.firstlume</span> folders and clones with a service token, not
+          anyone’s personal login, so scheduled runs keep working when people leave.
+        </p>
+        {conn !== undefined && (
+          <div className="grid-2">
+            <label className="field">
+              Provider
+              <select value={form.provider} onChange={(e) => pickProvider(e.target.value as GitProvider)}>
+                <option value="gitea">Gitea</option>
+                <option value="gitlab">GitLab</option>
+              </select>
+            </label>
+            <label className="field">
+              {words.name} URL
+              <input type="url" value={form.url} onChange={set("url")} placeholder={words.placeholder} required />
+              {form.url.startsWith("http://") ? (
+                <span className="hint warn-text">Over http the service token travels unencrypted: use https outside a local test.</span>
+              ) : (
+                form.provider === "gitlab" && (
+                  <span className="hint">
+                    gitlab.com, or your own GitLab, also under a path like <span className="mono">https://git.example.com/gitlab</span>.
+                  </span>
+                )
+              )}
+            </label>
+            <label className="field">
+              {words.account} <span className="optional">{words.accountHint}</span>
+              <input className={form.provider === "gitlab" ? "mono" : undefined} value={form.account} onChange={set("account")} placeholder={words.accountPlaceholder} required />
+              {form.provider === "gitlab" && <span className="hint">Projects in its subgroups are included. Archived projects are left out.</span>}
+            </label>
+            <label className="field">
+              Service token
+              <input type="password" autoComplete="off" value={form.token} onChange={set("token")}
+                placeholder={tokenKept ? "•••••••• (saved, never shown)" : "token of a bot account"} required={!tokenKept} />
+              <span className="hint">{words.tokenHint}</span>
+            </label>
+          </div>
+        )}
+        {conn && conn.provider !== form.provider && (
+          <p className="notice notice-attention">
+            Stacks that clone from {providerWords[conn.provider].name} must be deleted before connecting {words.name}. The webhook secret is made again for{" "}
+            {words.name}.
+          </p>
+        )}
+        {save.error && <div className="form-error">{save.error}</div>}
+        {remove.error && <div className="form-error">{remove.error}</div>}
+        <div className="form-actions">
+          {conn && (
+            <button
+              type="button"
+              disabled={remove.busy}
+              onClick={() => {
+                if (!confirm(`Disconnect ${providerWords[conn.provider].name}? Stacks created from it must be deleted first.`)) return;
+                void remove.run(async () => {
+                  await api.deleteGitConnection();
+                  setConn(null);
+                  setRepos(null);
+                  await reloadGit();
+                });
+              }}
+            >
+              Disconnect
+            </button>
+          )}
+          <button className="primary" disabled={save.busy || !form.url || !form.account || (!tokenKept && !form.token)}>
+            {save.busy ? "Testing…" : conn ? "Test and save" : "Connect"}
+          </button>
+        </div>
+      </form>
+      {conn && <WebhookCard conn={conn} onChange={setConn} />}
+    </section>
+  );
+}
+
+/**
+ * The webhook, set up by hand in each repository: the secret is made here and
+ * shown once, with the provider's steps (spec 0010, R5.10, R5.11; canvas
+ * board 72). Installing it for you comes with commit status.
+ */
+function WebhookCard({ conn, onChange }: { conn: GitConnection; onChange: (c: GitConnection) => void }) {
+  const { api, link } = useOrg();
+  const [made, setMade] = useState<WebhookSecret | null>(null);
+  const [copied, setCopied] = useState("");
+  const action = useAction();
+  const last = useData(() => api.gitEvents("", 1), [api, conn.webhook_secret_at]);
+  const gitlab = conn.provider === "gitlab";
+  const host = (() => {
+    try {
+      return new URL(window.location.href).host;
+    } catch {
+      return "firstlume.example.com";
+    }
+  })();
+
+  async function makeSecret() {
+    if (conn.webhook_secret_set && !confirm("Replace the webhook secret? Webhooks with the old one stop being accepted until you paste the new one.")) return;
+    await action.run(async () => {
+      const s = await api.newWebhookSecret();
+      setMade(s);
+      onChange({ ...conn, webhook_secret_set: true, webhook_secret_at: new Date().toISOString() });
+    });
+  }
+  const copy = (what: string, text: string) =>
+    void navigator.clipboard?.writeText(text).then(() => (setCopied(what), setTimeout(() => setCopied(""), 1500)));
+  const event = last.data?.[0];
+
+  return (
+    <div className="card form-card" id="webhook">
+      <div className="section-head">
+        <h2 className="section-title">Webhook</h2>
+        {!conn.webhook_secret_set && <span className="badge idle">Not set up</span>}
+        <span className="grow" />
+        {conn.webhook_secret_set && !made && conn.webhook_secret_at && <span className="muted small">Secret set {timeAgo(conn.webhook_secret_at)}</span>}
+        {made && <span className="muted small">Secret created just now</span>}
+        {conn.webhook_secret_set && (
+          <button type="button" className="small-btn" disabled={action.busy} onClick={() => void makeSecret()}>
+            Replace secret…
           </button>
         )}
-        <button className="primary" disabled={save.busy || !form.url || !form.account || (!conn && !form.token)}>
-          {save.busy ? "Testing…" : conn ? "Test and save" : "Connect"}
-        </button>
       </div>
-    </form>
+      {!conn.webhook_secret_set && (
+        <>
+          <p className="muted">Runs start on a push only when a {gitlab ? "project" : "repository"}’s webhook points here and a stack has On push turned on.</p>
+          <div>
+            <button type="button" className="primary" disabled={action.busy} onClick={() => void makeSecret()}>
+              Create secret
+            </button>
+          </div>
+        </>
+      )}
+      {action.error && <div className="form-error">{action.error}</div>}
+      {made && (
+        <>
+          <p className="notice notice-attention">
+            <strong>Copy the secret now.</strong> It is shown only this once. Any {gitlab ? "project" : "repository"} you set up later uses the same one.
+          </p>
+          <div className="field">
+            URL
+            <div className="token-row">
+              <code className="mono">{made.url}</code>
+              <button type="button" onClick={() => copy("url", made.url)}>{copied === "url" ? "Copied" : "Copy"}</button>
+            </div>
+          </div>
+          <div className="field">
+            Secret
+            <div className="token-row">
+              <code className="mono">{made.secret}</code>
+              <button type="button" onClick={() => copy("secret", made.secret)}>{copied === "secret" ? "Copied" : "Copy"}</button>
+            </div>
+          </div>
+        </>
+      )}
+      {conn.webhook_secret_set && (
+        <>
+          {gitlab ? (
+            <div className="webhook-steps">
+              <strong>In each GitLab project with stacks</strong>
+              <ol>
+                <li>
+                  <strong>Settings › Webhooks › Add new webhook.</strong>
+                </li>
+                <li>
+                  Paste the <strong>URL</strong>, and the secret in <strong>Signing token</strong>. Leave Secret token empty.
+                </li>
+                <li>
+                  Under Trigger, tick only <strong>Push events</strong>. A branch filter is optional: First Lume already ignores branches no stack uses.
+                </li>
+                <li>
+                  Keep <strong>Enable SSL verification</strong> on.
+                </li>
+                <li>
+                  Save, then <strong>Test › Push events</strong>. It shows up in <Link to={link("git-events")}>Git events</Link>.
+                </li>
+              </ol>
+              <p className="hint">
+                No Signing token field? GitLab before 19 doesn’t have it: paste the secret in <strong>Secret token</strong>. It then travels as is in every
+                delivery, so use HTTPS.
+              </p>
+            </div>
+          ) : (
+            <div className="webhook-steps">
+              <strong>In each Gitea repository with stacks</strong>
+              <ol>
+                <li>
+                  <strong>Settings › Webhooks › Add webhook › Gitea.</strong>
+                </li>
+                <li>
+                  Paste the URL and the secret. Content type <span className="mono">application/json</span>.
+                </li>
+                <li>
+                  Trigger on <strong>Push events</strong>.
+                </li>
+                <li>
+                  Save, then <strong>Test delivery</strong>.
+                </li>
+              </ol>
+            </div>
+          )}
+          <details>
+            <summary>{gitlab ? "GitLab says “Invalid url given”, or nothing arrives?" : "Nothing arrives?"}</summary>
+            {gitlab ? (
+              <p className="muted">
+                A self-managed GitLab won’t call addresses on its own network by default, and refuses to save the webhook. A GitLab administrator adds First
+                Lume to the allowlist in <strong>Admin › Settings › Network › Outbound requests</strong>:
+              </p>
+            ) : (
+              <p className="muted">
+                By default Gitea refuses to call private addresses, with “webhook can only call allowed HTTP servers”. An administrator of Gitea allows First
+                Lume in <span className="mono">app.ini</span>, then restarts it:
+              </p>
+            )}
+            <pre className="mono code-block">{gitlab ? host : `[webhook]\nALLOWED_HOST_LIST = ${host}`}</pre>
+          </details>
+          <div className="section-head">
+            {event ? (
+              <span className="badge ok">Last push received {timeAgo(event.received_at)}</span>
+            ) : (
+              <span className="badge idle">Nothing received yet</span>
+            )}
+            {event && (
+              <span className="muted small">
+                from <span className="mono">{event.repository}</span>
+              </span>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

@@ -3,13 +3,12 @@ package server
 import (
 	"context"
 	"errors"
-	"net/url"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/bsteigleder/firstlume/internal/api"
-	"github.com/bsteigleder/firstlume/internal/gitea"
+	"github.com/bsteigleder/firstlume/internal/gitprovider"
 	"github.com/bsteigleder/firstlume/internal/stackconfig"
 	"github.com/bsteigleder/firstlume/internal/store"
 )
@@ -70,13 +69,15 @@ func (s *Server) processGitEvent(ctx context.Context, ev *store.ClaimedGitEvent)
 	if err != nil {
 		return err
 	}
-	owner, name, _ := strings.Cut(ev.Repository, "/")
-	client := gitea.New(ev.Connection.URL, ev.Connection.Token)
+	client, err := gitprovider.New(ev.Connection.Provider, ev.Connection.URL, ev.Connection.Token)
+	if err != nil {
+		return err
+	}
 
-	p := &pushProcessor{srv: s, ev: ev, client: client, owner: owner, name: name}
+	p := &pushProcessor{srv: s, ev: ev, client: client}
 	decisions := []api.GitEventStack{}
 	for _, st := range all {
-		if !strings.EqualFold(repositoryFullName(st.Repository), ev.Repository) {
+		if !strings.EqualFold(repoPathOf(ev.Connection.URL, st.Repository), ev.Repository) {
 			continue
 		}
 		d := api.GitEventStack{StackID: st.ID, StackName: st.Name}
@@ -91,22 +92,12 @@ func (s *Server) processGitEvent(ctx context.Context, ev *store.ClaimedGitEvent)
 	return s.store.FinishGitEvent(ctx, ev.ID, p.affectsAll, decisions)
 }
 
-// repositoryFullName reads owner/name out of a stack's clone URL.
-func repositoryFullName(repo string) string {
-	u, err := url.Parse(repo)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSuffix(strings.TrimPrefix(u.Path, "/"), ".git")
-}
-
-// pushProcessor holds what one push needs across its stacks: Gitea is asked
-// only when a stack has a trigger on, and only once.
+// pushProcessor holds what one push needs across its stacks: the provider is
+// asked only when a stack has a trigger on, and only once.
 type pushProcessor struct {
-	srv         *Server
-	ev          *store.ClaimedGitEvent
-	client      *gitea.Client
-	owner, name string
+	srv    *Server
+	ev     *store.ClaimedGitEvent
+	client gitprovider.Provider
 
 	changesRead bool
 	files       []string
@@ -131,6 +122,19 @@ func (p *pushProcessor) decide(ctx context.Context, st store.ConnectionStack, d 
 		return nil
 	}
 	p.readChanges(ctx)
+	// A delivery that repeats a push, like the provider's test button, ends
+	// on a commit the stack already had a decision for. A force push back to
+	// an old commit isn't a repeat (spec 0010, R5.9).
+	if p.affectsAll != api.AffectedForcePush {
+		handled, err := p.srv.store.AlreadyHandled(ctx, p.ev.ConnectionID, p.ev.Repository, st.ID, p.ev.BeforeSHA, p.ev.AfterSHA)
+		if err != nil {
+			return err
+		}
+		if handled {
+			d.Outcome = api.OutcomeAlreadyHandled
+			return nil
+		}
+	}
 
 	switch reason := p.affected(ctx, st); reason {
 	case "":
@@ -169,7 +173,7 @@ func (p *pushProcessor) affected(ctx context.Context, st store.ConnectionStack) 
 	// Read at the event's commit. A file that can't be read or understood
 	// counts as affected, so the run fails and shows why instead of nothing
 	// happening (R4.5).
-	data, err := p.client.File(ctx, p.owner, p.name, p.ev.AfterSHA, path.Join(st.Path, stackconfig.RelPath))
+	data, err := p.client.File(ctx, p.ev.Repository, p.ev.AfterSHA, path.Join(st.Path, stackconfig.RelPath))
 	if err != nil {
 		p.srv.log.Warn("reading a stack's config for a push", "stack", st.ID, "commit", p.ev.AfterSHA, "err", err)
 		return api.AffectedConfigUnreadable
@@ -198,39 +202,27 @@ func (p *pushProcessor) readChanges(ctx context.Context) {
 	}
 	// Commits only the old head has mean history was rewritten: comparing
 	// the two ways would only show the new ones.
-	back, err := p.client.Compare(ctx, p.owner, p.name, p.ev.AfterSHA, p.ev.BeforeSHA)
+	back, err := p.client.Compare(ctx, p.ev.Repository, p.ev.AfterSHA, p.ev.BeforeSHA)
 	if err != nil {
 		p.srv.log.Warn("comparing a push", "event", p.ev.ID, "err", err)
 		p.affectsAll = api.AffectedCompareFailed
 		return
 	}
-	if len(back.Commits) > 0 {
+	if back.Commits > 0 {
 		p.affectsAll = api.AffectedForcePush
 		return
 	}
-	cmp, err := p.client.Compare(ctx, p.owner, p.name, p.ev.BeforeSHA, p.ev.AfterSHA)
+	cmp, err := p.client.Compare(ctx, p.ev.Repository, p.ev.BeforeSHA, p.ev.AfterSHA)
 	if err != nil {
 		p.srv.log.Warn("comparing a push", "event", p.ev.ID, "err", err)
 		p.affectsAll = api.AffectedCompareFailed
 		return
 	}
-	if len(cmp.Commits) < max(cmp.TotalCommits, p.ev.TotalCommits) {
+	if cmp.Incomplete || cmp.Commits < p.ev.TotalCommits {
 		p.affectsAll = api.AffectedCompareIncomplete
 		return
 	}
-	seen := map[string]bool{}
-	for _, c := range cmp.Commits {
-		for _, f := range c.Files {
-			if !seen[f.Filename] {
-				seen[f.Filename] = true
-				p.files = append(p.files, f.Filename)
-			}
-		}
-	}
-	// A Gitea that doesn't list files per commit tells nothing about what changed.
-	if len(cmp.Commits) > 0 && len(p.files) == 0 {
-		p.affectsAll = api.AffectedCompareIncomplete
-	}
+	p.files = cmp.Files
 }
 
 // readPull finds the pull request the commit came from, when there is one. Not
@@ -240,7 +232,7 @@ func (p *pushProcessor) readPull(ctx context.Context) {
 		return
 	}
 	p.pullRead = true
-	number, u, err := p.client.CommitPull(ctx, p.owner, p.name, p.ev.AfterSHA)
+	number, u, err := p.client.CommitPull(ctx, p.ev.Repository, p.ev.AfterSHA)
 	if err != nil {
 		return
 	}

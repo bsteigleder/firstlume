@@ -278,14 +278,17 @@ type GitConnection struct {
 	Account     string `json:"account"`
 	AccountKind string `json:"account_kind"`
 	// WebhookSecretSet tells whether webhooks can be accepted (spec 0006, R1.1).
-	WebhookSecretSet bool      `json:"webhook_secret_set"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	WebhookSecretSet bool `json:"webhook_secret_set"`
+	// WebhookSecretAt is when the secret was made (spec 0010, R5.10).
+	WebhookSecretAt *time.Time `json:"webhook_secret_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
-// WebhookSecret is what a Gitea webhook needs. The secret is only shown here,
-// when it is generated.
+// WebhookSecret is what a webhook needs. The secret is only shown here, when
+// it is generated. In GitLab it goes in the Signing token field (spec 0010, R5.1).
 type WebhookSecret struct {
+	Provider    string   `json:"provider"`
 	URL         string   `json:"url"`
 	Secret      string   `json:"secret"`
 	ContentType string   `json:"content_type"`
@@ -323,7 +326,10 @@ const (
 	OutcomeTriggerOff  = "trigger_off"
 	OutcomeOtherBranch = "other_branch"
 	OutcomeDuplicate   = "duplicate"
-	OutcomeError       = "error"
+	// OutcomeAlreadyHandled: the push's last commit already had a decision for
+	// the stack, like a provider's test delivery (spec 0010, R5.9).
+	OutcomeAlreadyHandled = "already_handled"
+	OutcomeError          = "error"
 )
 
 // Why a stack counted as affected.

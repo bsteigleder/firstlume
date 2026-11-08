@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/bsteigleder/firstlume/internal/api"
-	"github.com/bsteigleder/firstlume/internal/gitea"
+	"github.com/bsteigleder/firstlume/internal/gitprovider"
 	"github.com/bsteigleder/firstlume/internal/stackconfig"
 	"github.com/bsteigleder/firstlume/internal/stateid"
 	"github.com/bsteigleder/firstlume/internal/store"
@@ -31,12 +31,11 @@ func (s *Server) identifyNewStackState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	owner, name, found := strings.Cut(form.gitRepository, "/")
-	if !found {
-		writeError(w, http.StatusUnprocessableEntity, "git_repository must be owner/name")
+	if !strings.Contains(form.gitRepository, "/") {
+		writeError(w, http.StatusUnprocessableEntity, "git_repository must be the repository's path, like owner/name")
 		return
 	}
-	units, note := s.readStackCode(r.Context(), orgID(r), owner, name, form.ref, form.path)
+	units, note := s.readStackCode(r.Context(), orgID(r), form.gitRepository, "", form.ref, form.path)
 	s.writeIdentified(w, r, form, units, note, "", form.path)
 }
 
@@ -55,37 +54,33 @@ func (s *Server) identifyStackState(w http.ResponseWriter, r *http.Request) {
 	var units []stateid.Unit
 	note := "this stack doesn’t use the Git connection, so only the paths in the files were compared"
 	if st.ConnectionID != "" {
-		if owner, name, ok := repoOfCloneURL(st.Repository); ok {
-			units, note = s.readStackCode(r.Context(), orgID(r), owner, name, st.Ref, st.Path)
-		}
+		units, note = s.readStackCode(r.Context(), orgID(r), "", st.Repository, st.Ref, st.Path)
 	}
 	s.writeIdentified(w, r, form, units, note, st.ID, st.Path)
 }
 
-func repoOfCloneURL(cloneURL string) (owner, name string, ok bool) {
-	parts := strings.Split(strings.TrimSuffix(strings.TrimRight(cloneURL, "/"), ".git"), "/")
-	if len(parts) < 2 {
-		return "", "", false
-	}
-	return parts[len(parts)-2], parts[len(parts)-1], true
-}
-
 // readStackCode reads a folder's units through the organization's Git
-// connection. Code that can't be read isn't an error: only the paths count
-// then (R9.12), and note says why.
-func (s *Server) readStackCode(ctx context.Context, orgID, owner, name, ref, stackPath string) (units []stateid.Unit, note string) {
+// connection, from a repository path or a stack's clone URL. Code that can't
+// be read isn't an error: only the paths count then (R9.12), and note says why.
+func (s *Server) readStackCode(ctx context.Context, orgID, fullName, cloneURL, ref, stackPath string) (units []stateid.Unit, note string) {
 	conn, err := s.store.GetGitConnection(ctx, orgID)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, "this organization has no Git connection, so only the paths in the files were compared"
 	}
+	if err == nil && cloneURL != "" {
+		fullName = repoPathOf(conn.URL, cloneURL)
+	}
 	// The connection's token never goes to a repository of another account.
-	if err != nil || !strings.EqualFold(owner, conn.Account) {
+	if err != nil || !gitprovider.InAccount(conn.Provider, conn.Account, fullName) {
 		return nil, "the code couldn’t be read, so only the paths in the files were compared"
 	}
-	units, err = readUnitsFromGit(ctx, gitea.New(conn.URL, conn.Token), owner, name, ref, stackPath)
+	client, err := gitprovider.New(conn.Provider, conn.URL, conn.Token)
+	if err == nil {
+		units, err = readUnitsFromGit(ctx, client, fullName, ref, stackPath)
+	}
 	if err != nil {
-		s.log.Warn("reading a stack's code to identify states", "repository", owner+"/"+name, "ref", ref, "err", err)
-		if errors.Is(err, stateid.ErrTooMuchCode) || errors.Is(err, gitea.ErrTreeTooLarge) {
+		s.log.Warn("reading a stack's code to identify states", "repository", fullName, "ref", ref, "err", err)
+		if errors.Is(err, stateid.ErrTooMuchCode) || errors.Is(err, gitprovider.ErrTreeTooLarge) {
 			return nil, "the repository is too large to compare, so only the paths in the files were compared"
 		}
 		return nil, "the code couldn’t be read, so only the paths in the files were compared"
@@ -93,22 +88,22 @@ func (s *Server) readStackCode(ctx context.Context, orgID, owner, name, ref, sta
 	return units, ""
 }
 
-func readUnitsFromGit(ctx context.Context, client *gitea.Client, owner, name, ref, stackPath string) ([]stateid.Unit, error) {
-	sha, err := client.ResolveBranch(ctx, owner, name, ref)
+func readUnitsFromGit(ctx context.Context, client gitprovider.Provider, fullName, ref, stackPath string) ([]stateid.Unit, error) {
+	sha, err := client.ResolveBranch(ctx, fullName, ref)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := client.Tree(ctx, owner, name, sha)
+	entries, err := client.Tree(ctx, fullName, sha)
 	if err != nil {
 		return nil, err
 	}
-	repo := stateid.Repo{Read: func(ctx context.Context, p string) ([]byte, error) { return client.File(ctx, owner, name, sha, p) }}
+	repo := stateid.Repo{Read: func(ctx context.Context, p string) ([]byte, error) { return client.File(ctx, fullName, sha, p) }}
 	for _, e := range entries {
 		if e.Type == "blob" {
 			repo.Files = append(repo.Files, e.Path)
 		}
 	}
-	data, err := client.File(ctx, owner, name, sha, path.Join(stackPath, stackconfig.Dir, stackconfig.File))
+	data, err := client.File(ctx, fullName, sha, path.Join(stackPath, stackconfig.Dir, stackconfig.File))
 	if err != nil {
 		return nil, err
 	}

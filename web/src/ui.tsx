@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { Drift, Level, PlanSummary, Run, RunStatus } from "./api";
+import type { Drift, GitProvider, Level, PlanSummary, Run, RunStatus } from "./api";
 import { CloseIcon, ExternalIcon } from "./icons";
 
 const statusLabels: Record<RunStatus, string> = {
@@ -178,18 +178,42 @@ export function repoWebURL(repo: string): string | null {
   return null;
 }
 
-export function commitURL(repo: string, sha?: string): string | null {
+/**
+ * Which provider's pages a stack's links go to: the organization's
+ * connection, for a stack that clones through it (spec 0010, R7.2), else a
+ * guess from the address.
+ */
+export function linkProvider(stack: { repository: string; connection_id?: string } | null | undefined, orgProvider: GitProvider | null): string {
+  if (stack?.connection_id && orgProvider) return orgProvider;
+  const web = stack ? repoWebURL(stack.repository) ?? "" : "";
+  if (web.includes("github.com/")) return "github";
+  if (web.includes("gitlab")) return "gitlab";
+  return "gitea";
+}
+
+export function commitURL(repo: string, sha: string | undefined, provider: string): string | null {
   const web = repoWebURL(repo);
-  return web && sha ? `${web}/commit/${sha}` : null;
+  if (!web || !sha) return null;
+  return provider === "gitlab" ? `${web}/-/commit/${sha}` : `${web}/commit/${sha}`;
 }
 
 /** Link to a file at a commit: GitHub and GitLab use blob paths, Gitea src/commit. */
-export function fileURL(repo: string, sha: string | undefined, path: string): string | null {
+export function fileURL(repo: string, sha: string | undefined, path: string, provider: string): string | null {
   const web = repoWebURL(repo);
   if (!web || !sha) return null;
-  if (web.includes("github.com/")) return `${web}/blob/${sha}/${path}`;
-  if (web.includes("gitlab")) return `${web}/-/blob/${sha}/${path}`;
+  if (provider === "github") return `${web}/blob/${sha}/${path}`;
+  if (provider === "gitlab") return `${web}/-/blob/${sha}/${path}`;
   return `${web}/src/commit/${sha}/${path}`;
+}
+
+/** "pull request" in Gitea, "merge request" in GitLab. */
+export function changeRequestName(t: { pull_request_url?: string }): string {
+  return t.pull_request_url?.includes("/-/merge_requests/") ? "merge request" : "pull request";
+}
+
+/** "#12" for a Gitea pull request, "!12" for a GitLab merge request. */
+export function changeRequestRef(t: { pull_request?: number; pull_request_url?: string }): string {
+  return `${t.pull_request_url?.includes("/-/merge_requests/") ? "!" : "#"}${t.pull_request}`;
 }
 
 const typeNames: Record<string, string> = {
@@ -245,7 +269,7 @@ export function supersededBy(r: Run): string | undefined {
 export function runOriginText(r: Run): string {
   if (r.trigger?.kind === "push") {
     const who = r.trigger.actor ?? r.created_by;
-    return r.trigger.pull_request ? `merge of #${r.trigger.pull_request} by ${who}` : `push by ${who}`;
+    return r.trigger.pull_request ? `merge of ${changeRequestRef(r.trigger)} by ${who}` : `push by ${who}`;
   }
   return r.trigger?.kind === "drift" || r.created_by === "drift-detection" ? "schedule" : r.created_by;
 }
@@ -266,10 +290,10 @@ export function RunOrigin({ run }: { run: Run }) {
       <strong>Merge</strong> of{" "}
       {t.pull_request_url ? (
         <a href={t.pull_request_url} target="_blank" rel="noreferrer">
-          #{t.pull_request} <ExternalIcon size={11} />
+          {changeRequestRef(t)} <ExternalIcon size={11} />
         </a>
       ) : (
-        `#${t.pull_request}`
+        changeRequestRef(t)
       )}{" "}
       by {who}
     </>

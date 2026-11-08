@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 
@@ -19,9 +20,9 @@ func (s *Store) GetGitConnection(ctx context.Context, orgID string) (*GitConnect
 	var c GitConnection
 	var enc []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, provider, url, account, account_kind, token_enc, webhook_secret_enc IS NOT NULL, created_at, updated_at
+		SELECT id, provider, url, account, account_kind, token_enc, webhook_secret_enc IS NOT NULL, webhook_secret_at, created_at, updated_at
 		FROM git_connections WHERE organization_id = $1`, orgID).Scan(
-		&c.ID, &c.Provider, &c.URL, &c.Account, &c.AccountKind, &enc, &c.WebhookSecretSet, &c.CreatedAt, &c.UpdatedAt)
+		&c.ID, &c.Provider, &c.URL, &c.Account, &c.AccountKind, &enc, &c.WebhookSecretSet, &c.WebhookSecretAt, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, notFound(err)
 	}
@@ -33,22 +34,45 @@ func (s *Store) GetGitConnection(ctx context.Context, orgID string) (*GitConnect
 	return &c, nil
 }
 
-// PutGitConnection creates or replaces the organization's connection.
+// PutGitConnection creates or replaces the organization's connection. It
+// refuses to change the provider while stacks clone through the connection,
+// with ErrConflict, and a new provider drops the webhook secret, whose format
+// is the provider's (spec 0010, R2.6, R5.1).
 func (s *Store) PutGitConnection(ctx context.Context, orgID string, c api.GitConnection, token string) (*api.GitConnection, error) {
 	enc, err := s.keys.Encrypt([]byte(token))
 	if err != nil {
 		return nil, err
 	}
 	var out api.GitConnection
-	err = s.pool.QueryRow(ctx, `
-		INSERT INTO git_connections (organization_id, provider, url, account, account_kind, token_enc)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (organization_id) DO UPDATE SET provider = EXCLUDED.provider, url = EXCLUDED.url,
-		       account = EXCLUDED.account, account_kind = EXCLUDED.account_kind, token_enc = EXCLUDED.token_enc, updated_at = now()
-		RETURNING provider, url, account, account_kind, webhook_secret_enc IS NOT NULL, created_at, updated_at`,
-		orgID, c.Provider, c.URL, c.Account, c.AccountKind, enc).Scan(
-		&out.Provider, &out.URL, &out.Account, &out.AccountKind, &out.WebhookSecretSet, &out.CreatedAt, &out.UpdatedAt)
-	return &out, err
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var provider string
+		var inUse bool
+		err := tx.QueryRow(ctx, `
+			SELECT c.provider, EXISTS (SELECT 1 FROM stacks WHERE connection_id = c.id)
+			FROM git_connections c WHERE c.organization_id = $1 FOR UPDATE`, orgID).Scan(&provider, &inUse)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			return err
+		case provider != c.Provider && inUse:
+			return ErrConflict
+		}
+		return tx.QueryRow(ctx, `
+			INSERT INTO git_connections (organization_id, provider, url, account, account_kind, token_enc)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (organization_id) DO UPDATE SET provider = EXCLUDED.provider, url = EXCLUDED.url,
+			       account = EXCLUDED.account, account_kind = EXCLUDED.account_kind, token_enc = EXCLUDED.token_enc,
+			       webhook_secret_enc = CASE WHEN git_connections.provider = EXCLUDED.provider THEN git_connections.webhook_secret_enc END,
+			       webhook_secret_at = CASE WHEN git_connections.provider = EXCLUDED.provider THEN git_connections.webhook_secret_at END,
+			       updated_at = now()
+			RETURNING provider, url, account, account_kind, webhook_secret_enc IS NOT NULL, webhook_secret_at, created_at, updated_at`,
+			orgID, c.Provider, c.URL, c.Account, c.AccountKind, enc).Scan(
+			&out.Provider, &out.URL, &out.Account, &out.AccountKind, &out.WebhookSecretSet, &out.WebhookSecretAt, &out.CreatedAt, &out.UpdatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // DeleteGitConnection refuses while stacks clone through the connection.

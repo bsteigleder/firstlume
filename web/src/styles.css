@@ -4131,3 +4131,32 @@ button.danger-outline:hover:not(:disabled) {
 .change-card.apply-cut {
   border-color: var(--attention-edge);
 }
+
+/* ---------- Git webhook card (spec 0010, canvas board 72) ---------- */
+
+.webhook-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.webhook-steps ol {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  line-height: 1.45;
+}
+
+.token-row code {
+  white-space: nowrap;
+}
+
+.pick-group {
+  padding: 8px 4px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}

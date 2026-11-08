@@ -18,10 +18,13 @@ import {
   type UnitBackend,
 } from "../api";
 import { CheckIcon, ChevronRightIcon, CloseIcon, ExternalIcon } from "../icons";
-import { useCrumbs, useOrg } from "../org";
+import { useCrumbs, useLinkProvider, useOrg } from "../org";
 import {
   AccessTag,
+  changeRequestName,
+  changeRequestRef,
   commitURL,
+  linkProvider,
   duration,
   ErrorBanner,
   fileURL,
@@ -45,7 +48,7 @@ import { RunDialog } from "./RunDialog";
 
 export function RunPage() {
   const { runId = "" } = useParams();
-  const { api, org, link, folderChain, reloadActive } = useOrg();
+  const { api, org, link, folderChain, reloadActive, gitProvider } = useOrg();
   const run = useData(() => api.getRun(runId), [api, runId]);
   const status = run.data?.status;
   const active = !!status && !isTerminal(status);
@@ -128,7 +131,7 @@ export function RunPage() {
         fileLink: (c, e) => {
           if (!s || !r.commit_sha || !e.file || e.file.startsWith("/") || e.file.split("/").includes("..") || e.file.includes(".terragrunt-cache")) return null;
           const path = [s.path, c.unit, e.file].filter((p) => p && p !== ".").join("/");
-          const url = fileURL(s.repository, r.commit_sha, path);
+          const url = fileURL(s.repository, r.commit_sha, path, linkProvider(s, gitProvider));
           return url && e.line ? `${url}#L${e.line}` : url;
         },
       }
@@ -1002,10 +1005,10 @@ function TriggerLine({ run }: { run: Run }) {
           <strong>Started by the merge</strong> of{" "}
           {t.pull_request_url ? (
             <a href={t.pull_request_url} target="_blank" rel="noreferrer">
-              pull request #{t.pull_request} <ExternalIcon size={11} />
+              {changeRequestName(t)} {changeRequestRef(t)} <ExternalIcon size={11} />
             </a>
           ) : (
-            `pull request #${t.pull_request}`
+            `${changeRequestName(t)} ${changeRequestRef(t)}`
           )}
           , by {who}.
         </>
@@ -1166,7 +1169,8 @@ function ResourceErrors({ errors, link, onShowInLog }: { errors: ApplyError[]; l
 // --- side cards ---
 
 function CommitLine({ run, stack }: { run: Run; stack: Stack | null }) {
-  const url = stack ? commitURL(stack.repository, run.commit_sha) : null;
+  const provider = useLinkProvider(stack);
+  const url = stack ? commitURL(stack.repository, run.commit_sha, provider) : null;
   return (
     <span className="muted small">
       {run.commit_author_name && `${run.commit_author_name} · `}
@@ -1187,7 +1191,8 @@ function CommitLine({ run, stack }: { run: Run; stack: Stack | null }) {
 }
 
 function CommitCard({ run, stack }: { run: Run; stack: Stack | null }) {
-  const url = stack ? commitURL(stack.repository, run.commit_sha) : null;
+  const provider = useLinkProvider(stack);
+  const url = stack ? commitURL(stack.repository, run.commit_sha, provider) : null;
   return (
     <section className="card side-card">
       <h2 className="card-label">Commit</h2>
@@ -1322,9 +1327,10 @@ function backendNote(backend: string, single: boolean): string {
 
 function ConfigCard({ run, stack }: { run: Run; stack: Stack }) {
   const { link } = useOrg();
+  const provider = useLinkProvider(stack);
   const used = run.settings_used;
   const cfgPath = `${stack.path === "." ? "" : stack.path + "/"}.firstlume/config.yaml`;
-  const gitLink = fileURL(stack.repository, run.commit_sha, cfgPath);
+  const gitLink = fileURL(stack.repository, run.commit_sha, cfgPath, provider);
   const editLink = (o: Level) =>
     o.kind === "folder" ? link(`f/${o.id}/settings`) : o.kind === "stack" ? link(`s/${o.id}/settings`) : link("settings");
   const editLabel = (o: Level) => (o.kind === "default" ? "Set in organization" : `Edit in ${levelName(o)}`);

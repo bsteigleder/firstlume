@@ -68,7 +68,8 @@ controlPlane:
     adminTokenLogin: true
     oidc:
       enabled: false
-      # Labels the button: "Sign in with <providerName>".
+      # Labels the button ("Continue with <providerName>") and every screen
+      # that names the provider: Gitea, GitLab.
       providerName: Gitea
       # The "issuer" in <issuer>/.well-known/openid-configuration, e.g.
       # https://gitea.example.com (Gitea has no trailing slash).
@@ -77,9 +78,11 @@ controlPlane:
       # Secret holding the OAuth client secret (never put it in values).
       existingSecret: ""
       clientSecretKey: client-secret
+      # GitLab doesn't know the groups scope: use [openid, profile, email].
       scopes: [openid, profile, email, groups]
       # Claim with the user's groups. Gitea sends orgs ("acme") and teams
-      # ("acme:infra") with the groups scope.
+      # ("acme:infra") with the groups scope; GitLab sends group full paths
+      # ("acme/devops"), subgroups included.
       groupsClaim: groups
       # When not empty, only members of one of these groups (or of an admin
       # group) can sign in. Signing in gives access to no organization: that
