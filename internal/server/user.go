@@ -48,6 +48,7 @@ func (s *Server) userRoutes(r chi.Router) {
 		r.With(s.requireID).Put("/stacks/{id}/settings", s.putSettings(api.LevelStack))
 		r.With(s.requireID).Get("/stacks/{id}/runs", s.listRuns)
 		r.With(s.requireID).Post("/stacks/{id}/runs", s.createRun)
+		r.With(s.requireID).Post("/stacks/{id}/commands/check", s.checkCommand)
 		r.With(s.requireID).Get("/stacks/{id}/state", s.listStateUnits)
 		r.With(s.requireID).Get("/stacks/{id}/resources", s.stackResources)
 		r.With(s.requireID).Delete("/stacks/{id}/state", s.deleteState)
@@ -543,7 +544,7 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !req.Type.Valid() {
-		writeError(w, http.StatusUnprocessableEntity, "type must be plan, apply, destroy or drift")
+		writeError(w, http.StatusUnprocessableEntity, "type must be plan, apply, destroy, drift or command")
 		return
 	}
 	if req.Ref != "" {
@@ -551,6 +552,14 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnprocessableEntity, err.Error())
 			return
 		}
+	}
+	if req.Type == api.RunCommand {
+		s.createCommandRun(w, r, req)
+		return
+	}
+	if req.Command != "" || req.StateAccess != "" {
+		writeError(w, http.StatusUnprocessableEntity, "command and state_access are only for command runs")
+		return
 	}
 	run, err := s.store.CreateRun(r.Context(), orgID(r), id(r), req.Type, req.Ref, actorName(r))
 	if err != nil {
@@ -596,6 +605,12 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 	if run.ApplyTotals, err = s.store.ApplyTotals(r.Context(), orgID(r), run.ID); err != nil {
 		s.storeError(w, r, err, "run")
 		return
+	}
+	if run.Type == api.RunCommand && run.StateAccess == "write" && run.Status.IsTerminal() {
+		if run.StateWrites, err = s.store.RunStateWrites(r.Context(), orgID(r), run.ID); err != nil {
+			s.storeError(w, r, err, "run")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, run)
 }

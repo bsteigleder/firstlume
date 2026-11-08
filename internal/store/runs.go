@@ -22,7 +22,7 @@ func runColumnsAs(alias string) string {
 		"commit_message", "has_changes", "plan_summary", "error", "agent_id", "created_by", "approved_by", "approved_at",
 		"started_at", "finished_at", "created_at", "updated_at", "acknowledged", "config", "settings_used", "unit_backends", "placement", "placement_used",
 		"trigger_kind", "trigger_actor", "trigger_event_id", "trigger_before_sha", "trigger_pull_request", "trigger_pull_request_url",
-		"stop_requested_at", "stop_requested_by"}
+		"stop_requested_at", "stop_requested_by", "command", "state_access", "exit_code", "failed_line"}
 	for i, c := range cols {
 		cols[i] = alias + "." + c
 	}
@@ -43,6 +43,8 @@ type runScan struct {
 	triggerPR                                                                  *int
 	stopAt                                                                     *time.Time
 	stopBy                                                                     *string
+	command, stateAccess                                                       *string
+	exitCode, failedLine                                                       *int
 }
 
 func newRunScan() *runScan { return &runScan{} }
@@ -52,7 +54,7 @@ func (s *runScan) dest() []any {
 		&s.hasChanges, &s.summary, &s.errMsg, &s.agentID, &s.createdBy, &s.approvedBy, &s.approvedAt,
 		&s.startedAt, &s.finishedAt, &s.createdAt, &s.updatedAt, &s.acknowledged, &s.config, &s.settingsUsed, &s.unitBackends, &s.placement, &s.placementUsed,
 		&s.triggerKind, &s.triggerActor, &s.triggerEvent, &s.triggerBefore, &s.triggerPR, &s.triggerPRURL,
-		&s.stopAt, &s.stopBy}
+		&s.stopAt, &s.stopBy, &s.command, &s.stateAccess, &s.exitCode, &s.failedLine}
 }
 
 func (s *runScan) result() (*api.Run, error) {
@@ -63,6 +65,7 @@ func (s *runScan) result() (*api.Run, error) {
 		Error: deref(s.errMsg), AgentID: deref(s.agentID), CreatedBy: deref(s.createdBy), ApprovedBy: deref(s.approvedBy),
 		ApprovedAt: s.approvedAt, StartedAt: s.startedAt, FinishedAt: s.finishedAt,
 		StopRequestedAt: s.stopAt, StopRequestedBy: deref(s.stopBy),
+		Command: deref(s.command), StateAccess: deref(s.stateAccess), ExitCode: s.exitCode, FailedLine: s.failedLine,
 	}
 	if s.createdAt != nil {
 		r.CreatedAt = *s.createdAt
@@ -155,6 +158,73 @@ func (s *Store) CreateRun(ctx context.Context, orgID, stackID string, typ api.Ru
 		)
 		SELECT `+runColumns+` FROM inserted r`,
 		orgID, stackID, typ, ref, createdBy, placement))
+}
+
+// CreateCommandRun queues a command run (spec 0009). The command was checked
+// by the caller. commit, when the caller could resolve the ref, fixes what
+// runs, so what is approved is what runs even if the branch moves.
+func (s *Store) CreateCommandRun(ctx context.Context, orgID, stackID, ref, commit, command, access, createdBy string) (*api.Run, error) {
+	placement, err := runPlacement(ctx, s.pool, orgID, stackID)
+	if err != nil {
+		return nil, err
+	}
+	var run *api.Run
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		// The stack's row serializes this with claims (ClaimRun locks it too).
+		var busy bool
+		err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM runs r WHERE r.stack_id = st.id AND r.status IN `+activeStatuses+`)
+			FROM stacks st WHERE st.organization_id = $1 AND st.id = $2 FOR UPDATE`, orgID, stackID).Scan(&busy)
+		if err != nil {
+			return notFound(err)
+		}
+		// A write that needs approval and has its turn already waits for it,
+		// so the approver sees it at once; otherwise ClaimRun does it when its
+		// turn comes (R9).
+		status := api.StatusQueued
+		if access == "write" && !busy {
+			eff, _, err := s.effective(ctx, tx, orgID, api.Level{Kind: api.LevelStack, ID: stackID})
+			if err != nil {
+				return err
+			}
+			if eff.RequireApproval.Value {
+				status = api.StatusAwaitingApproval
+			}
+		}
+		run, err = scanRun(tx.QueryRow(ctx, `
+			WITH inserted AS (
+				INSERT INTO runs (organization_id, stack_id, type, status, ref, commit_sha, created_by, placement, command, state_access)
+				SELECT st.organization_id, st.id, 'command', $9, coalesce(nullif($3, ''), st.ref), nullif($4, ''), $5, $6::jsonb, $7, $8
+				FROM stacks st WHERE st.organization_id = $1 AND st.id = $2
+				RETURNING *
+			)
+			SELECT `+runColumns+` FROM inserted r`,
+			orgID, stackID, ref, commit, createdBy, placement, command, access, status))
+		return err
+	})
+	return run, err
+}
+
+// RunStateWrites lists the state versions a run wrote, unit by unit.
+func (s *Store) RunStateWrites(ctx context.Context, orgID, runID string) ([]api.StateWrite, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT u.key, max(v.number) FROM state_versions v
+		JOIN state_units u ON u.id = v.unit_id
+		WHERE u.organization_id = $1 AND v.run_id = $2
+		GROUP BY u.key ORDER BY u.key`, orgID, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []api.StateWrite
+	for rows.Next() {
+		var w api.StateWrite
+		if err := rows.Scan(&w.Key, &w.Version); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
 }
 
 // ScheduleDriftRuns queues a drift run for every stack whose drift check is
@@ -510,13 +580,18 @@ func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity, req api.Clai
 	var run *api.Run
 	var phase api.Phase
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		var id string
+		var id, stackID string
 		var status api.RunStatus
+		var typ api.RunType
+		var access *string
+		promoted := false
+	pick:
 		err := tx.QueryRow(ctx, `
-			SELECT r.id, r.status FROM runs r
+			SELECT r.id, r.status, r.stack_id, r.type, r.state_access FROM runs r
 			JOIN stacks st ON st.id = r.stack_id
 			WHERE r.organization_id = $1
 			  AND ($2 OR r.placement = '{}')
+			  AND ($3 OR r.type <> 'command')
 			  AND (r.status = 'apply_queued' OR (
 			        r.status = 'queued'
 			        AND NOT EXISTS (
@@ -525,13 +600,33 @@ func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity, req api.Clai
 			                   OR (o.status = 'queued' AND o.created_at < r.created_at)))))
 			ORDER BY r.created_at
 			LIMIT 1
-			FOR UPDATE OF r, st SKIP LOCKED`, agent.OrganizationID, req.AcceptsPlacement).Scan(&id, &status)
+			FOR UPDATE OF r, st SKIP LOCKED`, agent.OrganizationID, req.AcceptsPlacement, req.AcceptsCommands).Scan(&id, &status, &stackID, &typ, &access)
+		if errors.Is(err, pgx.ErrNoRows) && promoted {
+			return nil // keep the runs now awaiting approval
+		}
 		if err != nil {
 			return err
 		}
 		next := api.StatusPlanning
 		phase = api.PhasePlan
 		if status == api.StatusApplyQueued {
+			next, phase = api.StatusApplying, api.PhaseApply
+		}
+		// A command that may write the state runs in the apply phase. When the
+		// stack requires approval, it waits for it now that its turn came:
+		// nothing runs before (spec 0009, R9).
+		if typ == api.RunCommand && deref(access) == "write" && status == api.StatusQueued {
+			eff, _, err := s.effective(ctx, tx, agent.OrganizationID, api.Level{Kind: api.LevelStack, ID: stackID})
+			if err != nil {
+				return err
+			}
+			if eff.RequireApproval.Value {
+				if _, err := tx.Exec(ctx, `UPDATE runs SET status = 'awaiting_approval', updated_at = now() WHERE id = $1`, id); err != nil {
+					return err
+				}
+				promoted = true
+				goto pick
+			}
 			next, phase = api.StatusApplying, api.PhaseApply
 		}
 		run, err = scanRun(tx.QueryRow(ctx, `
@@ -553,7 +648,7 @@ func (s *Store) ClaimRun(ctx context.Context, agent *AgentIdentity, req api.Clai
 		_, err = tx.Exec(ctx, `UPDATE runs SET placement_used = $2 WHERE id = $1`, id, used)
 		return err
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && run == nil) {
 		return nil, "", ErrNotFound
 	}
 	if err != nil {
@@ -606,11 +701,12 @@ func (s *Store) ExecSpec(ctx context.Context, runID string, phase api.Phase) (*a
 	var tokenEnc []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT r.id, r.organization_id, r.stack_id, r.type, r.ref, r.commit_sha, st.repository, st.path,
-		       coalesce(gc.token_enc, st.git_token_enc)
+		       coalesce(gc.token_enc, st.git_token_enc), coalesce(r.command, ''), coalesce(r.state_access, '')
 		FROM runs r JOIN stacks st ON st.id = r.stack_id
 		LEFT JOIN git_connections gc ON gc.id = st.connection_id
 		WHERE r.id = $1 AND r.status = $2`, runID, statusForPhase(phase)).Scan(
-		&spec.RunID, &orgID, &spec.StackID, &spec.Type, &spec.Ref, &commit, &spec.Repository, &spec.Path, &tokenEnc)
+		&spec.RunID, &orgID, &spec.StackID, &spec.Type, &spec.Ref, &commit, &spec.Repository, &spec.Path, &tokenEnc,
+		&spec.Command, &spec.StateAccess)
 	if err != nil {
 		return nil, notFound(err)
 	}
@@ -624,7 +720,9 @@ func (s *Store) ExecSpec(ctx context.Context, runID string, phase api.Phase) (*a
 		spec.GitToken = string(tok)
 	}
 
-	if phase == api.PhaseApply {
+	// A command that writes the state has no plan before it: its apply phase
+	// reads the settings as a plan would.
+	if phase == api.PhaseApply && spec.Type != api.RunCommand {
 		data, err := s.LoadArtifact(ctx, runID, phase, variablesArtifact)
 		if err != nil {
 			return nil, fmt.Errorf("loading the plan's variables: %w", err)
@@ -705,7 +803,7 @@ func (s *Store) SetCommit(ctx context.Context, runID string, req api.CommitReque
 		WITH r AS (
 			UPDATE runs SET commit_sha = $2, commit_author_name = $3, commit_author_email = $4, commit_message = $5,
 			       config = $6, heartbeat_at = now(), updated_at = now()
-			WHERE id = $1 AND status = 'planning'
+			WHERE id = $1 AND (status = 'planning' OR (status = 'applying' AND type = 'command'))
 			RETURNING stack_id
 		)
 		UPDATE stacks st SET config = coalesce($6, st.config) FROM r WHERE st.id = r.stack_id`,
@@ -767,6 +865,13 @@ func (s *Store) CompletePhase(ctx context.Context, runID string, phase api.Phase
 
 		next := api.StatusFailed
 		switch {
+		// A command that ran every line before the stop reached it succeeded,
+		// as an apply that finished is applied: what it did is done.
+		case typ == api.RunCommand && res.Success:
+			next = api.StatusSucceeded
+		case typ == api.RunCommand && stopAt != nil:
+			next = api.StatusCanceled
+		case typ == api.RunCommand:
 		// Someone asked to stop it. A plan that still finished goes no further;
 		// an apply that finished every change before stopping is applied.
 		case stopAt != nil && (phase == api.PhasePlan || !res.Success):
@@ -795,12 +900,13 @@ func (s *Store) CompletePhase(ctx context.Context, runID string, phase api.Phase
 				       has_changes = coalesce($4, has_changes),
 				       plan_summary = coalesce($5, plan_summary),
 				       finished_at = CASE WHEN $6 THEN now() ELSE finished_at END,
+				       exit_code = $7, failed_line = $8,
 				       updated_at = now()
 				WHERE id = $1
 				RETURNING *
 			)
 			SELECT `+runColumns+` FROM updated r`,
-			runID, next, nullable(res.Error), hasChanges, summary, next.IsTerminal()))
+			runID, next, nullable(res.Error), hasChanges, summary, next.IsTerminal(), res.ExitCode, res.FailedLine))
 		return err
 	})
 	return run, err

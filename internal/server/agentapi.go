@@ -41,6 +41,7 @@ func (s *Server) claimRun(w http.ResponseWriter, r *http.Request) {
 	asg := api.Assignment{
 		RunID:     run.ID,
 		StackID:   run.StackID,
+		Type:      run.Type,
 		Phase:     phase,
 		Token:     token,
 		Placement: agent.Placement,

@@ -15,6 +15,7 @@ const statusLabels: Record<RunStatus, string> = {
   failed: "Failed",
   discarded: "Discarded",
   canceled: "Canceled",
+  succeeded: "Succeeded",
 };
 
 const statusTone: Record<RunStatus, string> = {
@@ -30,6 +31,7 @@ const statusTone: Record<RunStatus, string> = {
   failed: "bad",
   discarded: "idle",
   canceled: "idle",
+  succeeded: "ok",
 };
 
 export function statusLabel(s: RunStatus) {
@@ -41,7 +43,57 @@ export function isStopping(r: Pick<Run, "status" | "stop_requested_at">) {
   return !!r.stop_requested_at && (r.status === "planning" || r.status === "applying");
 }
 
-export function StatusBadge({ status, title, run }: { status: RunStatus; title?: string; run?: Pick<Run, "status" | "stop_requested_at" | "stop_requested_by"> }) {
+/** A command run's status in its own words: it runs rather than plans or applies. */
+function commandStatusLabel(r: Pick<Run, "status" | "exit_code">): string {
+  switch (r.status) {
+    case "planning":
+    case "applying":
+      return "Running";
+    case "apply_queued":
+      return "Queued";
+    case "failed":
+      return r.exit_code !== undefined ? `Failed · exit ${r.exit_code}` : "Failed";
+  }
+  return statusLabels[r.status];
+}
+
+/** The first line of a command, without line continuations. */
+export function commandFirstLine(command = ""): string {
+  const lines = command.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#"));
+  let out = "";
+  for (const l of lines) {
+    out += l.replace(/\\\s*$/, "").trim() + " ";
+    if (!/\\\s*$/.test(l)) break;
+  }
+  return out.trim();
+}
+
+/** What a run does, in a few words: the commit, or the command (spec 0009). */
+export function runWhat(r: Pick<Run, "type" | "command" | "commit_message" | "ref">): string {
+  if (r.type === "command") return commandFirstLine(r.command);
+  return r.commit_message || `${r.type} on ${r.ref}`;
+}
+
+/** The kind of run, as shown under its status. */
+export function runKind(r: Pick<Run, "type">): string {
+  return r.type === "drift" ? "drift check" : r.type;
+}
+
+/** Whether a command run may change the state, as a small tag. */
+export function AccessTag({ run }: { run: Pick<Run, "type" | "state_access"> }) {
+  if (run.type !== "command") return null;
+  return run.state_access === "write" ? <span className="access-tag write">Changes state</span> : <span className="access-tag">Read only</span>;
+}
+
+export function StatusBadge({
+  status,
+  title,
+  run,
+}: {
+  status: RunStatus;
+  title?: string;
+  run?: Pick<Run, "status" | "stop_requested_at" | "stop_requested_by"> & Partial<Pick<Run, "type" | "exit_code">>;
+}) {
   if (run && isStopping(run)) {
     return (
       <span className="badge warn" title={title ?? `Stop requested by ${run.stop_requested_by}`}>
@@ -54,7 +106,7 @@ export function StatusBadge({ status, title, run }: { status: RunStatus; title?:
   return (
     <span className={`badge ${tone}`} title={title ?? (status === "canceled" && run?.stop_requested_by ? `By ${run.stop_requested_by}` : undefined)}>
       {tone === "run" && <span className="dot pulse" aria-hidden />}
-      {statusLabels[status]}
+      {run?.type === "command" ? commandStatusLabel({ status, exit_code: run.exit_code }) : statusLabels[status]}
     </span>
   );
 }

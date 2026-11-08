@@ -212,6 +212,26 @@ agent:
     # Fail a run no node can take for this long, with the scheduler's message.
     # Keep it below controlPlane.heartbeatTimeout. 0 never fails it.
     unschedulableTimeout: 5m
+    # Where the pods of command runs may connect (a NetworkPolicy; plan and
+    # apply pods aren't affected). Allowed: DNS, the Firstlume API of this
+    # release, HTTPS (443) to the public internet when publicHTTPS is on, and
+    # extraEgress. Blocked: everything else, SSH and telnet included, and the
+    # private network. Vault, Git and APIs on private addresses go in
+    # extraEgress, or command runs fail at checkout or prepare. With the
+    # control plane in another release, add its address there too. It only
+    # works if the cluster's network plugin enforces NetworkPolicy.
+    commandEgress:
+      enabled: true
+      publicHTTPS: true
+      # Not "public": blocked even on 443.
+      privateRanges: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 127.0.0.0/8]
+      ipv6: true
+      # Egress rules added as they are, e.g.:
+      #   - to: [{ ipBlock: { cidr: 10.20.0.15/32 } }]    # Vault
+      #     ports: [{ protocol: TCP, port: 8200 }]
+      #   - to: [{ ipBlock: { cidr: 10.20.0.30/32 } }]    # Gitea
+      #     ports: [{ protocol: TCP, port: 443 }]
+      extraEgress: []
 
 # Single-instance Postgres for trying the chart out. NOT for production:
 # no backups, no high availability. Use a managed database instead.

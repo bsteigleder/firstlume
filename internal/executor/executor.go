@@ -20,6 +20,7 @@ import (
 
 	"github.com/bsteigleder/firstlume/internal/api"
 	"github.com/bsteigleder/firstlume/internal/apiclient"
+	"github.com/bsteigleder/firstlume/internal/command"
 	"github.com/bsteigleder/firstlume/internal/stackconfig"
 )
 
@@ -85,6 +86,10 @@ func Run(ctx context.Context, cfg Config) error {
 			fmt.Fprintf(logs, "\n==> Error: %v\n", runErr)
 		}
 		res = api.CompleteRequest{Success: false, Error: runErr.Error()}
+		if cf := new(commandFailed); errors.As(runErr, &cf) {
+			res.Error = fmt.Sprintf("Line %d exited with code %d", cf.line, cf.code)
+			res.ExitCode, res.FailedLine = &cf.code, &cf.line
+		}
 	}
 	if err := logs.Close(); err != nil && !errors.Is(err, apiclient.ErrNoLongerOwner) {
 		fmt.Fprintf(os.Stderr, "warning: some log output was not delivered: %v\n", err)
@@ -202,6 +207,12 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 	if s.Phase == api.PhaseApply {
 		last = "Apply"
 	}
+	isCommand := s.Type == api.RunCommand
+	if isCommand {
+		last = "Command"
+	}
+	var lines []command.Line
+	var tgBin string
 	err := e.runSteps(ctx, []step{
 		{name: "Checkout", run: func() error {
 			fmt.Fprintf(e.out, "==> Checking out %s @ %s\n", s.Repository, describeTarget(s))
@@ -217,7 +228,8 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			// commit) always agree, and upgrading Terraform is just a commit.
 			cfg, decl, cfgErr := stackconfig.LoadDeclaration(workDir, s.Path)
 			e.stack, e.decl = cfg, decl
-			if s.Phase == api.PhasePlan {
+			// A command that writes the state has no plan phase: it records the commit itself.
+			if s.Phase == api.PhasePlan || isCommand {
 				commit := api.CommitRequest{SHA: sha, Config: cfg}
 				if commit.AuthorName, commit.AuthorEmail, commit.Message, err = commitInfo(ctx, srcDir, baseEnv); err != nil {
 					fmt.Fprintf(e.out, "==> Warning: could not read the commit author: %v\n", err)
@@ -231,6 +243,12 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			}
 			fmt.Fprintf(e.out, "==> %s %s%s (from %s)\n", cfg.Engine, cfg.EngineVersion, terragruntSuffix(cfg),
 				filepath.ToSlash(filepath.Join(s.Path, stackconfig.RelPath)))
+			if isCommand {
+				// Checked again with this commit's tools before anything else runs (R12).
+				if lines, err = e.checkCommand(); err != nil {
+					return fmt.Errorf("the command can’t run: %w", err)
+				}
+			}
 			return nil
 		}},
 		{name: "Prepare", skip: func() bool { return !e.needsPrepare() }, run: func() (err error) {
@@ -252,6 +270,7 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 				if bin, err = inst.Install(ctx, "terragrunt", cfg.TerragruntVersion); err != nil {
 					return err
 				}
+				tgBin = bin
 			}
 			env := append(baseEnv, toolEnv(engineBin, filepath.Join(e.cfg.WorkDir, "plugin-cache"), cfg.RunAll)...)
 			env = append(env, stateEnv(e.cfg.APIURL, s)...)
@@ -272,6 +291,12 @@ func (e *executor) run(ctx context.Context) (api.CompleteRequest, error) {
 			return e.checkBackends(ctx, workDir, "")
 		}},
 		{name: last, run: func() (err error) {
+			if isCommand {
+				if err = e.runCommand(ctx, r, lines, workDir, tgBin); err == nil {
+					res = api.CompleteRequest{Success: true}
+				}
+				return err
+			}
 			if s.Phase == api.PhasePlan {
 				if res, err = e.plan(ctx, r, planPath); err == nil && e.stack.RunAll {
 					// Terragrunt initialized the units while planning: check them now.
@@ -367,7 +392,7 @@ func (e *executor) runSteps(ctx context.Context, steps []step) error {
 		status := api.StepSucceeded
 		if err != nil {
 			status = api.StepFailed
-			if e.stop == nil || e.stop.ctx.Err() == nil {
+			if (e.stop == nil || e.stop.ctx.Err() == nil) && !errors.As(err, new(loggedError)) {
 				fmt.Fprintf(e.out, "\n==> Error: %v\n", err) // inside the step, so it shows in its log
 			}
 			err = loggedError{err}

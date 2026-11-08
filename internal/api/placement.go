@@ -115,4 +115,9 @@ type ClaimRequest struct {
 	AcceptsPlacement bool `json:"accepts_placement"`
 	// InstallPlacement is what the Helm values set (R5.2).
 	InstallPlacement Placement `json:"install_placement"`
+	// AcceptsCommands says the agent can take command runs (spec 0009, E1):
+	// the Kubernetes driver, which labels their pods for the egress policy,
+	// or the local driver with FIRSTLUME_ALLOW_LOCAL_COMMANDS for development.
+	// Agents from before command runs send nothing and never get one.
+	AcceptsCommands bool `json:"accepts_commands"`
 }

@@ -12,7 +12,10 @@ import {
   PlanCounts,
   repoLabel,
   repoWebURL,
+  AccessTag,
   RunOrigin,
+  runKind,
+  runWhat,
   StatusBadge,
   supersededBy,
   timeAgo,
@@ -203,12 +206,13 @@ function Runs({ stack }: { stack: Stack }) {
                       <Link to={link(`r/${r.id}`)} className="plain">
                         <StatusBadge status={r.status} run={r} />
                       </Link>
-                      <div className="muted small">{r.type === "drift" ? "drift check" : r.type}</div>
+                      <div className="muted small">{runKind(r)}</div>
                     </td>
                     <td>
-                      <Link to={link(`r/${r.id}`)} className="row-title">
-                        {r.commit_message || `${r.type} on ${r.ref}`}
+                      <Link to={link(`r/${r.id}`)} className={`row-title${r.type === "command" ? " mono" : ""}`}>
+                        {r.type === "command" ? `Command · ${runWhat(r)}` : runWhat(r)}
                       </Link>
+                      <AccessTag run={r} />
                       <div className="commit-meta">
                         {r.commit_author_name && (
                           <>

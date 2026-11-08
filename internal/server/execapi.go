@@ -88,7 +88,9 @@ func (s *Server) execCommit(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if phase != api.PhasePlan || !commitRe.MatchString(req.SHA) {
+	// A command that writes the state has no plan phase: its apply sets it
+	// (the store refuses it for other applies).
+	if (phase != api.PhasePlan && phase != api.PhaseApply) || !commitRe.MatchString(req.SHA) {
 		writeError(w, http.StatusUnprocessableEntity, "commit can only be set during plan, as a full hex SHA")
 		return
 	}

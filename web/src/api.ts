@@ -1,6 +1,8 @@
 // Client for the control-plane API (/api/v1). Mirrors internal/api/types.go.
 
-export type RunType = "plan" | "apply" | "destroy" | "drift";
+export type RunType = "plan" | "apply" | "destroy" | "drift" | "command";
+/** What a command run may do to the state (spec 0009). */
+export type StateAccess = "read" | "write";
 export type Phase = "plan" | "apply";
 export type RunStatus =
   | "queued"
@@ -14,9 +16,10 @@ export type RunStatus =
   | "applied"
   | "failed"
   | "discarded"
-  | "canceled";
+  | "canceled"
+  | "succeeded";
 
-export const terminalStatuses: RunStatus[] = ["planned", "no_changes", "drifted", "applied", "failed", "discarded", "canceled"];
+export const terminalStatuses: RunStatus[] = ["planned", "no_changes", "drifted", "applied", "failed", "discarded", "canceled", "succeeded"];
 
 export function isTerminal(s: RunStatus): boolean {
   return terminalStatuses.includes(s);
@@ -530,11 +533,27 @@ export interface Run {
   placement_used?: EffectivePlacement;
   /** Set once an apply that reported progress resource by resource has finished. */
   apply_totals?: ApplyTotals;
+  /** Command runs (spec 0009): the command as typed and its access to the state. */
+  command?: string;
+  state_access?: StateAccess;
+  /** How a command run that failed ended: the code and the line (from 1) that failed. */
+  exit_code?: number;
+  failed_line?: number;
+  /** The state versions a finished command run with write access wrote. */
+  state_writes?: { key: string; version: number }[];
   approved_at?: string;
   started_at?: string;
   finished_at?: string;
   created_at: string;
   updated_at: string;
+}
+
+/** A command checked as typed: how many lines, whether one changes the state, or why it can't run. */
+export interface CommandCheck {
+  ok: boolean;
+  lines: number;
+  writes: boolean;
+  error?: { line: number; message: string };
 }
 
 export type GitEventOutcome = "run_created" | "not_affected" | "trigger_off" | "other_branch" | "duplicate" | "error";
@@ -812,7 +831,11 @@ export const api = {
         request<MovePreview>("GET", `${p}/stacks/${id}/move?folder_id=${encodeURIComponent(folderID)}`),
       moveStack: (id: string, folderID: string) => request<Stack>("POST", `${p}/stacks/${id}/move`, { folder_id: folderID }),
       listRuns: (stackID: string, limit = 50) => request<Run[]>("GET", `${p}/stacks/${stackID}/runs?limit=${limit}`),
-      createRun: (stackID: string, type: RunType, ref = "") => request<Run>("POST", `${p}/stacks/${stackID}/runs`, { type, ref }),
+      createRun: (stackID: string, type: RunType, ref = "", cmd?: { command: string; state_access: StateAccess }) =>
+        request<Run>("POST", `${p}/stacks/${stackID}/runs`, { type, ref, ...cmd }),
+      /** Checks a command as typed, without creating a run. */
+      checkCommand: (stackID: string, command: string, state_access: StateAccess) =>
+        request<CommandCheck>("POST", `${p}/stacks/${stackID}/commands/check`, { command, state_access }),
       stateUnits: (stackID: string) => request<StateUnit[]>("GET", `${p}/stacks/${stackID}/state`),
       resources: (stackID: string) => request<StackResources>("GET", `${p}/stacks/${stackID}/resources`),
       /** The whole stack as a bundle, or one unit ("" is the root) as a plain state. */

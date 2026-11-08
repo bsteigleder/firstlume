@@ -22,4 +22,16 @@ backups. Use a managed Postgres for anything you care about.
 
 Agent "{{ .Values.agent.name }}" creates run Jobs in namespace {{ include "firstlume.executorNamespace" . }}
 using service account {{ include "firstlume.executorServiceAccount" . }}.
+{{- if .Values.agent.executor.commandEgress.enabled }}
+
+Command runs: their pods may only connect to DNS, this Firstlume's API,
+{{- if .Values.agent.executor.commandEgress.publicHTTPS }} HTTPS on the public internet{{ end }}
+and agent.executor.commandEgress.extraEgress ({{ len .Values.agent.executor.commandEgress.extraEgress }} rule(s)). Put Vault and Git
+there when they are on private addresses. This needs a network plugin that
+enforces NetworkPolicy (Calico, Cilium...): without one nothing is blocked.
+{{- else }}
+
+WARNING: agent.executor.commandEgress.enabled=false: command runs can connect
+anywhere the cluster's network allows.
+{{- end }}
 {{- end }}
