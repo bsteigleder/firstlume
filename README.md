@@ -36,7 +36,7 @@ queued ─▶ planning ─┬─▶ no_changes                       (sem mudan�
                     │                      └─▶ discarded
                     ├─▶ apply_queued                     (require_approval: false)
                     └─▶ drifted                          (type=drift)
-qualquer fase em execução ─▶ failed  |  queued/apply_queued ─▶ canceled
+qualquer fase em execução ─▶ failed  |  parado ou cancelado ─▶ canceled
 
 type=command:  queued ─▶ planning ─▶ succeeded | failed                     (state_access: read)
                queued ─▶ [awaiting_approval ─▶ apply_queued ─▶] applying ─▶ succeeded | failed   (write)
@@ -49,6 +49,21 @@ A aprovação é a configuração `require_approval`, herdada da organização p
 O intervalo de verificação é a configuração herdada `drift_interval_minutes` (de 15 min a 7 dias; `0` desliga, e esse é o padrão). O server cria um run `drift` quando a verificação vence e o stack está livre. Esse run é um `plan` que **só reporta**: nunca aplica, não pede aprovação e não guarda o arquivo de plano. O resultado (`in_sync`, `drifted` ou `error`) fica no stack e aparece na UI. Também dá para verificar na hora, com um run do tipo `drift`. Mudanças na branch que ainda não foram aplicadas também aparecem como drift.
 
 Se o executor parar de enviar heartbeat por `FIRSTLUME_HEARTBEAT_TIMEOUT` (10 min por padrão), o run é marcado como `failed`. Se o pod morrer (por exemplo, por OOM ou deadline), o agent reporta a falha.
+
+### Parar um run
+
+A mesma chamada cancela um run na fila e para um que está executando (na UI: Cancel run, Stop plan, Stop apply):
+
+```bash
+curl -s -X POST -H "$H" $O/runs/$RUN/cancel
+```
+
+- **Na fila** (`queued`, `apply_queued`), o run vira `canceled` na hora.
+- **Executando** (`planning`, `applying`), o server registra quem pediu e quando, e o run aparece como Stopping. O executor fica sabendo no heartbeat seguinte (a cada 5 s), escreve "Stop requested by …" no log e manda SIGINT ao Terraform, OpenTofu ou Terragrunt, como um Ctrl+C: nada novo começa, o que está rodando termina ou para no meio, o state é salvo e o lock é solto.
+- Um apply **nunca é morto** depois da interrupção, para poder gravar o state. Um plan é morto se não sair em 2 minutos.
+- No fim, um plan termina `canceled` (não vai para aprovação nem para o apply). Um apply termina `canceled`, ou `applied` se terminou todas as mudanças antes de parar.
+
+Em `awaiting_approval` vale `discard`. Se o executor não responde (agent fora do ar), o run fica Stopping até o timeout do heartbeat e falha. Detalhes na [spec 0008](docs/specs/0008-parar-um-run.md).
 
 ### Rodar um comando no stack
 
@@ -469,7 +484,7 @@ deploy/docker/        Dockerfile
 ## Limitações conhecidas
 
 - **Login pelo Gitea (OIDC) ou token admin, com um papel só por organização.** Quem está num grupo de `auth.oidc.adminGroups` vê todas as organizações; os outros só veem aquelas para as quais foram convidados, e todo membro é administrador da organização. Papéis mais finos e aprovadores por pessoa ou grupo entram depois.
-- **Cancelar um run em execução não é suportado**, de propósito: interromper um apply pode corromper o state.
+- **Um run em execução pode ser parado, mas não morto na hora**: um apply nunca é morto depois da interrupção, para não perder state, e não há botão de "parar agora".
 - **As ferramentas são baixadas a cada run** (releases oficiais, com checksum SHA256 verificado). O executor precisa de acesso de saída à internet, ou de um mirror (ainda não configurável).
 - **Licença do Terraform:** as versões 1.6 em diante são BSL. Para oferecer a plataforma comercialmente, use `engine: opentofu` ou Terraform ≤ 1.5.7.
 
