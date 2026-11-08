@@ -9,7 +9,7 @@ import { useSession } from "../session";
  * username. It names no organization and no administrator (R7.17).
  */
 export function NoAccessPage({ onCheck }: { onCheck: () => Promise<void> }) {
-  const { me } = useSession();
+  const { me, providerName } = useSession();
   const [checking, setChecking] = useState(false);
   const [checked, setChecked] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -34,15 +34,15 @@ export function NoAccessPage({ onCheck }: { onCheck: () => Promise<void> }) {
         <strong>First Lume</strong>
         <span className="no-access-who">
           <Avatar user={me.user} size={28} />
-          {login} · via Gitea
+          {login} · via {providerName}
         </span>
       </header>
       <main className="welcome-main no-access">
         <h1>You don’t have access yet</h1>
-        <p className="lead">Your account isn’t in any organization. An administrator needs to invite you, and they’ll need your Gitea username.</p>
+        <p className="lead">Your account isn’t in any organization. An administrator needs to invite you, and they’ll need your {providerName} username.</p>
         <section className="card welcome-card no-access-card" aria-labelledby="no-access-username">
           <div className="no-access-username">
-            <h2 id="no-access-username">Your Gitea username</h2>
+            <h2 id="no-access-username">Your {providerName} username</h2>
             <div className="token-row">
               <code className="mono">{login}</code>
               <button type="button" onClick={() => void copy()}>

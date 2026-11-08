@@ -1,4 +1,4 @@
-package gitea
+package gitprovider
 
 import (
 	"context"
@@ -23,8 +23,8 @@ type Found struct {
 }
 
 // Discover lists the .firstlume folders in a repository at a commit, without cloning it.
-func (c *Client) Discover(ctx context.Context, owner, name, sha string) ([]Found, error) {
-	entries, err := c.Tree(ctx, owner, name, sha)
+func Discover(ctx context.Context, prov Provider, fullName, sha string) ([]Found, error) {
+	entries, err := prov.Tree(ctx, fullName, sha)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +56,7 @@ func (c *Client) Discover(ctx context.Context, owner, name, sha string) ([]Found
 			out = append(out, f)
 			continue
 		}
-		data, err := c.File(ctx, owner, name, sha, file)
+		data, err := prov.File(ctx, fullName, sha, file)
 		if err != nil {
 			if errors.Is(err, ErrUnauthorized) {
 				return nil, err

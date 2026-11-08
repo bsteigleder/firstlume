@@ -5,11 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
-	"strings"
 
 	"github.com/bsteigleder/firstlume/internal/api"
 	"github.com/bsteigleder/firstlume/internal/command"
-	"github.com/bsteigleder/firstlume/internal/gitea"
+	"github.com/bsteigleder/firstlume/internal/gitprovider"
 	"github.com/bsteigleder/firstlume/internal/store"
 )
 
@@ -99,20 +98,24 @@ func (s *Server) resolveCommit(ctx context.Context, orgID string, st *api.Stack,
 	if st.ConnectionID == "" {
 		return ""
 	}
-	owner, name, ok := repoOfCloneURL(st.Repository)
-	if !ok {
-		return ""
-	}
 	conn, err := s.store.GetGitConnection(ctx, orgID)
-	// The connection's token never goes to a repository of another account.
-	if errors.Is(err, store.ErrNotFound) || (err == nil && (conn.ID != st.ConnectionID || !strings.EqualFold(owner, conn.Account))) {
+	if errors.Is(err, store.ErrNotFound) {
 		return ""
 	}
 	if err != nil {
 		s.log.Warn("reading the Git connection to fix a command run's commit", "stack", st.ID, "err", err)
 		return ""
 	}
-	sha, err := gitea.New(conn.URL, conn.Token).ResolveBranch(ctx, owner, name, ref)
+	// The connection's token never goes to a repository of another account.
+	full := repoPathOf(conn.URL, st.Repository)
+	if conn.ID != st.ConnectionID || !gitprovider.InAccount(conn.Provider, conn.Account, full) {
+		return ""
+	}
+	client, err := gitprovider.New(conn.Provider, conn.URL, conn.Token)
+	if err != nil {
+		return ""
+	}
+	sha, err := client.ResolveBranch(ctx, full, ref)
 	if err != nil {
 		s.log.Info("couldn't resolve a command run's ref; the checkout will", "stack", st.ID, "ref", ref, "err", err)
 		return ""

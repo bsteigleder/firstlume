@@ -3,6 +3,8 @@ import type { Me } from "./api";
 
 interface SessionValue {
   me: Me;
+  /** What people sign in with, as the install names it ("Gitea", "GitLab"). */
+  providerName: string;
   /** Reads /me again, e.g. after creating an organization. */
   reload: () => Promise<void>;
 }

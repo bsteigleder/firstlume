@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, NavLink, useLocation, useNavigate, useParams } from "react-router";
 import { settingsPath, type Stack } from "../api";
 import { ExternalIcon, PlayIcon } from "../icons";
-import { PageTitle, useCrumbs, useOrg } from "../org";
+import { PageTitle, useCrumbs, useLinkProvider, useOrg } from "../org";
 import {
   commitURL,
   duration,
@@ -156,6 +156,7 @@ export function StackPage({ tab }: { tab: "runs" | "resources" | "settings" | "s
 
 function Runs({ stack }: { stack: Stack }) {
   const { api, link } = useOrg();
+  const provider = useLinkProvider(stack);
   const runs = useData(() => api.listRuns(stack.id), [api, stack.id], { poll: true, pollMs: 4000 });
   if (runs.error && !runs.data) return <ErrorBanner error={runs.error} />;
   if (!runs.data) return null;
@@ -199,7 +200,7 @@ function Runs({ stack }: { stack: Stack }) {
             </thead>
             <tbody>
               {runs.data.map((r) => {
-                const commit = commitURL(stack.repository, r.commit_sha);
+                const commit = commitURL(stack.repository, r.commit_sha, provider);
                 return (
                   <tr key={r.id}>
                     <td>

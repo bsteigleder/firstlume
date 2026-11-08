@@ -74,17 +74,27 @@ Um run do tipo `command` roda subcomandos do Terraform, OpenTofu ou Terragrunt n
 - **Onde roda.** Só agents que aceitam: o driver Kubernetes, ou o local com `FIRSTLUME_ALLOW_LOCAL_COMMANDS=true` (só para desenvolvimento). Agents de versões anteriores não pegam esses runs. No Kubernetes, os pods têm o rótulo `firstlume.io/run-type: command` e uma NetworkPolicy de saída (`agent.executor.commandEgress`, ligada por padrão) só libera DNS, a API do First Lume, HTTPS para a internet pública e o que estiver em `extraEgress`. SSH, telnet e o resto da rede privada ficam bloqueados. Vault e Git em endereço privado precisam entrar em `extraEgress`. A política só vale se o plugin de rede do cluster a aplica (Calico, Cilium e outros).
 - O código do repositório ainda roda, como num plan (o provider durante um `import`, hooks do Terragrunt). Ele passa por revisão no Git; o que é digitado no diálogo, não, e por isso tem a lista.
 
+### Conexão Git: Gitea ou GitLab
+
+Cada organização se liga a uma conta de um provedor Git, em Settings › Git connection, com um token de serviço que não é o login de ninguém. O Firstlume lista os repositórios, acha as pastas `.firstlume`, clona nos runs e lê os commits dos pushes ([spec 0010](docs/specs/0010-gitlab.md)).
+
+| | Gitea | GitLab (gitlab.com ou self-managed) |
+|---|---|---|
+| Conta | organização ou usuário | grupo, pelo caminho completo (`acme/platform`), com os projetos dos subgrupos, ou usuário |
+| Repositórios | todos da conta | projetos do grupo e dos subgrupos, sem os arquivados e sem os de fora compartilhados com o grupo |
+| Token | de uma conta bot com leitura | de acesso pessoal de uma conta bot, ou token de grupo ou de projeto, com `read_api` e `read_repository`, papel Reporter |
+| Webhook | do tipo `gitea`, assinado com HMAC | por projeto, com o segredo em **Signing token** (GitLab 19+) ou em Secret token |
+
+Um GitLab servido num caminho (`https://git.example.com/gitlab`) também funciona. O provedor não muda enquanto houver stacks clonando pela conexão, e o token salvo só é reaproveitado para o mesmo provedor e endereço.
+
 ### Gatilhos do Git
 
-Um push na branch de um stack pode disparar o run sozinho. Por enquanto só com o Gitea. Gerar o segredo e instalar o webhook ainda são passos manuais, até o marco G2 ([spec 0006](docs/specs/0006-gatilhos-git.md)).
+Um push na branch de um stack pode disparar o run sozinho, com Gitea ou GitLab. Instalar o webhook ainda é um passo manual, até o marco G2 ([spec 0006](docs/specs/0006-gatilhos-git.md)).
 
-1. Gere o segredo do webhook. Ele só aparece nesta resposta, junto com a URL e os eventos:
-
-   ```bash
-   curl -X POST -H "Authorization: Bearer $TOKEN" https://firstlume.example.com/api/v1/orgs/{org}/git/webhook-secret
-   ```
-
-2. No repositório do Gitea, crie um webhook do tipo `gitea` com essa URL e esse segredo, `content_type` `json` e os eventos `push`, `pull_request` e `pull_request_sync`. O Gitea recusa endereços privados por padrão: numa instalação interna, ajuste `[webhook] ALLOWED_HOST_LIST` no `app.ini`.
+1. Em Settings › Git connection › **Webhook**, crie o segredo. Ele só aparece nessa hora, junto com a URL (na API, `POST /api/v1/orgs/{org}/git/webhook-secret`). Trocar o segredo faz os webhooks com o antigo serem recusados.
+2. Crie o webhook em cada repositório com stacks:
+   - **Gitea:** tipo `gitea`, essa URL e esse segredo, `content_type` `json`, evento push. O Gitea recusa endereços privados por padrão: numa instalação interna, ajuste `[webhook] ALLOWED_HOST_LIST` no `app.ini`.
+   - **GitLab:** Settings › Webhooks do projeto, essa URL, o segredo em **Signing token** e só **Push events**. Com o signing token, o GitLab assina cada entrega (HMAC-SHA256, formato Standard Webhooks) e o Firstlume recusa entregas com mais de 5 minutos. Num GitLab sem signing token (antes do 19), cole o segredo em **Secret token**: ele vai em claro em cada entrega, então use HTTPS. Um GitLab self-managed recusa salvar webhook para endereço da rede local ("Invalid url given"): um administrador põe o host do Firstlume na allowlist de Admin › Settings › Network › Outbound requests. Webhook de grupo é dos planos pagos do GitLab; quem tiver pode usar a mesma URL e o mesmo segredo.
 3. Ligue o gatilho, herdado como as outras configurações, em **On push** nas configurações da organização, de uma pasta ou do stack (na API, `"git_on_push"` no `PUT .../settings`):
 
    | Valor | Um push que afeta o stack... |
@@ -108,11 +118,13 @@ triggers:
     - "**/*.md"
 ```
 
-Force push, branch nova, falha ao comparar os commits e um `config.yaml` inválido fazem todos os stacks da branch contarem como afetados, porque rodar a mais termina em `no_changes` e rodar a menos deixaria mudança sem aplicar.
+Force push, branch nova, falha ao comparar os commits (no GitLab, também uma comparação com 1000 arquivos ou mais, onde ele corta a lista sem avisar) e um `config.yaml` inválido fazem todos os stacks da branch contarem como afetados, porque rodar a mais termina em `no_changes` e rodar a menos deixaria mudança sem aplicar.
+
+**Um push repetido não roda de novo.** O botão de teste do webhook (Test no GitLab, Test delivery no Gitea) repete o último push com commits reais. Se o commit final já teve decisão no stack, o evento registra `already_handled` e nada roda. Um force push de volta a um commit antigo continua sendo um push novo. Para rodar de novo, use o botão de run.
 
 **Um push novo substitui o que ficou velho.** Runs de pushes anteriores que estão na fila são cancelados, e os que aguardam aprovação são descartados com "superseded by <commit>". Quem está executando termina, e runs manuais nunca são tocados.
 
-**Por que não rodou?** A aba Runs do stack mostra a última decisão, e a página **Git events** (na seção Git connection das configurações da organização, ou `GET /api/v1/orgs/{org}/git/events?stack={id}`) mostra cada push recebido e a decisão por stack: `run_created`, `not_affected` (com os arquivos considerados), `trigger_off`, `other_branch` ou `duplicate`. Os eventos ficam guardados por 30 dias.
+**Por que não rodou?** A aba Runs do stack mostra a última decisão, e a página **Git events** (na seção Git connection das configurações da organização, ou `GET /api/v1/orgs/{org}/git/events?stack={id}`) mostra cada push recebido e a decisão por stack: `run_created`, `not_affected` (com os arquivos considerados), `trigger_off`, `other_branch`, `duplicate` ou `already_handled`. Os eventos ficam guardados por 30 dias.
 
 ### State
 
@@ -189,6 +201,29 @@ export FIRSTLUME_STATE_URL=https://firstlume.example.com/state/v1/stacks/$STACK
 export TF_HTTP_USERNAME=firstlume TF_HTTP_PASSWORD=$FIRSTLUME_STATE_TOKEN
 terragrunt run --all -- plan -lock=false      # token de leitura
 terragrunt run --all -- apply                 # token de escrita
+```
+
+No GitLab CI, com o token numa variável mascarada e protegida (`FIRSTLUME_STATE_TOKEN`) e o `root.hcl` acima:
+
+```yaml
+variables:
+  FIRSTLUME_STATE_URL: https://firstlume.example.com/state/v1/stacks/<stack-id>
+  TF_HTTP_USERNAME: firstlume
+
+plan:
+  stage: test
+  script:
+    - export TF_HTTP_PASSWORD="$FIRSTLUME_STATE_TOKEN"
+    - terragrunt run --all -- plan -lock=false
+
+apply:
+  stage: deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  script:
+    - export TF_HTTP_PASSWORD="$FIRSTLUME_STATE_TOKEN"
+    - terragrunt run --all -- apply -auto-approve
 ```
 
 #### Importar um state existente
@@ -459,6 +494,22 @@ Se nenhum node aceitar o run por `agent.executor.unschedulableTimeout` (5 min po
 
 Para código que fala com a API do próprio cluster (providers `kubernetes`/`helm` sem kubeconfig), ligue `agent.executor.automountServiceAccountToken` e dê permissões à ServiceAccount do executor com `agent.executor.serviceAccount.clusterRoles`. Elas valem para todos os runs daquele agent: para permissões diferentes, use outro agent.
 
+**Login pelo Gitea ou pelo GitLab.** O login é OpenID Connect, e o provedor pode ser outro que o da conexão Git. No GitLab, crie uma aplicação (Admin › Applications, ou no grupo) com o callback `https://firstlume.example.com/auth/callback` e os escopos `openid`, `profile` e `email`. Os grupos vêm do claim `groups`, com o caminho completo, subgrupos incluídos:
+
+```yaml
+controlPlane:
+  publicURL: https://firstlume.example.com
+  auth:
+    oidc:
+      enabled: true
+      providerName: GitLab          # o nome que as telas usam: botão, menu, convite
+      issuer: https://gitlab.example.com
+      clientId: 4f1c…
+      existingSecret: firstlume-oidc
+      scopes: [openid, profile, email]   # o GitLab não conhece o escopo "groups"
+      adminGroups: [acme/devops]
+```
+
 Para testar sem banco externo, use `--set postgresql.enabled=true`. É uma instância única e sem backup, só para desenvolvimento.
 
 Faça backup da chave `secret-key` do Secret `<release>-control-plane`. Sem ela não dá para recuperar os dados criptografados. O Secret é preservado no `helm uninstall`.
@@ -483,7 +534,7 @@ deploy/docker/        Dockerfile
 
 ## Limitações conhecidas
 
-- **Login pelo Gitea (OIDC) ou token admin, com um papel só por organização.** Quem está num grupo de `auth.oidc.adminGroups` vê todas as organizações; os outros só veem aquelas para as quais foram convidados, e todo membro é administrador da organização. Papéis mais finos e aprovadores por pessoa ou grupo entram depois.
+- **Login pelo Gitea ou pelo GitLab (OIDC) ou token admin, com um papel só por organização.** Quem está num grupo de `auth.oidc.adminGroups` vê todas as organizações; os outros só veem aquelas para as quais foram convidados, e todo membro é administrador da organização. Papéis mais finos e aprovadores por pessoa ou grupo entram depois.
 - **Um run em execução pode ser parado, mas não morto na hora**: um apply nunca é morto depois da interrupção, para não perder state, e não há botão de "parar agora".
 - **As ferramentas são baixadas a cada run** (releases oficiais, com checksum SHA256 verificado). O executor precisa de acesso de saída à internet, ou de um mirror (ainda não configurável).
 - **Licença do Terraform:** as versões 1.6 em diante são BSL. Para oferecer a plataforma comercialmente, use `engine: opentofu` ou Terraform ≤ 1.5.7.
@@ -495,7 +546,7 @@ deploy/docker/        Dockerfile
 3. Terragrunt nativo: descoberta de units, grafo de dependências e um run por unit; onde os runs executam, com afinidade, antiafinidade e tolerations na instalação, no agent, na pasta e no stack (✅ spec 0007)
 4. Arquivos e variáveis declarados no repositório, variáveis do tipo arquivo segredos do Vault com JWT emitido pelo Firstlume por fase, sem o Firstlume virar um segundo cofre, e credenciais de registry (✅ marcos F1 a F3 da spec 0003)
 5. Usuários, grupos e SSO; aprovadores por pessoa ou grupo; trilha de auditoria
-6. Integração Git (Gitea/Forgejo, GitHub, GitLab): plan em PR, commit status, apply no merge e gatilho por impacto
+6. Integração Git: conexão, descoberta, clone e run por push com Gitea e GitLab (✅ specs 0006 G1 e 0010); plan em PR/MR, commit status, apply no merge, Forgejo e GitHub
 7. Observabilidade: export via OpenTelemetry (métricas, eventos, logs e traces) e notificações (webhook, Slack, Rocket.Chat)
 8. Hooks por fase, tarefas agendadas, políticas (OPA), backup/restore e alta disponibilidade
 

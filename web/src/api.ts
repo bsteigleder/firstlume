@@ -191,14 +191,27 @@ export interface StateImportResult {
   units: StateImportUnit[];
 }
 
+export type GitProvider = "gitea" | "gitlab";
+
 export interface GitConnection {
-  provider: string;
+  provider: GitProvider;
   url: string;
   account: string;
-  account_kind: "organization" | "user";
+  account_kind: "organization" | "group" | "user";
+  webhook_secret_set: boolean;
+  webhook_secret_at?: string;
   created_at: string;
   updated_at: string;
   repositories?: number;
+}
+
+/** What a webhook needs; the secret is shown only when it is made (spec 0010, R5.10). */
+export interface WebhookSecret {
+  provider: GitProvider;
+  url: string;
+  secret: string;
+  content_type: string;
+  events: string[];
 }
 
 export interface GitRepo {
@@ -556,7 +569,7 @@ export interface CommandCheck {
   error?: { line: number; message: string };
 }
 
-export type GitEventOutcome = "run_created" | "not_affected" | "trigger_off" | "other_branch" | "duplicate" | "error";
+export type GitEventOutcome = "run_created" | "not_affected" | "trigger_off" | "other_branch" | "duplicate" | "already_handled" | "error";
 
 /** What was decided about one stack for a Git event. */
 export interface GitEventStack {
@@ -854,9 +867,10 @@ export const api = {
       gitEvents: (stackID = "", limit = 100) =>
         request<GitEvent[]>("GET", `${p}/git/events?limit=${limit}${stackID ? `&stack=${stackID}` : ""}`),
       gitConnection: () => request<GitConnection>("GET", `${p}/git/connection`),
-      putGitConnection: (req: { provider: string; url: string; account: string; token: string }) =>
+      putGitConnection: (req: { provider: GitProvider; url: string; account: string; token: string }) =>
         request<GitConnection>("PUT", `${p}/git/connection`, req),
       deleteGitConnection: () => request<void>("DELETE", `${p}/git/connection`),
+      newWebhookSecret: () => request<WebhookSecret>("POST", `${p}/git/webhook-secret`),
       vaultConnection: () => request<VaultConnection>("GET", `${p}/vault`),
       putVaultConnection: (req: { address: string; ca_cert?: string; namespace?: string; auth_path?: string; audience?: string }) =>
         request<VaultConnection>("PUT", `${p}/vault`, req),
@@ -866,9 +880,9 @@ export const api = {
         request<VaultCheckResult>("POST", `${p}/stacks/${stackID}/vault/check`, { phase, paths }),
       declaration: (stackID: string) => request<Declaration>("GET", `${p}/stacks/${stackID}/declaration`),
       gitRepos: () => request<GitRepo[]>("GET", `${p}/git/repos`),
-      gitBranches: (fullName: string) => request<string[]>("GET", `${p}/git/repos/${fullName}/branches`),
+      gitBranches: (fullName: string) => request<string[]>("GET", `${p}/git/repo/branches?repo=${encodeURIComponent(fullName)}`),
       discover: (fullName: string, ref: string) =>
-        request<DiscoverResponse>("GET", `${p}/git/repos/${fullName}/discover?ref=${encodeURIComponent(ref)}`),
+        request<DiscoverResponse>("GET", `${p}/git/repo/discover?repo=${encodeURIComponent(fullName)}&ref=${encodeURIComponent(ref)}`),
 
       listAgents: () => request<Agent[]>("GET", `${p}/agents`),
       createAgent: (name: string, placement: Placement) => request<CreateAgentResponse>("POST", `${p}/agents`, { name, placement }),

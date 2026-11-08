@@ -112,6 +112,7 @@ func (s *Server) Handler() http.Handler {
 	})
 	r.Route("/state/v1", s.stateRoutes)
 	r.Post("/webhooks/v1/gitea/{connection_id}", s.giteaWebhook)
+	r.Post("/webhooks/v1/gitlab/{connection_id}", s.gitlabWebhook)
 	// For Vault to verify run JWTs (spec 0003, R3.4).
 	r.Get("/.well-known/openid-configuration", s.openIDConfiguration)
 	r.Get("/.well-known/jwks.json", s.jwks)

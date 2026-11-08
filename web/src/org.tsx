@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from "react-router";
-import { api, signOut, type ActiveRun, type Folder, type Me, type OrgAPI, type Organization, type Stack, type StackSummary, type Tree, type User } from "./api";
+import { api, signOut, type ActiveRun, type Folder, type GitProvider, type Me, type OrgAPI, type Organization, type Stack, type StackSummary, type Tree, type User } from "./api";
 import { ChevronDownIcon, ChevronRightIcon, CloseIcon, FolderIcon, FolderPlusIcon, GearIcon, Logo, PlusIcon, SearchIcon, TrashIcon } from "./icons";
 import { DeleteFolderDialog, FolderNameDialog, NewStackDialog } from "./pages/dialogs";
 import { MoveStackDialog, StackGrip, useStackDrop } from "./pages/MoveStack";
-import { errorMessage, ErrorBanner, Initials, runOriginText, runWhat, StatusBadge, timeAgo, useData } from "./ui";
+import { errorMessage, ErrorBanner, Initials, linkProvider, runOriginText, runWhat, StatusBadge, timeAgo, useData } from "./ui";
 import { useSession } from "./session";
 import { ThemeSwitch } from "./theme";
 
@@ -27,6 +27,9 @@ interface Toast {
 
 interface OrgContextValue {
   org: Organization;
+  /** The provider of the organization's Git connection, null without one. */
+  gitProvider: GitProvider | null;
+  reloadGit: () => Promise<void>;
   api: OrgAPI;
   tree: Tree | null;
   reloadTree: () => Promise<void>;
@@ -47,6 +50,11 @@ interface OrgContextValue {
 }
 
 const OrgContext = createContext<OrgContextValue | null>(null);
+
+/** Which provider's pages a stack's links open (spec 0010, R7.2). */
+export function useLinkProvider(stack: { repository: string; connection_id?: string } | null | undefined): string {
+  return linkProvider(stack, useOrg().gitProvider);
+}
 
 export function useOrg(): OrgContextValue {
   const v = useContext(OrgContext);
@@ -121,6 +129,7 @@ export function OrgShell() {
   const org = useData(() => orgAPI.get(), [orgAPI]);
   const tree = useData(() => orgAPI.tree(), [orgAPI], { poll: true, pollMs: 6000 });
   const active = useData(() => orgAPI.activeRuns(), [orgAPI], { poll: true, pollMs: 4000 });
+  const git = useData(() => orgAPI.gitConnection().catch(() => null), [orgAPI]);
   const [crumbs, setCrumbs] = useState<Crumb[]>([]);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [drawer, setDrawer] = useState(false);
@@ -164,6 +173,8 @@ export function OrgShell() {
 
   const value: OrgContextValue = {
     org: org.data,
+    gitProvider: git.data?.provider ?? null,
+    reloadGit: git.reload,
     api: orgAPI,
     tree: tree.data,
     reloadTree: tree.reload,
@@ -279,9 +290,9 @@ export function Avatar({ user, size }: { user?: User; size: number }) {
   return <Initials name={user ? user.name || user.login : "admin"} size={size} />;
 }
 
-/** Who is signed in, their Gitea groups, and Sign out. */
+/** Who is signed in, their groups at the provider, and Sign out. */
 function AccountMenu() {
-  const { me } = useSession();
+  const { me, providerName } = useSession();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -311,13 +322,13 @@ function AccountMenu() {
             <Avatar user={user} size={40} />
             <span className="account-id">
               <strong>{user ? user.name || user.login : "Admin token"}</strong>
-              <span className="mono muted small">{user ? `${user.login} · signed in with Gitea` : "for automation and emergencies"}</span>
+              <span className="mono muted small">{user ? `${user.login} · signed in with ${providerName}` : "for automation and emergencies"}</span>
               {user && me.installation_admin && <span className="badge warn fit">Installation admin</span>}
             </span>
           </div>
           {user && user.groups.length > 0 && (
             <div className="account-groups">
-              <span className="small">Gitea groups</span>
+              <span className="small">{providerName} groups</span>
               <span className="chips">
                 {user.groups.map((g) => (
                   <span key={g} className="chip mono">

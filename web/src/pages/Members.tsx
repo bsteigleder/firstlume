@@ -29,7 +29,7 @@ function MemberAvatar({ member }: { member: Member }) {
 /** Who is in the organization, who is invited, and inviting and removing (R7.18). */
 export function Members() {
   const { org, api } = useOrg();
-  const { me, reload } = useSession();
+  const { me, reload, providerName } = useSession();
   const navigate = useNavigate();
   const list = useData(() => api.members(), [api]);
   const [login, setLogin] = useState("");
@@ -88,7 +88,7 @@ export function Members() {
         <p className="muted">Only people invited here can see {org.name}. Everyone in the organization is an administrator of it for now.</p>
         <form className="inline-form members-form" onSubmit={invite}>
           <label className="field members-login">
-            Gitea username
+            {providerName} username
             <input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="e.g. dani.r" autoComplete="off" />
           </label>
           <button className="primary" disabled={!login.trim() || action.busy}>
@@ -175,7 +175,7 @@ export function Members() {
           <h2 className="section-title">
             Pending invitations <span className="muted members-count">{list.data.invites.length}</span>
           </h2>
-          <p className="muted">First Lume can’t tell whether a username exists in Gitea. If someone still has no access after signing in, check the spelling.</p>
+          <p className="muted">First Lume can’t tell whether a username exists in {providerName}. If someone still has no access after signing in, check the spelling.</p>
           <div className="table-scroll">
             <table className="table plain-table">
               <thead>

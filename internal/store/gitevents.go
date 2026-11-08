@@ -26,6 +26,7 @@ const (
 type WebhookTarget struct {
 	ConnectionID   string
 	OrganizationID string
+	Provider       string
 	Account        string
 	Secret         []byte
 }
@@ -35,8 +36,8 @@ func (s *Store) GetWebhookTarget(ctx context.Context, connectionID string) (*Web
 	t := WebhookTarget{ConnectionID: connectionID}
 	var enc []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT organization_id, account, webhook_secret_enc FROM git_connections
-		WHERE id = $1 AND webhook_secret_enc IS NOT NULL`, connectionID).Scan(&t.OrganizationID, &t.Account, &enc)
+		SELECT organization_id, provider, account, webhook_secret_enc FROM git_connections
+		WHERE id = $1 AND webhook_secret_enc IS NOT NULL`, connectionID).Scan(&t.OrganizationID, &t.Provider, &t.Account, &enc)
 	if err != nil {
 		return nil, notFound(err)
 	}
@@ -54,7 +55,7 @@ func (s *Store) SetWebhookSecret(ctx context.Context, orgID, secret string) (str
 	}
 	var id string
 	err = s.pool.QueryRow(ctx, `
-		UPDATE git_connections SET webhook_secret_enc = $2, updated_at = now()
+		UPDATE git_connections SET webhook_secret_enc = $2, webhook_secret_at = now(), updated_at = now()
 		WHERE organization_id = $1 RETURNING id`, orgID, enc).Scan(&id)
 	return id, notFound(err)
 }
@@ -266,6 +267,26 @@ func (s *Store) GitOnPush(ctx context.Context, orgID, stackID string) (string, e
 		return "", err
 	}
 	return eff.GitOnPush.Value, nil
+}
+
+// AlreadyHandled tells whether a stack already had a decision for a commit
+// pushed to a repository, by an event of the connection from another starting
+// commit, or has a run from such a push. A delivery that repeats a push from
+// elsewhere in history, like a provider's test, then creates nothing (spec
+// 0010, R5.9). The same push delivered again is left to CreatePushRun, which
+// finds its run.
+func (s *Store) AlreadyHandled(ctx context.Context, connectionID, repository, stackID, beforeSHA, afterSHA string) (bool, error) {
+	var handled bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM git_events e JOIN git_event_stacks d ON d.event_id = e.id
+			WHERE e.connection_id = $1 AND e.repository = $2 AND e.after_sha = $5 AND e.before_sha <> $4
+			  AND d.stack_id = $3 AND d.outcome IN ('run_created', 'not_affected', 'duplicate', 'already_handled')
+		) OR EXISTS (
+			SELECT 1 FROM runs
+			WHERE stack_id = $3 AND trigger_kind = 'push' AND commit_sha = $5 AND trigger_before_sha <> $4
+		)`, connectionID, repository, stackID, beforeSHA, afterSHA).Scan(&handled)
+	return handled, err
 }
 
 // PushRun is a run started by a push.

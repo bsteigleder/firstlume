@@ -447,12 +447,13 @@ const gitOnPushLabel = (v: GitOnPush) => ({ off: "Off", plan: "Plan", apply: "Ap
 
 /** What the choice means, under the row (spec 0006, canvas board 56). */
 function GitOnPushNotes({ mode, approval }: { mode: GitOnPush; approval: boolean }) {
+  const { gitProvider } = useOrg();
   if (mode === "off") return null;
   return (
     <>
       <p className="notice notice-attention">
         <strong>Whoever can push to the branch runs code with the stack’s credentials.</strong> It happens at the plan, before any approval. Protect
-        the branch in Gitea.
+        the branch in {gitProvider === "gitlab" ? "GitLab" : "Gitea"}.
       </p>
       {mode === "apply" &&
         (approval ? (

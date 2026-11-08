@@ -224,7 +224,7 @@ function ManualStack({ folderID, onClose, connected }: { folderID: string; onClo
           ) : (
             <>
               This organization has no Git connection, so repositories and <span className="mono">.firstlume</span> folders can’t be listed. Type
-              them instead, or <Link to={link("settings#git-connection")} onClick={onClose}>connect Gitea</Link>.
+              them instead, or <Link to={link("settings#git-connection")} onClick={onClose}>connect a Git provider</Link>.
             </>
           )}
         </div>

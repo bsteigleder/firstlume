@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import type { DiscoverResponse, GitConnection, GitRepo } from "../api";
 import { SearchIcon } from "../icons";
@@ -173,22 +173,35 @@ function PickRepo({ conn, onPick }: { conn: GitConnection; onPick: (r: GitRepo) 
   const repos = useData(() => api.gitRepos(), [api]);
   const [q, setQ] = useState("");
   if (repos.error) return <ErrorBanner error={repos.error} />;
-  const list = (repos.data ?? []).filter((r) => !q || r.full_name.toLowerCase().includes(q.toLowerCase()));
+  const gitlab = conn.provider === "gitlab";
+  const what = gitlab ? "project" : "repository";
+  const list = (repos.data ?? [])
+    .filter((r) => !q || r.full_name.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name));
+  // GitLab projects sit in subgroups: show them under their group (canvas board 71).
+  const grouped = gitlab && new Set(list.map((r) => r.owner)).size > 1;
   return (
     <div className="wizard-body">
       <label className="search">
         <SearchIcon />
-        <input type="search" placeholder={`Find a repository in ${conn.account}`} value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
+        <input type="search" placeholder={`Find a ${what} in ${conn.account}`} value={q} onChange={(e) => setQ(e.target.value)} autoFocus />
       </label>
-      <div className="pick-list" role="listbox" aria-label="Repositories">
-        {!repos.data && <p className="muted small">Loading repositories from {conn.url}…</p>}
-        {repos.data && list.length === 0 && <p className="muted small">No repository matches.</p>}
-        {list.map((r) => (
-          <button key={r.full_name} role="option" aria-selected={false} className="pick-item" disabled={r.empty} onClick={() => onPick(r)}>
-            <span className="mono">{r.full_name}</span>
-            <span className="muted small">{r.empty ? "empty" : r.default_branch}</span>
-            {r.private && <span className="badge idle">private</span>}
-          </button>
+      <div className="pick-list" role="listbox" aria-label={gitlab ? "Projects" : "Repositories"}>
+        {!repos.data && <p className="muted small">Loading {what === "project" ? "projects" : "repositories"} from {conn.url}…</p>}
+        {repos.data && list.length === 0 && <p className="muted small">No {what} matches.</p>}
+        {list.map((r, i) => (
+          <Fragment key={r.full_name}>
+            {grouped && (i === 0 || list[i - 1].owner !== r.owner) && (
+              <div className="pick-group mono" role="presentation">
+                {r.owner}
+              </div>
+            )}
+            <button role="option" aria-selected={false} className="pick-item" disabled={r.empty} onClick={() => onPick(r)}>
+              <span className="mono">{r.full_name}</span>
+              <span className="muted small">{r.empty ? "empty" : r.default_branch}</span>
+              {r.private && <span className="badge idle">private</span>}
+            </button>
+          </Fragment>
         ))}
       </div>
     </div>
